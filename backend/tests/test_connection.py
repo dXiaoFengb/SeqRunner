@@ -17,3 +17,16 @@ def test_preset_endpoint_exposes_manual_fallback(tmp_path) -> None:
         presets = client.get("/api/presets").json()
     bettergi = next(item for item in presets if item["id"] == "bettergi")
     assert bettergi["manualRequired"]
+
+
+def test_websocket_answers_ping_and_cleans_up_subscription(tmp_path) -> None:
+    app = create_app(tmp_path / "data", instance_id="websocket-test")
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as socket:
+            assert socket.receive_json()["type"] == "runtime"
+            socket.send_json({"type": "ping", "nonce": "keep-alive"})
+            assert socket.receive_json() == {"type": "pong", "data": {"nonce": "keep-alive"}}
+            assert app.state.events.subscriber_count == 1
+            socket.close()
+        # TestClient drives the disconnect message before leaving the app lifespan.
+        assert app.state.events.subscriber_count == 0

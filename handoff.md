@@ -4,26 +4,24 @@
 
 ## 交接信息
 
-- 交接时间：2026-10-12T19:42:18+08:00
+- 交接时间：2026-10-12T20:10:00+08:00
 - 执行者 / 会话标识：Codex
 - 对应任务：见 `TASK.md`
 
 ## 最近实际改动
 
-- 后端改为随机回环端口与每次启动实例标识；`/health` 校验本次实例，加入最小 CORS 白名单，配置写入错误回报中文且保持原文件。
-- 新增经证据核验的五个预设元数据：MAA、绝区零一条龙采用多条日志终态规则；MaaEnd、三月七小助手、BetterGI 均为“路径 + 人工确认”，不把普通退出伪装为成功。
-- 本地参考证据固定为 AUTO-MAS 提交 `699de5af57b7955a19ed4585f1fe64f9430e1e29`、AUTO-MAS-docs 提交 `a386be2d5e73e48cced5d45639e5c7eae7eda282`；官方链接记录访问日期，不复制上游内容。
-- Electron 使用 `contextIsolation=true`、`sandbox=true`、`nodeIntegration=false`，preload 只暴露连接信息和 `.exe` 选择；主进程以 `windowsHide` 启动后端，目标进程以 `CREATE_NO_WINDOW` 启动。已加入 PyInstaller 和 portable electron-builder 配置。
-- 前端改为深石板蓝的四区工作台（队列/计划/历史/设置），任务卡可折叠、拖拽排序、窄屏单列、独立完成信号区与折叠诊断。
-- 修复 portable 空白页：Vite 生产构建改用相对 `./assets/` 地址，避免 Electron 的 `file://` 加载将 `/assets/` 解析到磁盘根目录。
+- 前端连接逻辑抽至 `useRunnerConnection.ts`：REST 与实时状态独立、初始化/连接/重连单飞、指数退避上限与诊断、20 秒 `ping`/45 秒超时、实时断开时 5 秒降级轮询。保存、脚本运行和停止只依赖 REST 在线状态。
+- 后端 `/ws` 同时订阅事件与接收客户端消息，回应 `ping` 为 `pong`；断开时取消接收/订阅任务并释放订阅。新增 WebSocket ping 与订阅清理测试。
+- 工作台正式把队列呈现为脚本管理：搜索、全部展开/收起、紧凑卡片、编辑/运行/更多、复制不复制定时槽；计划、历史和设置页同步采用脚本语义，但 API 与 JSON 的 `queues`/`tasks` 保持兼容。
+- Electron 通过只读 IPC 提供后台状态诊断；关闭路径改为只对本进程持有的后端根 PID 使用 Windows `/T` 受控收尾，以覆盖 PyInstaller 窗口隐藏启动器的子进程，未按名称扫描。
 
 ## 验证与证据
 
-- 自动化测试 / 构建：已在受限沙箱外执行 `corepack npm run build`，Vite 生产构建通过，另以生成的 HTML 与 `release/win-unpacked/resources/app.asar` 确认 JS/CSS 均引用 `./assets/...`。随后完整 `corepack npm run package:win` 完成前端、PyInstaller 后端和 electron-builder 的打包阶段；初次尝试因用户正在运行旧 EXE 而挂起在最终替换阶段，关闭后改由已重建的 `win-unpacked` 生成独立修复包。此前的 Ruff、pytest（20 passed）、类型检查、Vitest（2 passed）、生产构建和开发模式 Electron 健康检查结论保持不变。受限环境仍拒绝 Electron 运行时单实例锁，因此 portable 启动健康检查只能人工执行。
-- 产物或发布核对：包结构已核验，含 `release/win-unpacked/resources/backend/sequential-runner-backend.exe`。供本轮人工验收的本地被忽略产物为 `release/顺序任务调度器-0.1.0-portable-fixed.exe`，95,076,735 字节，SHA-256 `A666C1A3304B3DE0DF66E4A6289A176403EE5A6AC8B3F05030AB7D65B92E7DE3`。未发布、未替换任何正式产物。
-- 人工验收：修复包等待用户在普通 Windows 桌面会话执行；首项为无黑框启动、已加载工作台、后端连接状态与日志目录确认。
+- 自动化测试 / 构建：受限沙箱外已执行 `pytest backend\\tests`（21 passed）、`ruff check backend`、`npm run typecheck`、`npm run test:frontend`（3 files / 4 tests）、`npm run build`、PyInstaller 后端回环 `/health`（实例标识匹配）、Electron 开发健康检查和打包 `win-unpacked` 健康检查（退出码 0）。首次 portable 打包的 Electron 与 NSIS 缓存存在跨盘重命名错误；将构建缓存固定到项目忽略的临时目录并使用项目本地 Electron 运行时后成功完成。
+- 产物或发布核对：包结构已核验，含 `release/win-unpacked/resources/backend/sequential-runner-backend.exe`；生产 HTML 引用 `./assets/...`，`app.asar` 含最新 `index-nF0AQmgg.js`。供本轮人工验收的本地被忽略产物为 `release/顺序任务调度器-0.1.0-portable-connection.exe`，SHA-256 `FCA2E3E786D783E0B819EC78A10C2281A95BB1ADFF52B42248EA0829EF89DC7D`。未发布、未替换正式产物。
+- 人工验收：连接修复包等待用户在普通 Windows 桌面会话执行；首项为三分钟空闲连接观察，其后验证脚本管理操作、无黑框、定时与进程行为。
 - 证据位置：`docs/state-machine.md`、`docs/manual-acceptance.md`；本地命令输出见本次执行记录。
-- 未验证项与限制：未启动真实业务程序；修复包的用户 Windows 可视验收仍待完成。当前环境不允许 Electron 单实例锁/进程通道，故不能以自动方式完成 portable EXE 的启动健康检查；修复后的生成、包内资源路径、结构和 SHA-256 核验已完成。
+- 未验证项与限制：未启动真实业务程序；新包的用户 Windows 可视验收仍待完成。自动健康检查证明隐藏窗口启动/退出和后端回收，但不替代三分钟真实桌面连接观察、文件对话框、任务卡拖拽和窄窗口视觉验收。
 
 ## 本次交接周期内的高风险操作
 
@@ -33,5 +31,5 @@
 
 ## 下一步
 
-1. 用户按 `docs/manual-acceptance.md` 的第 1 项双击 `portable-fixed.exe`，确认无黑框、工作台加载、后端连接及 `data/logs`；如失败，提供折叠诊断和日志末尾内容。
-2. 完成后续队列、日志、定时、停止、预设及窄窗口验收，并提供真实程序路径、参数及完成信号后另行安排真实程序验收。
+1. 用户按 `docs/manual-acceptance.md` 的第 1–3 项双击 `portable-connection.exe`，完成三分钟空闲连接观察和脚本管理基本操作；如失败，提供折叠诊断和日志末尾内容。
+2. 完成后续脚本、日志、定时、停止、预设及窄窗口验收，并提供真实程序路径、参数及完成信号后另行安排真实程序验收。

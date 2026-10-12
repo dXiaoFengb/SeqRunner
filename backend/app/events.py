@@ -9,6 +9,11 @@ class EventHub:
     def __init__(self) -> None:
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
 
+    @property
+    def subscriber_count(self) -> int:
+        """Expose a small diagnostic seam without exposing subscriber objects."""
+        return len(self._subscribers)
+
     async def publish(self, event_type: str, data: dict[str, Any]) -> None:
         event = {"type": event_type, "data": data}
         for subscriber in tuple(self._subscribers):

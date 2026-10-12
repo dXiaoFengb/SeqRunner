@@ -60,6 +60,7 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
 
     app = FastAPI(title="顺序任务调度器", lifespan=lifespan)
     app.state.engine = engine
+    app.state.events = hub
     app.state.instance_id = instance_id
     app.add_middleware(
         CORSMiddleware,
@@ -141,12 +142,33 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
     @app.websocket("/ws")
     async def websocket(socket: WebSocket):
         await socket.accept()
+        subscription = hub.subscribe()
+        receiver: asyncio.Task[dict] | None = None
+        event_sender: asyncio.Task[dict] | None = None
         try:
             await socket.send_json({"type": "runtime", "data": engine.snapshot()})
-            async for event in hub.subscribe():
-                await socket.send_json(event)
-        except WebSocketDisconnect:
+            receiver = asyncio.create_task(socket.receive_json())
+            event_sender = asyncio.create_task(anext(subscription))
+            while True:
+                done, _ = await asyncio.wait(
+                    {receiver, event_sender}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if receiver in done:
+                    message = receiver.result()
+                    if isinstance(message, dict) and message.get("type") == "ping":
+                        await socket.send_json({"type": "pong", "data": {"nonce": message.get("nonce")}})
+                    receiver = asyncio.create_task(socket.receive_json())
+                if event_sender in done:
+                    await socket.send_json(event_sender.result())
+                    event_sender = asyncio.create_task(anext(subscription))
+        except (WebSocketDisconnect, asyncio.CancelledError):
             return
+        finally:
+            for task in (receiver, event_sender):
+                if task:
+                    task.cancel()
+            await asyncio.gather(*(task for task in (receiver, event_sender) if task), return_exceptions=True)
+            await subscription.aclose()
 
     return app
 

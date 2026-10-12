@@ -54,7 +54,7 @@
 
 - 项目名称 / 定位：顺序任务调度器；独立精简版本地 Windows 桌面程序。
 - 技术栈：Python 3.13、FastAPI、Pydantic、psutil、PyInstaller、Vue 3、TypeScript、Vite、Electron、electron-builder。
-- 目录结构（源 / 测试 / 产物 / 发布）：`backend/` 为本地服务、预设证据元数据与测试；`frontend/` 为 Vue 工作台；`electron/` 为安全主进程/preload；`data/` 为本地配置和日志（不纳入 Git）；`frontend-dist/`、`portable/`、`build/`、`release/` 为本地构建输出（不纳入 Git）；不进行发布。
+- 目录结构（源 / 测试 / 产物 / 发布）：`backend/` 为本地服务、预设证据元数据与测试；`frontend/` 为 Vue 脚本管理工作台及连接控制模块；`electron/` 为安全主进程/preload；`data/` 为本地配置和日志（不纳入 Git）；`frontend-dist/`、`portable/`、`build/`、`release/` 为本地构建输出（不纳入 Git）；不进行发布。
 - 构建命令：`npm run build`；`npm run package:backend` 生成隐藏控制台的后端；`npm run package:win` 生成 Windows portable EXE（均不代表发布）。
 - 测试命令：`backend\.venv\Scripts\python.exe -m pytest backend/tests`、`backend\.venv\Scripts\python.exe -m ruff check backend`、`corepack npm run typecheck`、`corepack npm run test:frontend`、`corepack npm run build`、`corepack npm run electron:health`。
 - 发布路径与动作：见 `VERSION.md`

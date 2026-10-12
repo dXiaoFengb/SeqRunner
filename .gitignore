@@ -33,6 +33,7 @@ coverage/
 *.temp
 *.bak
 /.test-tmp/
+/.tmp-test/
 /.pytest-local*/
 /.pytest-cache*/
 /backend/.pytest-cache*/
