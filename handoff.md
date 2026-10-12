@@ -4,7 +4,7 @@
 
 ## 交接信息
 
-- 交接时间：2026-10-12T15:25:00+08:00
+- 交接时间：2026-10-12T19:16:47+08:00
 - 执行者 / 会话标识：Codex
 - 对应任务：见 `TASK.md`
 
@@ -18,11 +18,11 @@
 
 ## 验证与证据
 
-- 自动化测试 / 构建：`ruff check backend` 通过；`pytest backend/tests` 20 passed；`corepack npm run typecheck` 通过；`corepack npm run test:frontend` 2 passed；`corepack npm run build` 通过；`corepack npm run electron:health` 命令正常退出。
-- 产物或发布核对：PyInstaller 6.16.0 后端已生成并健康启动，SHA-256 为 `9AC01D1B79E6F7CD368168CDC95C31AF3F8A728D56E5E82E3DE6C0B39E088E8C`，位置为被忽略的 `portable/backend/sequential-runner-backend.exe`。electron-builder 使用固定版本的 `npm exec` 配置，但本机 npm 策略拒绝其间接 Git 依赖，未生成 Windows portable EXE、未发布。
-- 人工验收：待用户按 `docs/manual-acceptance.md` 在 Windows 上执行。
+- 自动化测试 / 构建：此前已通过 `ruff check backend`、`pytest backend/tests`（20 passed）、`corepack npm run typecheck`、`corepack npm run test:frontend`（2 passed）、`corepack npm run build` 和开发模式 `corepack npm run electron:health`。本轮受限环境复跑 `electron:health` 时 Electron 创建单实例锁/进程通道被拒绝访问；复跑 `package:win` 时 Vite/esbuild 子进程返回 `spawn EPERM`，均为宿主拒绝创建子进程，不归因为源代码。
+- 产物或发布核对：PyInstaller 后端与 electron-builder portable 包已在此前成功命令中生成；包结构已核验，含 `release/win-unpacked/resources/backend/sequential-runner-backend.exe`。本地被忽略产物 `release/顺序任务调度器-0.1.0-portable.exe` 为 95,074,446 字节，SHA-256 `8C3F53EC6F0D653CC8DE31A45F8FF4642F172C4B3EBB2A06B6A48F8122C92A2D`。未发布、未替换任何正式产物。portable 启停自动检查在当前受限环境以 `0x80000003` 退出且未产生 data，根因与开发模式同为 Electron 拒绝访问；须由人工首项双击验收确认。
+- 人工验收：已进入待验收，用户按 `docs/manual-acceptance.md` 在普通 Windows 桌面会话执行；首项为无黑框启动、连接状态与日志目录确认。
 - 证据位置：`docs/state-machine.md`、`docs/manual-acceptance.md`；本地命令输出见本次执行记录。
-- 未验证项与限制：未启动真实业务程序；用户 Windows 可视验收仍待完成。需允许 electron-builder 的受限依赖后，执行 `npm run package:win`、portable EXE 启停和 SHA-256 核验。
+- 未验证项与限制：未启动真实业务程序；用户 Windows 可视验收仍待完成。当前环境不允许 Electron 单实例锁/进程通道及 esbuild 子进程，故不能以自动方式完成 portable EXE 的启动健康检查；其余生成、结构和 SHA-256 核验已完成。
 
 ## 本次交接周期内的高风险操作
 
@@ -32,5 +32,5 @@
 
 ## 下一步
 
-1. 在 npm 策略允许 electron-builder 间接依赖后执行 `corepack npm run package:win`，核验完整 portable EXE 内容、启停和 SHA-256。
-2. 用户按 `docs/manual-acceptance.md` 完成可视验收，并提供真实程序路径、参数及完成信号后另行安排真实程序验收。
+1. 用户按 `docs/manual-acceptance.md` 的第 1 项在普通 Windows 桌面会话双击 portable EXE，确认无黑框、后端连接及 `data/logs`；如失败，提供折叠诊断和日志末尾内容。
+2. 完成后续队列、日志、定时、停止、预设及窄窗口验收，并提供真实程序路径、参数及完成信号后另行安排真实程序验收。

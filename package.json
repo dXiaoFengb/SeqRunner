@@ -11,7 +11,7 @@
     "test:frontend": "vitest run --config frontend/vitest.config.ts",
     "electron:health": "cross-env RUNNER_HEALTH_CHECK=1 electron .",
     "package:backend": "backend\\.venv\\Scripts\\python.exe -m PyInstaller --noconfirm --clean --distpath portable\\backend --workpath build\\pyinstaller backend\\sequential_runner_backend.spec",
-    "package:win": "npm run build && npm run package:backend && corepack npm exec --yes --package=electron-builder@26.0.12 electron-builder --win portable --publish never"
+    "package:win": "npm run build && npm run package:backend && corepack npm exec --allow-git=all --yes --package=electron-builder@26.0.12 -- electron-builder --win portable --publish never"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "6.0.1",
@@ -37,6 +37,6 @@
     "directories": { "output": "release" },
     "files": ["frontend-dist/**", "electron/**", "package.json"],
     "extraResources": [{ "from": "portable/backend/sequential-runner-backend.exe", "to": "backend/sequential-runner-backend.exe" }],
-    "win": { "target": ["portable"], "artifactName": "${productName}-${version}-portable.${ext}" }
+    "win": { "target": ["portable"], "artifactName": "${productName}-${version}-portable.${ext}", "signAndEditExecutable": false }
   }
 }
