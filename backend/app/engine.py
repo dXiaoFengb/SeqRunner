@@ -1,0 +1,296 @@
+from __future__ import annotations
+
+import asyncio
+import copy
+import logging
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Literal
+
+from .events import EventHub
+from .logwatch import LogSignal, LogWatcher
+from .models import (
+    CompletionSource,
+    ItemRecord,
+    ItemState,
+    QueueDefinition,
+    RunRecord,
+    RunState,
+    TaskDefinition,
+)
+from .processes import (
+    OwnedProcess,
+    capture_owned_process,
+    force_stop_process_tree,
+    process_tree_alive,
+    request_graceful_close,
+)
+from .storage import JsonStore
+
+
+class RunBusyError(RuntimeError):
+    pass
+
+
+class RunnerEngine:
+    """单一运行器；配置在每轮开始时深拷贝，防止热更新改变执行顺序。"""
+
+    def __init__(
+        self,
+        store: JsonStore,
+        events: EventHub,
+        *,
+        cooldown_seconds: float = 10,
+        close_grace_seconds: float = 3,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self.store = store
+        self.events = events
+        self.cooldown_seconds = cooldown_seconds
+        self.close_grace_seconds = close_grace_seconds
+        self.config = store.load_config()
+        self.history = store.load_history()
+        self.current_run: RunRecord | None = None
+        self._runner_task: asyncio.Task[None] | None = None
+        self._stop_requested = asyncio.Event()
+        self._manual_confirmed = asyncio.Event()
+        self._owned_process: OwnedProcess | None = None
+        self._active_task_id: str | None = None
+        self._cooldown_until: datetime | None = None
+        self._logger = logger or logging.getLogger("sequential-runner")
+
+    @property
+    def is_busy(self) -> bool:
+        return self._runner_task is not None and not self._runner_task.done()
+
+    async def save_config(self) -> None:
+        self.store.save_config(self.config)
+        await self.events.publish("config", self.config.model_dump(mode="json"))
+
+    def queue_by_id(self, queue_id: str) -> QueueDefinition:
+        return next(queue for queue in self.config.queues if queue.id == queue_id)
+
+    async def start(self, queue_id: str, source: Literal["manual", "scheduled"]) -> RunRecord:
+        if self.is_busy:
+            raise RunBusyError("已有队列正在运行，当前触发被跳过")
+        queue = copy.deepcopy(self.queue_by_id(queue_id))
+        task_book = {task.id: copy.deepcopy(task) for task in self.config.tasks}
+        selected = [task_book[item] for item in queue.task_ids if item in task_book]
+        record = RunRecord(queue_id=queue.id, queue_name=queue.name, trigger_source=source)
+        record.items = [ItemRecord(task_id=item.id, task_name=item.name) for item in selected]
+        self.current_run = record
+        self._stop_requested.clear()
+        self._manual_confirmed.clear()
+        self._runner_task = asyncio.create_task(self._run(record, selected))
+        await self._publish_state()
+        return record
+
+    async def stop(self) -> None:
+        if not self.is_busy:
+            return
+        self._stop_requested.set()
+        if self.current_run:
+            self.current_run.state = RunState.STOPPING
+        await self._publish_state()
+
+    async def confirm(self, task_id: str) -> None:
+        if self.is_busy and self._active_task_id == task_id:
+            self._manual_confirmed.set()
+
+    async def wait_until_idle(self) -> None:
+        if self._runner_task:
+            with __import__("contextlib").suppress(asyncio.CancelledError):
+                await self._runner_task
+
+    async def _run(self, record: RunRecord, tasks: list[TaskDefinition]) -> None:
+        try:
+            for item, task in zip(record.items, tasks, strict=True):
+                if self._stop_requested.is_set():
+                    item.state = ItemState.STOPPED
+                    break
+                await self._run_item(record, item, task)
+                if self._stop_requested.is_set():
+                    break
+            record.state = RunState.STOPPED if self._stop_requested.is_set() else RunState.COMPLETED
+            record.ended_at = datetime.now(UTC)
+        finally:
+            self._active_task_id = None
+            self._owned_process = None
+            self.history.runs.insert(0, record)
+            self.history.runs = self.history.runs[:200]
+            self.store.save_history(self.history)
+            await self._publish_state()
+
+    async def _run_item(self, record: RunRecord, item: ItemRecord, task: TaskDefinition) -> None:
+        item.state = ItemState.VALIDATING
+        self._active_task_id = task.id
+        await self._log(item, "开始校验任务配置")
+        await self._publish_state()
+        executable = Path(task.executable)
+        if not executable.exists():
+            await self._fail_then_cool(item, "目标程序不存在")
+            return
+        watcher: LogWatcher | None = None
+        if task.log_path:
+            watcher = LogWatcher(
+                task.log_path,
+                task.success_log,
+                task.success_log_mode,
+                task.failure_log,
+                task.failure_log_mode,
+            )
+            try:
+                # 必须先取得游标，后启动目标进程，避免历史成功行误判本轮。
+                await watcher.start_at_end()
+            except (OSError, UnicodeError) as error:
+                await self._fail_then_cool(item, f"日志读取失败：{error}")
+                return
+        try:
+            item.state = ItemState.STARTING
+            item.started_at = datetime.now(UTC)
+            await self._publish_state()
+            process = await asyncio.create_subprocess_exec(
+                str(executable),
+                *task.arguments,
+                cwd=task.working_directory or str(executable.parent),
+            )
+            self._owned_process = await capture_owned_process(process.pid)
+            await self._log(item, f"已启动受管进程 PID {process.pid}")
+        except (OSError, RuntimeError, ValueError) as error:  # 启动错误是可记录的单项失败。
+            await self._fail_then_cool(item, f"启动失败：{error}")
+            return
+
+        item.state = ItemState.WAITING_MANUAL if task.allow_manual_confirmation else ItemState.MONITORING
+        await self._publish_state()
+        outcome, detail, log_detail = await self._wait_for_outcome(process, task, watcher)
+        item.ended_at = datetime.now(UTC)
+        if log_detail:
+            item.log_summary.append(log_detail)
+            await self._log(item, log_detail)
+        if outcome == "stopped":
+            item.state = ItemState.STOPPED
+            await self._log(item, "收到全局停止请求，仅收尾当前受管进程")
+            await self._cleanup_owned(item)
+            return
+        if outcome == "success":
+            item.state = ItemState.SUCCEEDED
+            item.completion_source = detail  # type: ignore[assignment]
+            await self._log(item, f"任务成功，来源：{detail}")
+            await self._publish_state()
+            await self._cleanup_owned(item)
+            await self._cooldown(item, ItemState.SUCCEEDED)
+            return
+        item.exit_code = process.returncode
+        await self._fail_then_cool(item, str(detail))
+
+    async def _wait_for_outcome(
+        self,
+        process: asyncio.subprocess.Process,
+        task: TaskDefinition,
+        watcher: LogWatcher | None,
+    ) -> tuple[str, CompletionSource | str, str | None]:
+        signal_tasks: dict[asyncio.Task[object], str] = {
+            asyncio.create_task(process.wait()): "process",
+            asyncio.create_task(self._stop_requested.wait()): "stop",
+            asyncio.create_task(asyncio.sleep(task.timeout_seconds)): "timeout",
+        }
+        if watcher:
+            signal_tasks[asyncio.create_task(watcher.wait_for_signal(self._stop_requested))] = "log"
+        if task.allow_manual_confirmation:
+            signal_tasks[asyncio.create_task(self._manual_confirmed.wait())] = "manual"
+        try:
+            while signal_tasks:
+                done, _ = await asyncio.wait(signal_tasks, return_when=asyncio.FIRST_COMPLETED)
+                for completed in done:
+                    kind = signal_tasks.pop(completed)
+                    value = completed.result()
+                    if kind == "stop" and self._stop_requested.is_set():
+                        return "stopped", "stopped", None
+                    if kind == "manual" and self._manual_confirmed.is_set():
+                        return "success", CompletionSource.MANUAL, None
+                    if kind == "log" and isinstance(value, LogSignal):
+                        if value.kind == "success":
+                            return "success", CompletionSource.SUCCESS_LOG, value.text
+                        if value is not None:
+                            return "failure", value.text, value.text
+                    if kind == "process" and isinstance(value, int):
+                        if value != 0:
+                            return "failure", f"进程以退出码 {value} 结束", None
+                        if task.has_success_log():
+                            return "failure", "已配置成功日志，但目标进程在命中前退出", None
+                        if task.allow_process_exit or not task.has_success_log():
+                            return "success", CompletionSource.PROCESS_EXIT, None
+                        return "failure", "目标进程退出，未获得完成信号", None
+                    if kind == "timeout":
+                        return "failure", f"运行超时（{task.timeout_seconds} 秒）", None
+        finally:
+            for pending in signal_tasks:
+                pending.cancel()
+            await asyncio.gather(*signal_tasks, return_exceptions=True)
+        return "failure", "未获得完成信号", None
+
+    async def _cleanup_owned(self, item: ItemRecord) -> None:
+        owned = self._owned_process
+        if owned is None:
+            return
+        item.state = ItemState.CLOSING
+        await self._log(item, "请求目标主窗口正常关闭")
+        await self._publish_state()
+        await request_graceful_close(owned)
+        deadline = asyncio.get_running_loop().time() + self.close_grace_seconds
+        while await process_tree_alive(owned) and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.05)
+        if await process_tree_alive(owned):
+            item.state = ItemState.FORCE_CLOSING
+            await self._log(item, "正常关闭超时，仅强制收尾本轮受管进程树")
+            await self._publish_state()
+            await force_stop_process_tree(owned, self.close_grace_seconds)
+        self._owned_process = None
+
+    async def _fail_then_cool(self, item: ItemRecord, message: str) -> None:
+        item.state = ItemState.FAILED
+        item.error_summary = message
+        await self._log(item, f"任务失败：{message}")
+        await self._publish_state()
+        await self._cleanup_owned(item)
+        await self._cooldown(item, ItemState.FAILED)
+
+    async def _cooldown(self, item: ItemRecord, final_state: ItemState) -> None:
+        if self._stop_requested.is_set():
+            item.state = ItemState.STOPPED
+            await self._publish_state()
+            return
+        item.state = ItemState.COOLING_DOWN
+        self._cooldown_until = datetime.now(UTC).replace(microsecond=0)
+        self._cooldown_until = self._cooldown_until + timedelta(seconds=self.cooldown_seconds)
+        await self._log(item, f"收尾完成，固定冷却 {self.cooldown_seconds:g} 秒")
+        await self._publish_state()
+        try:
+            await asyncio.wait_for(self._stop_requested.wait(), timeout=self.cooldown_seconds)
+        except TimeoutError:
+            item.state = final_state
+            self._cooldown_until = None
+            await self._publish_state()
+            return
+        item.state = ItemState.STOPPED
+        self._cooldown_until = None
+        await self._publish_state()
+
+    async def _publish_state(self) -> None:
+        await self.events.publish("runtime", self.snapshot())
+
+    async def _log(self, item: ItemRecord, text: str) -> None:
+        """Only expose the bounded per-item summary already stored in history."""
+        self._logger.info("任务 %s (%s): %s", item.task_name, item.task_id, text)
+        await self.events.publish("log", {"taskId": item.task_id, "message": text})
+
+    def snapshot(self) -> dict:
+        cooldown_seconds = 0
+        if self._cooldown_until:
+            cooldown_seconds = max(0, int((self._cooldown_until - datetime.now(UTC)).total_seconds()))
+        return {
+            "busy": bool(self.current_run and self.current_run.state in {RunState.RUNNING, RunState.STOPPING}),
+            "activeTaskId": self._active_task_id,
+            "cooldownSeconds": cooldown_seconds,
+            "run": self.current_run.model_dump(mode="json") if self.current_run else None,
+        }

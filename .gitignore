@@ -1,0 +1,36 @@
+# 只读参考仓库
+/AUTO-MAS/
+/AUTO-MAS-docs/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.pytest_cache/
+pytest-cache-files-*/
+backend/.venv/
+.venv/
+
+# Node / Electron
+node_modules/
+frontend/node_modules/
+dist/
+dist-electron/
+coverage/
+*.tsbuildinfo
+
+# 用户数据、日志和临时文件
+/data/
+*.log
+*.tmp
+*.temp
+*.bak
+/.test-tmp/
+
+# 本地环境和凭证
+.env
+.env.*
+!.env.example
+*.key
+*.pem
