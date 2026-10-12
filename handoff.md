@@ -12,6 +12,7 @@
 
 - 后端改为随机回环端口与每次启动实例标识；`/health` 校验本次实例，加入最小 CORS 白名单，配置写入错误回报中文且保持原文件。
 - 新增经证据核验的五个预设元数据：MAA、绝区零一条龙采用多条日志终态规则；MaaEnd、三月七小助手、BetterGI 均为“路径 + 人工确认”，不把普通退出伪装为成功。
+- 本地参考证据固定为 AUTO-MAS 提交 `699de5af57b7955a19ed4585f1fe64f9430e1e29`、AUTO-MAS-docs 提交 `a386be2d5e73e48cced5d45639e5c7eae7eda282`；官方链接记录访问日期，不复制上游内容。
 - Electron 使用 `contextIsolation=true`、`sandbox=true`、`nodeIntegration=false`，preload 只暴露连接信息和 `.exe` 选择；主进程以 `windowsHide` 启动后端，目标进程以 `CREATE_NO_WINDOW` 启动。已加入 PyInstaller 和 portable electron-builder 配置。
 - 前端改为深石板蓝的四区工作台（队列/计划/历史/设置），任务卡可折叠、拖拽排序、窄屏单列、独立完成信号区与折叠诊断。
 
