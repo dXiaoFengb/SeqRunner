@@ -4,24 +4,24 @@
 
 ## 交接信息
 
-- 交接时间：2026-10-12T12:27:00+08:00
+- 交接时间：2026-10-12T15:25:00+08:00
 - 执行者 / 会话标识：Codex
 - 对应任务：见 `TASK.md`
 
 ## 最近实际改动
 
-- 新建独立 Python 3.13 FastAPI 后端、Vue 3/TypeScript 前端与 Electron 主进程；后端仅监听 `127.0.0.1`，配置/历史/应用日志分别置于被忽略的 `data/`。
-- 实现单一队列运行、三类完成信号、日志新内容监听、受管 PID 收尾、十秒冷却、定时去重、停止路径与 JSON 原子写入。
-- 新建状态机和人工验收文档，并新增根目录 `启动器.bat`；启动器仅检查项目虚拟环境和 Electron 依赖，不自动安装。
-- Electron 官方下载重试时发现直连 GitHub 被阻断而环境未设置本地代理绕过；已通过已有代理下载锁定的 37.2.5 运行时，并修正开发启动脚本固定端口与 `NO_PROXY`，防止 `wait-on` 误将 `127.0.0.1` 走代理。
+- 后端改为随机回环端口与每次启动实例标识；`/health` 校验本次实例，加入最小 CORS 白名单，配置写入错误回报中文且保持原文件。
+- 新增经证据核验的五个预设元数据：MAA、绝区零一条龙采用多条日志终态规则；MaaEnd、三月七小助手、BetterGI 均为“路径 + 人工确认”，不把普通退出伪装为成功。
+- Electron 使用 `contextIsolation=true`、`sandbox=true`、`nodeIntegration=false`，preload 只暴露连接信息和 `.exe` 选择；主进程以 `windowsHide` 启动后端，目标进程以 `CREATE_NO_WINDOW` 启动。已加入 PyInstaller 和 portable electron-builder 配置。
+- 前端改为深石板蓝的四区工作台（队列/计划/历史/设置），任务卡可折叠、拖拽排序、窄屏单列、独立完成信号区与折叠诊断。
 
 ## 验证与证据
 
-- 自动化测试 / 构建：`ruff check backend` 通过；`pytest backend/tests` 11 passed；`npm run typecheck` 通过；`npm run test:frontend` 1 passed；`npm run build` 通过；`npm run electron:health` 通过；`启动器.bat` 已验证为在 Electron 缺失时仅显示本地 `npm install` 修复提示，且运行时就绪后可启动 Vite、Electron 与本地后端。
-- 产物或发布核对：不适用
+- 自动化测试 / 构建：`ruff check backend` 通过；`pytest backend/tests` 20 passed；`corepack npm run typecheck` 通过；`corepack npm run test:frontend` 2 passed；`corepack npm run build` 通过；`corepack npm run electron:health` 命令正常退出。
+- 产物或发布核对：PyInstaller 6.16.0 后端已生成并健康启动，SHA-256 为 `9AC01D1B79E6F7CD368168CDC95C31AF3F8A728D56E5E82E3DE6C0B39E088E8C`，位置为被忽略的 `portable/backend/sequential-runner-backend.exe`。electron-builder 使用固定版本的 `npm exec` 配置，但本机 npm 策略拒绝其间接 Git 依赖，未生成 Windows portable EXE、未发布。
 - 人工验收：待用户按 `docs/manual-acceptance.md` 在 Windows 上执行。
 - 证据位置：`docs/state-machine.md`、`docs/manual-acceptance.md`；本地命令输出见本次执行记录。
-- 未验证项与限制：未启动真实业务程序；用户 Windows 可视验收仍待完成。
+- 未验证项与限制：未启动真实业务程序；用户 Windows 可视验收仍待完成。需允许 electron-builder 的受限依赖后，执行 `npm run package:win`、portable EXE 启停和 SHA-256 核验。
 
 ## 本次交接周期内的高风险操作
 
@@ -31,4 +31,5 @@
 
 ## 下一步
 
-1. 用户按 `docs/manual-acceptance.md` 完成可视验收，并提供真实程序路径、参数及完成信号后另行安排真实程序验收。
+1. 在 npm 策略允许 electron-builder 间接依赖后执行 `corepack npm run package:win`，核验完整 portable EXE 内容、启停和 SHA-256。
+2. 用户按 `docs/manual-acceptance.md` 完成可视验收，并提供真实程序路径、参数及完成信号后另行安排真实程序验收。

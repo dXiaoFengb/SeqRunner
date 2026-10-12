@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import MatchMode
+from .models import LogRule, MatchMode
 
 
 @dataclass(frozen=True)
@@ -20,15 +20,18 @@ class LogWatcher:
     def __init__(
         self,
         path: str,
-        success: str | None,
-        success_mode: MatchMode,
-        failure: str | None,
-        failure_mode: MatchMode,
+        success: str | None = None,
+        success_mode: MatchMode = MatchMode.KEYWORD,
+        failure: str | None = None,
+        failure_mode: MatchMode = MatchMode.KEYWORD,
         poll_seconds: float = 0.15,
+        *,
+        success_rules: list[LogRule] | None = None,
+        failure_rules: list[LogRule] | None = None,
     ) -> None:
         self.path = Path(path)
-        self.success = self._compile(success, success_mode)
-        self.failure = self._compile(failure, failure_mode)
+        self.success = self._compile_all(success_rules or ([LogRule(pattern=success, mode=success_mode)] if success else []))
+        self.failure = self._compile_all(failure_rules or ([LogRule(pattern=failure, mode=failure_mode)] if failure else []))
         self.poll_seconds = poll_seconds
         self._offset = 0
         self._identity: tuple[int, int] | None = None
@@ -36,10 +39,8 @@ class LogWatcher:
         self._anchor = b""
 
     @staticmethod
-    def _compile(pattern: str | None, mode: MatchMode) -> re.Pattern[str] | None:
-        if not pattern:
-            return None
-        return re.compile(pattern if mode == MatchMode.REGEX else re.escape(pattern))
+    def _compile_all(rules: list[LogRule]) -> list[re.Pattern[str]]:
+        return [re.compile(rule.pattern if rule.mode == MatchMode.REGEX else re.escape(rule.pattern)) for rule in rules]
 
     async def start_at_end(self) -> None:
         try:
@@ -85,10 +86,12 @@ class LogWatcher:
         self._refresh_anchor()
         if not text:
             return None
-        if self.failure and (match := self.failure.search(text)):
-            return LogSignal("failure", match.group(0))
-        if self.success and (match := self.success.search(text)):
-            return LogSignal("success", match.group(0))
+        for rule in self.failure:
+            if match := rule.search(text):
+                return LogSignal("failure", match.group(0))
+        for rule in self.success:
+            if match := rule.search(text):
+                return LogSignal("success", match.group(0))
         return None
 
     def _anchor_changed(self) -> bool:

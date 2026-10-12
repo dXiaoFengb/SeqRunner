@@ -16,7 +16,13 @@ backend/.venv/
 node_modules/
 frontend/node_modules/
 dist/
+frontend-dist/
 dist-electron/
+build/
+release/
+portable/
+backend/build/
+backend/dist/
 coverage/
 *.tsbuildinfo
 
@@ -27,6 +33,11 @@ coverage/
 *.temp
 *.bak
 /.test-tmp/
+/.pytest-local*/
+/.pytest-cache*/
+/backend/.pytest-cache*/
+/.portable-health-*.txt
+/node-compile-cache/
 
 # 本地环境和凭证
 .env

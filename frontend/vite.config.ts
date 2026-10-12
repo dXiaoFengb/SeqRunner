@@ -5,5 +5,5 @@ import { resolve } from 'node:path'
 export default defineConfig({
   root: __dirname,
   plugins: [vue()],
-  build: { outDir: resolve(__dirname, '../dist'), emptyOutDir: true },
+  build: { outDir: resolve(__dirname, '../frontend-dist'), emptyOutDir: true },
 })

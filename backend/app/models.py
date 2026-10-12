@@ -53,7 +53,8 @@ class TimeSlot(BaseModel):
 class TaskDefinition(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     name: str = Field(min_length=1, max_length=120)
-    executable: str = Field(min_length=1)
+    # 空路径允许作为尚未完成的编辑草稿；运行前仍由执行器严格校验。
+    executable: str = ""
     arguments: list[str] = Field(default_factory=list)
     working_directory: str | None = None
     allow_manual_confirmation: bool = False
@@ -63,10 +64,19 @@ class TaskDefinition(BaseModel):
     success_log_mode: MatchMode = MatchMode.KEYWORD
     failure_log: str | None = None
     failure_log_mode: MatchMode = MatchMode.KEYWORD
+    preset_id: str | None = None
+    preset_evidence: str | None = None
+    success_log_rules: list[LogRule] = Field(default_factory=list)
+    failure_log_rules: list[LogRule] = Field(default_factory=list)
     timeout_seconds: int = Field(default=600, ge=1, le=86_400)
 
     def has_success_log(self) -> bool:
-        return bool(self.log_path and self.success_log)
+        return bool(self.log_path and (self.success_log or self.success_log_rules))
+
+
+class LogRule(BaseModel):
+    pattern: str = Field(min_length=1, max_length=500)
+    mode: MatchMode = MatchMode.KEYWORD
 
 
 class QueueDefinition(BaseModel):

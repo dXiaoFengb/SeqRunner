@@ -6,11 +6,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .engine import RunBusyError, RunnerEngine
 from .events import EventHub
 from .models import AppConfig, QueueDefinition, TaskDefinition
+from .presets import apply_preset, public_presets
 from .scheduler import QueueScheduler
 from .storage import JsonStore
 
@@ -23,7 +25,13 @@ class ConfirmIn(BaseModel):
     task_id: str
 
 
-def create_app(data_directory: Path | None = None) -> FastAPI:
+class PresetApplyIn(BaseModel):
+    executable: str
+    task_id: str
+    name: str = ""
+
+
+def create_app(data_directory: Path | None = None, *, instance_id: str = "development") -> FastAPI:
     root = data_directory or Path(__file__).resolve().parents[2] / "data"
     logs = root / "logs"
     logs.mkdir(parents=True, exist_ok=True)
@@ -52,10 +60,29 @@ def create_app(data_directory: Path | None = None) -> FastAPI:
 
     app = FastAPI(title="顺序任务调度器", lifespan=lifespan)
     app.state.engine = engine
+    app.state.instance_id = instance_id
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173", "null"],
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+        allow_headers=["content-type"],
+    )
 
     @app.get("/health")
     async def health():
-        return {"status": "ok"}
+        return {"status": "ok", "instanceId": app.state.instance_id}
+
+    @app.get("/api/presets")
+    async def presets():
+        return public_presets()
+
+    @app.post("/api/presets/{preset_id}/apply", response_model=TaskDefinition)
+    async def preset_apply(preset_id: str, payload: PresetApplyIn):
+        try:
+            return apply_preset(preset_id, payload.executable, task_id=payload.task_id, name=payload.name)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
 
     @app.get("/api/config", response_model=AppConfig)
     async def get_config():
@@ -65,8 +92,11 @@ def create_app(data_directory: Path | None = None) -> FastAPI:
     async def put_config(config: AppConfig):
         if engine.is_busy:
             raise HTTPException(409, "队列运行中，配置将于本轮结束后再修改")
-        engine.config = config
-        await engine.save_config()
+        try:
+            engine.config = config
+            await engine.save_config()
+        except OSError as error:
+            raise HTTPException(500, f"配置保存失败，原配置未被覆盖：{error}") from error
         return engine.config
 
     @app.post("/api/queues", response_model=QueueDefinition)

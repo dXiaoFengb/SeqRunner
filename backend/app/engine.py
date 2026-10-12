@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -138,6 +139,8 @@ class RunnerEngine:
                 task.success_log_mode,
                 task.failure_log,
                 task.failure_log_mode,
+                success_rules=task.success_log_rules,
+                failure_rules=task.failure_log_rules,
             )
             try:
                 # 必须先取得游标，后启动目标进程，避免历史成功行误判本轮。
@@ -153,6 +156,7 @@ class RunnerEngine:
                 str(executable),
                 *task.arguments,
                 cwd=task.working_directory or str(executable.parent),
+                creationflags=getattr(__import__("subprocess"), "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
             )
             self._owned_process = await capture_owned_process(process.pid)
             await self._log(item, f"已启动受管进程 PID {process.pid}")
