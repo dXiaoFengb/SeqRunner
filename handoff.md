@@ -4,24 +4,23 @@
 
 ## 交接信息
 
-- 交接时间：2026-10-13T13:08:00+08:00
+- 交接时间：2026-10-13T13:39:00+08:00
 - 执行者 / 会话标识：Codex
-- 对应任务：见 `TASK.md`「v0.2.0 脚本管理完善、运行反馈与固定导航」。
+- 对应任务：见 `TASK.md`「v0.2.1 预设自动应用与独立脚本编辑修复」。
 
 ## 最近实际改动
 
-- 后端运行快照新增 `cooldownUntil` 和运行中心数据；人工确认仅在当前等待人工确认的程序时接受，随后依次发布正常关闭、受管进程收尾与冷却状态。停止会取消截止时间，且不派发下一项。
-- 新增手动 `POST /api/start-all`：按配置中脚本卡顺序深拷贝展开所有程序；任一脚本为空、路径缺失、预设路径不匹配或规则未应用即整体返回问题，不会部分启动。历史记录的 `run_mode` 与每项脚本归属为向后兼容默认字段。
-- 前端拆出本地 `RunCenter` 与 `ScriptCard`。运行中心固定在右侧内容区顶部并按服务端截止时间做可见秒级倒计时；人工确认成功后按钮立即显示“确认已接收”。脚本卡支持搜索、持久化拖拽、键盘上移/下移、编辑、单条运行、复制、删除和“运行全部脚本”。
-- 左栏改为全高粘性、独立滚动；运行中锁定会改变执行快照的脚本/任务/排序操作。计划页继续只管理单条脚本；未新增账号、模板、导入导出或全部脚本定时。
+- 手动输入 EXE 与原生文件选择共用带令牌的预设同步：名称精确匹配时才调用本地 `/api/presets/{id}/apply`，返回参数、工作目录、日志、多条终态规则和证据；旧异步响应不会覆盖后续路径或预设。失配路径被保留、清除预设证据并阻止运行；MaaEnd、三月七小助手和 BetterGI 保持人工确认回退。
+- 脚本卡现只显示摘要、排序、运行和脚本级操作；“编辑脚本”进入同窗口独立完整编辑页。预设自动规则以独立面板显示，包含日志、成功/失败规则、完成方式和证据。卡片“更多”菜单经 Teleport 置于顶层，可点击外部或 Esc 关闭并回归焦点。
+- 左侧导航改为固定全高栏，主内容独立滚动；Electron 原生标题、左侧品牌和设置页通过受限 IPC 读取 `VERSION.md` 的开发版本。打包配置将同一版本纳入 app.asar，并新增读取版本的 portable 包装器与 v0.2.1 隔离输出目录。
 
 ## 验证与证据
 
-- 后端：`backend\\.venv\\Scripts\\python.exe -m pytest backend\\tests` 为 **28 passed, 1 warning**；`backend\\.venv\\Scripts\\python.exe -m ruff check backend` 为 **All checks passed**。新增用例覆盖人工确认接受/拒绝、冷却截止/停止、全部脚本顺序、整体阻止和旧历史兼容。
-- 前端：`corepack npm run typecheck`、`corepack npm run test:frontend`（**5 files / 9 tests**）、`corepack npm run build` 均通过；`corepack npm run electron:health` 隐藏窗口启动/停止通过。
-- 本轮没有创建新的 portable EXE，故不覆盖此前 `portable-validation-v012-r3` 的验证包或其他既有 EXE；该旧包不包含本轮功能。测试临时目录均已删除，并由 `.gitignore` 覆盖。
-- Git：待按自动留痕规则将开发提交版本由 `v0.1.3` 推进为 `v0.2.0`，精确暂存并创建本地提交；不会推送。
-- 人工验收与限制：普通 Windows 桌面可视验收仍待用户执行，步骤见 `docs/manual-acceptance.md`。需核对人工确认反馈、十秒倒计时、脚本卡排序/全部运行、固定导航及窄窗口；未启动真实业务程序。
+- 后端：`backend\\.venv\\Scripts\\python.exe -m pytest backend\\tests` 为 **28 passed, 1 warning**；`backend\\.venv\\Scripts\\python.exe -m ruff check backend` 为 **All checks passed**。首次沙箱运行被临时目录 `WinError 5` 阻断，普通 Windows 终端复测通过。
+- 前端：`corepack npm run typecheck`、`corepack npm run test:frontend`（**5 files / 10 tests**）、`corepack npm run build` 均通过；`corepack npm run electron:health` 隐藏窗口启动/停止通过。
+- PyInstaller：新的无控制台后端 EXE 已生成，随机回环端口 `/health` 返回本次实例 `v021-backend-health`，预设接口返回 HTTP 200。最终后端 EXE SHA-256 为 `FB08DA48DFAA4B89B98FBFBF9AE157E74F9D2F936D81C8D0371DCA5DD906D13F`。
+- Portable：2026-10-13 以普通 Windows 终端重新执行 `corepack npm run package:validation`。输出 `portable-validation-v021\\electron\\顺序任务调度器-v0.2.1-portable.exe`，大小 95,382,239 字节，SHA-256 为 `BEC73EFB07A1EAED5DD8C9EDAB0FC28BEA97D04A185C87BD87523A4B9FBFD1CB`。设置 `RUNNER_HEALTH_CHECK=1` 后隐藏启动退出码为 0；退出后未发现位于验证目录的后端残留。未发布、未替换既有产物。
+- Git：开发提交版本已按用户确认由 v0.2.0 更新至 v0.2.1；最小自动化、构建与 portable 健康验证已完成，待完成精确暂存差异核对后创建本地提交，不推送。
 
 ## 本次交接周期内的高风险操作
 
@@ -31,6 +30,5 @@
 
 ## 下一步
 
-1. 用户通过根目录 `启动器.bat` 启动当前源码，按 `docs/manual-acceptance.md` 完成人工确认反馈、十秒倒计时、脚本排序/全部运行、固定布局、停止和计划验收。
-2. 如需把本轮功能交给普通桌面用户，另建或明确授权新 portable 验证包任务，写入新的 Git 忽略目录而不覆盖既有 EXE。
-3. 用户提供真实程序路径与完成信号后，另建任务安排真实业务程序验收；本轮不启动它们。
+1. 按 `docs/manual-acceptance.md` 完成预设手输、独立编辑页、菜单、固定导航、人工确认反馈、十秒倒计时、停止和计划验收；真实业务软件仍不启动。
+2. 完成人工验收后，在后续任务中据实记录观察结果；本轮自动验证完成后将创建本地提交 `v0.2.1 修复:自动应用预设规则与独立脚本编辑`，不推送。

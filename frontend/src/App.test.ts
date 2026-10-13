@@ -57,18 +57,21 @@ test('shows compact script workbench and moves diagnostics to settings', async (
   expect(wrapper.text()).toContain('连接诊断')
 })
 
-test('immediately retains a matching executable and saves applied preset rules', async () => {
+test('manual matching executable applies and displays preset rules', async () => {
   const fetchMock = installBackend()
-  window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: false, path: 'C:\\MAA\\MAA.exe', matchesPreset: true }) }
+  window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }) }
   const wrapper = mount(App)
   await flushPromises()
   await wrapper.findAll('button').find((button) => button.text() === '编辑脚本')!.trigger('click')
   await wrapper.find('select').setValue('maa')
   await flushPromises()
-  await wrapper.findAll('button').find((button) => button.text() === '选择软件')!.trigger('click')
+  const executable = wrapper.find('input[placeholder="请选择 .exe"]')
+  await executable.setValue('C:\\MAA\\MAA.exe')
+  await executable.trigger('change')
   await flushPromises()
   expect((wrapper.find('input[placeholder="请选择 .exe"]').element as HTMLInputElement).value).toBe('C:\\MAA\\MAA.exe')
   expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/presets/maa/apply'))).toBe(true)
+  expect(wrapper.text()).toContain('预设自动规则已应用')
   expect(wrapper.text()).toContain('脚本配置已保存')
 })
 
@@ -84,5 +87,7 @@ test('keeps a mismatched executable visible and blocks running until explicitly 
   await flushPromises()
   expect((wrapper.find('input[placeholder="请选择 .exe"]').element as HTMLInputElement).value).toBe('C:\\Other\\Other.exe')
   expect(wrapper.text()).toContain('切换为通用程序并保存')
+  await wrapper.findAll('button').find((button) => button.text().includes('返回脚本管理'))!.trigger('click')
+  await flushPromises()
   expect(wrapper.find('button.run-button').attributes('disabled')).toBeDefined()
 })

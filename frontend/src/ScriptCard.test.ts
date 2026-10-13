@@ -14,3 +14,13 @@ test('offers keyboard order controls and preserves run action', async () => {
   expect(wrapper.emitted('move')?.[0]).toEqual([-1])
   expect(wrapper.emitted('run')).toHaveLength(1)
 })
+
+test('uses a top-layer more menu that can be dismissed with Escape', async () => {
+  const wrapper = mount(ScriptCard, { props, attachTo: document.body })
+  await wrapper.find('.more-trigger').trigger('click')
+  expect(document.body.textContent).toContain('复制脚本')
+  await document.querySelector('[role="menu"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await wrapper.vm.$nextTick()
+  expect(document.body.querySelector('[role="menu"]')).toBeNull()
+  wrapper.unmount()
+})

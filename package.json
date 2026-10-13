@@ -11,8 +11,9 @@
     "test:frontend": "vitest run --config frontend/vitest.config.ts",
     "electron:health": "cross-env RUNNER_HEALTH_CHECK=1 electron .",
     "package:backend": "backend\\.venv\\Scripts\\python.exe -m PyInstaller --noconfirm --clean --distpath portable\\backend --workpath build\\pyinstaller backend\\sequential_runner_backend.spec",
-    "package:win": "npm run build && npm run package:backend && corepack npm exec --allow-git=all --yes --package=electron-builder@26.0.12 -- electron-builder --win portable --publish never",
-    "package:validation": "npm run build && cross-env ELECTRON_CACHE=portable-validation-v012-r3/electron-cache ELECTRON_BUILDER_CACHE=portable-validation-v012-r3/builder-cache corepack npm exec --allow-git=all --yes --package=electron-builder@26.0.12 -- electron-builder --win portable --publish never --config electron-builder.validation.json --config.directories.output=portable-validation-v012-r3/electron"
+    "package:win": "npm run build && npm run package:backend && node scripts/package-portable.cjs",
+    "package:backend:validation": "backend\\.venv\\Scripts\\python.exe -m PyInstaller --noconfirm --clean --distpath portable-validation-v021/backend --workpath build/pyinstaller-v021 backend\\sequential_runner_backend.spec",
+    "package:validation": "npm run build && npm run package:backend:validation && node scripts/package-portable.cjs --validation"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "6.0.1",
@@ -36,8 +37,8 @@
     "appId": "local.sequential-task-runner",
     "productName": "顺序任务调度器",
     "directories": { "output": "release" },
-    "files": ["frontend-dist/**", "electron/**", "package.json"],
+    "files": ["frontend-dist/**", "electron/**", "package.json", "VERSION.md"],
     "extraResources": [{ "from": "portable/backend/sequential-runner-backend.exe", "to": "backend/sequential-runner-backend.exe" }],
-    "win": { "target": ["portable"], "artifactName": "${productName}-${version}-portable.${ext}", "signAndEditExecutable": false }
+    "win": { "target": ["portable"], "artifactName": "${productName}-v${version}-portable.${ext}", "signAndEditExecutable": false }
   }
 }
