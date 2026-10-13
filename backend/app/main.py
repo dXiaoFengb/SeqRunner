@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from .engine import RunBusyError, RunnerEngine
+from .engine import ConfirmRejectedError, RunBusyError, RunnerEngine, RunValidationError
 from .events import EventHub
 from .models import AppConfig, QueueDefinition, TaskDefinition
 from .presets import apply_preset, public_presets
@@ -121,6 +121,15 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
         except RunBusyError as error:
             raise HTTPException(409, str(error)) from error
 
+    @app.post("/api/start-all")
+    async def start_all():
+        try:
+            return await engine.start_all()
+        except RunBusyError as error:
+            raise HTTPException(409, str(error)) from error
+        except RunValidationError as error:
+            raise HTTPException(422, {"message": "全部脚本尚未完成配置", "problems": error.problems}) from error
+
     @app.post("/api/stop")
     async def stop():
         await engine.stop()
@@ -128,7 +137,10 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
 
     @app.post("/api/confirm")
     async def confirm(payload: ConfirmIn):
-        await engine.confirm(payload.task_id)
+        try:
+            await engine.confirm(payload.task_id)
+        except ConfirmRejectedError as error:
+            raise HTTPException(409, str(error)) from error
         return {"status": "accepted"}
 
     @app.get("/api/history")

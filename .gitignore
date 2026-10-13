@@ -37,6 +37,7 @@ coverage/
 *.temp
 *.bak
 /.test-tmp/
+/.test-tmp-runner*/
 /.tmp-test/
 /.pytest-local*/
 /.pytest-cache*/

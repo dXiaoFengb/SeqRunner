@@ -96,6 +96,9 @@ class AppConfig(BaseModel):
 class ItemRecord(BaseModel):
     task_id: str
     task_name: str
+    # 旧历史没有归属字段时，保持可读；全部脚本运行才会填充它们。
+    script_id: str | None = None
+    script_name: str | None = None
     state: ItemState = ItemState.QUEUED
     completion_source: CompletionSource | None = None
     started_at: datetime | None = None
@@ -110,6 +113,8 @@ class RunRecord(BaseModel):
     queue_id: str
     queue_name: str
     trigger_source: Literal["manual", "scheduled"]
+    # 单脚本是既有行为；all_scripts 只由手动“运行全部脚本”创建。
+    run_mode: Literal["script", "all_scripts"] = "script"
     state: RunState = RunState.RUNNING
     started_at: datetime = Field(default_factory=datetime.now)
     ended_at: datetime | None = None

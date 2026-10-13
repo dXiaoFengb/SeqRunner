@@ -19,6 +19,7 @@ from .models import (
     RunState,
     TaskDefinition,
 )
+from .presets import PRESETS
 from .processes import (
     OwnedProcess,
     capture_owned_process,
@@ -30,6 +31,18 @@ from .storage import JsonStore
 
 
 class RunBusyError(RuntimeError):
+    pass
+
+
+class RunValidationError(RuntimeError):
+    """运行前的完整性问题；调用方可将全部问题一次呈现给用户。"""
+
+    def __init__(self, problems: list[str]) -> None:
+        self.problems = problems
+        super().__init__("；".join(problems))
+
+
+class ConfirmRejectedError(RuntimeError):
     pass
 
 
@@ -57,6 +70,7 @@ class RunnerEngine:
         self._manual_confirmed = asyncio.Event()
         self._owned_process: OwnedProcess | None = None
         self._active_task_id: str | None = None
+        self._manual_accepting_task_id: str | None = None
         self._cooldown_until: datetime | None = None
         self._logger = logger or logging.getLogger("sequential-runner")
 
@@ -78,13 +92,84 @@ class RunnerEngine:
         task_book = {task.id: copy.deepcopy(task) for task in self.config.tasks}
         selected = [task_book[item] for item in queue.task_ids if item in task_book]
         record = RunRecord(queue_id=queue.id, queue_name=queue.name, trigger_source=source)
-        record.items = [ItemRecord(task_id=item.id, task_name=item.name) for item in selected]
+        record.items = [
+            ItemRecord(task_id=item.id, task_name=item.name, script_id=queue.id, script_name=queue.name)
+            for item in selected
+        ]
         self.current_run = record
         self._stop_requested.clear()
         self._manual_confirmed.clear()
         self._runner_task = asyncio.create_task(self._run(record, selected))
         await self._publish_state()
         return record
+
+    async def start_all(self) -> RunRecord:
+        """按配置中的脚本卡顺序展开为一条手动运行记录，不改写配置。"""
+        if self.is_busy:
+            raise RunBusyError("已有脚本正在运行，当前触发被跳过")
+        scripts = copy.deepcopy(self.config.queues)
+        task_book = {task.id: copy.deepcopy(task) for task in self.config.tasks}
+        problems: list[str] = []
+        selected: list[TaskDefinition] = []
+        items: list[ItemRecord] = []
+        for script in scripts:
+            label = f"脚本“{script.name}”"
+            if not script.task_ids:
+                problems.append(f"{label}没有程序")
+                continue
+            for position, task_id in enumerate(script.task_ids, start=1):
+                task = task_book.get(task_id)
+                if task is None:
+                    problems.append(f"{label}第 {position} 项不存在")
+                    continue
+                if not task.executable.strip():
+                    problems.append(f"{label}的“{task.name}”未选择程序路径")
+                    continue
+                preset_problem = self._preset_problem(task)
+                if preset_problem:
+                    problems.append(f"{label}的“{task.name}”{preset_problem}")
+                    continue
+                selected.append(task)
+                items.append(
+                    ItemRecord(
+                        task_id=task.id,
+                        task_name=task.name,
+                        script_id=script.id,
+                        script_name=script.name,
+                    )
+                )
+        if problems:
+            raise RunValidationError(problems)
+        if not selected:
+            raise RunValidationError(["没有可运行的脚本程序"])
+        record = RunRecord(
+            queue_id="__all__",
+            queue_name="全部脚本",
+            trigger_source="manual",
+            run_mode="all_scripts",
+            items=items,
+        )
+        self.current_run = record
+        self._stop_requested.clear()
+        self._manual_confirmed.clear()
+        self._runner_task = asyncio.create_task(self._run(record, selected))
+        await self._publish_state()
+        return record
+
+    @staticmethod
+    def _preset_problem(task: TaskDefinition) -> str | None:
+        if not task.preset_id:
+            return None
+        preset = PRESETS.get(task.preset_id)
+        if preset is None:
+            return "选择了未知预设"
+        if Path(task.executable).name.casefold() not in {
+            name.casefold() for name in preset["executables"]
+        }:
+            return "的程序路径与预设不匹配"
+        if not task.preset_evidence:
+            return "的预设规则尚未应用"
+        return None
 
     async def stop(self) -> None:
         if not self.is_busy:
@@ -95,8 +180,11 @@ class RunnerEngine:
         await self._publish_state()
 
     async def confirm(self, task_id: str) -> None:
-        if self.is_busy and self._active_task_id == task_id:
-            self._manual_confirmed.set()
+        if not self.is_busy or self._active_task_id != task_id:
+            raise ConfirmRejectedError("当前没有等待该程序人工确认的运行")
+        if self._manual_accepting_task_id != task_id:
+            raise ConfirmRejectedError("当前程序不需要人工确认，或已进入下一阶段")
+        self._manual_confirmed.set()
 
     async def wait_until_idle(self) -> None:
         if self._runner_task:
@@ -116,6 +204,7 @@ class RunnerEngine:
             record.ended_at = datetime.now(UTC)
         finally:
             self._active_task_id = None
+            self._manual_accepting_task_id = None
             self._owned_process = None
             self.history.runs.insert(0, record)
             self.history.runs = self.history.runs[:200]
@@ -125,6 +214,8 @@ class RunnerEngine:
     async def _run_item(self, record: RunRecord, item: ItemRecord, task: TaskDefinition) -> None:
         item.state = ItemState.VALIDATING
         self._active_task_id = task.id
+        self._manual_confirmed.clear()
+        self._manual_accepting_task_id = None
         await self._log(item, "开始校验任务配置")
         await self._publish_state()
         executable = Path(task.executable)
@@ -165,6 +256,7 @@ class RunnerEngine:
             return
 
         item.state = ItemState.WAITING_MANUAL if task.allow_manual_confirmation else ItemState.MONITORING
+        self._manual_accepting_task_id = task.id if task.allow_manual_confirmation else None
         await self._publish_state()
         outcome, detail, log_detail = await self._wait_for_outcome(process, task, watcher)
         item.ended_at = datetime.now(UTC)
@@ -177,6 +269,7 @@ class RunnerEngine:
             await self._cleanup_owned(item)
             return
         if outcome == "success":
+            self._manual_accepting_task_id = None
             item.state = ItemState.SUCCEEDED
             item.completion_source = detail  # type: ignore[assignment]
             await self._log(item, f"任务成功，来源：{detail}")
@@ -238,6 +331,7 @@ class RunnerEngine:
         if owned is None:
             return
         item.state = ItemState.CLOSING
+        self._manual_accepting_task_id = None
         await self._log(item, "请求目标主窗口正常关闭")
         await self._publish_state()
         await request_graceful_close(owned)
@@ -265,8 +359,7 @@ class RunnerEngine:
             await self._publish_state()
             return
         item.state = ItemState.COOLING_DOWN
-        self._cooldown_until = datetime.now(UTC).replace(microsecond=0)
-        self._cooldown_until = self._cooldown_until + timedelta(seconds=self.cooldown_seconds)
+        self._cooldown_until = datetime.now(UTC) + timedelta(seconds=self.cooldown_seconds)
         await self._log(item, f"收尾完成，固定冷却 {self.cooldown_seconds:g} 秒")
         await self._publish_state()
         try:
@@ -292,9 +385,31 @@ class RunnerEngine:
         cooldown_seconds = 0
         if self._cooldown_until:
             cooldown_seconds = max(0, int((self._cooldown_until - datetime.now(UTC)).total_seconds()))
+        active_item = None
+        if self.current_run and self._active_task_id:
+            active_item = next(
+                (item for item in self.current_run.items if item.task_id == self._active_task_id), None
+            )
+        total = len(self.current_run.items) if self.current_run else 0
+        current_index = (
+            next((index + 1 for index, item in enumerate(self.current_run.items) if item is active_item), 0)
+            if self.current_run and active_item
+            else 0
+        )
         return {
             "busy": bool(self.current_run and self.current_run.state in {RunState.RUNNING, RunState.STOPPING}),
             "activeTaskId": self._active_task_id,
             "cooldownSeconds": cooldown_seconds,
+            "cooldownUntil": self._cooldown_until.isoformat() if self._cooldown_until else None,
+            "runCenter": {
+                "currentScriptId": active_item.script_id if active_item else None,
+                "currentScriptName": active_item.script_name if active_item else None,
+                "currentTaskId": active_item.task_id if active_item else None,
+                "currentTaskName": active_item.task_name if active_item else None,
+                "currentState": active_item.state.value if active_item else None,
+                "completionSource": active_item.completion_source.value if active_item and active_item.completion_source else None,
+                "currentIndex": current_index,
+                "totalPrograms": total,
+            },
             "run": self.current_run.model_dump(mode="json") if self.current_run else None,
         }

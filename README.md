@@ -52,7 +52,7 @@
 
 ## 项目档案
 
-- 项目名称 / 定位：顺序任务调度器；独立精简版本地 Windows 桌面程序。
+- 项目名称 / 定位：顺序任务调度器；独立精简版本地 Windows 桌面程序。界面中的“脚本”保持后端 `queues` 实体语义：一条脚本是顺序程序组，计划只触发一条脚本；“运行全部脚本”只支持手动开始，并按脚本卡排序展开为同一受管轮次。
 - 技术栈：Python 3.13、FastAPI、Pydantic、psutil、Uvicorn `websockets` 协议实现、PyInstaller、Vue 3、TypeScript、Vite、Electron、electron-builder。
 - 目录结构（源 / 测试 / 产物 / 发布）：`backend/` 为本地服务、预设证据元数据与测试；`frontend/` 为 Vue 脚本管理工作台及连接控制模块；`electron/` 为安全主进程/preload；`data/` 为本地配置和日志（不纳入 Git）；`frontend-dist/`、`portable/`、`build/`、`release/` 及 `portable-validation-v012-*` 为本地构建或验证输出（不纳入 Git）；不进行发布。
 - 构建命令：`npm run build`；`npm run package:backend` 生成隐藏控制台的后端；`npm run package:win` 生成 Windows portable EXE；`npm run package:validation` 将验证包与下载缓存写入独立的 Git 忽略目录（均不代表发布）。

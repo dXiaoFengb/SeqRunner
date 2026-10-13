@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.engine import RunnerEngine
+from app.engine import ConfirmRejectedError, RunnerEngine, RunValidationError
 from app.events import EventHub
 from app.models import AppConfig, CompletionSource, MatchMode, QueueDefinition, TaskDefinition
 from app.storage import JsonStore
@@ -142,3 +142,79 @@ async def test_timeout_marks_failure_and_continues(tmp_path: Path) -> None:
 
     assert "运行超时" in (engine.history.runs[0].items[0].error_summary or "")
     assert output.exists()
+
+
+@pytest.mark.asyncio
+async def test_manual_confirmation_is_accepted_only_while_the_active_task_waits(tmp_path: Path) -> None:
+    task = python_task("人工确认", "import time; time.sleep(10)")
+    task.allow_manual_confirmation = True
+    task.allow_process_exit = False
+    engine, queue = build_engine(tmp_path, [task])
+
+    with pytest.raises(ConfirmRejectedError):
+        await engine.confirm(task.id)
+    await engine.start(queue.id, "manual")
+    await asyncio.sleep(0.2)
+    await engine.confirm(task.id)
+    with pytest.raises(ConfirmRejectedError):
+        await engine.confirm("not-active")
+    await engine.wait_until_idle()
+
+    assert engine.history.runs[0].items[0].completion_source == CompletionSource.MANUAL
+
+
+@pytest.mark.asyncio
+async def test_start_all_expands_scripts_in_persisted_order_and_records_origin(tmp_path: Path) -> None:
+    output = tmp_path / "all-order.txt"
+    source = "from pathlib import Path; import sys; Path(sys.argv[1]).open('a').write(sys.argv[2] + '\\n')"
+    first = python_task("第一程序", source, str(output), "one")
+    second = python_task("第二程序", source, str(output), "two")
+    first_script = QueueDefinition(name="第一脚本", task_ids=[first.id])
+    second_script = QueueDefinition(name="第二脚本", task_ids=[second.id])
+    store = JsonStore(tmp_path / "data")
+    store.save_config(AppConfig(queues=[first_script, second_script], tasks=[first, second]))
+    engine = RunnerEngine(store, EventHub(), cooldown_seconds=0.01, close_grace_seconds=0.05)
+
+    record = await engine.start_all()
+    assert record.run_mode == "all_scripts"
+    await engine.wait_until_idle()
+
+    completed = engine.history.runs[0]
+    assert output.read_text(encoding="utf-8").splitlines() == ["one", "two"]
+    assert [(item.script_id, item.script_name) for item in completed.items] == [
+        (first_script.id, "第一脚本"),
+        (second_script.id, "第二脚本"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_start_all_blocks_everything_when_a_script_is_incomplete(tmp_path: Path) -> None:
+    complete = python_task("已配置", "pass")
+    incomplete = TaskDefinition(name="未配置")
+    first_script = QueueDefinition(name="完整脚本", task_ids=[complete.id])
+    second_script = QueueDefinition(name="不完整脚本", task_ids=[incomplete.id])
+    store = JsonStore(tmp_path / "data")
+    store.save_config(AppConfig(queues=[first_script, second_script], tasks=[complete, incomplete]))
+    engine = RunnerEngine(store, EventHub(), cooldown_seconds=0.01)
+
+    with pytest.raises(RunValidationError) as error:
+        await engine.start_all()
+    assert "不完整脚本" in error.value.problems[0]
+    assert not engine.is_busy
+
+
+@pytest.mark.asyncio
+async def test_snapshot_exposes_cooldown_deadline_and_cancels_it_on_stop(tmp_path: Path) -> None:
+    task = python_task("短任务", "pass")
+    engine, queue = build_engine(tmp_path, [task])
+    engine.cooldown_seconds = 1
+    await engine.start(queue.id, "manual")
+    for _ in range(20):
+        if engine.snapshot()["cooldownUntil"]:
+            break
+        await asyncio.sleep(0.02)
+    assert engine.snapshot()["cooldownUntil"]
+    assert engine.snapshot()["runCenter"]["currentState"] == "cooling_down"
+    await engine.stop()
+    await engine.wait_until_idle()
+    assert engine.snapshot()["cooldownUntil"] is None
