@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, expect, test, vi } from 'vitest'
 import App from './App.vue'
+import type { Runtime } from './types'
 
 function makeConfig() {
   return { schema_version: 1 as const, fired_slots: [], queues: [{ id: 'q', name: '测试脚本', task_ids: ['t'], time_slots: [] }], tasks: [{ id: 't', name: '测试程序', executable: '', arguments: [], working_directory: null, allow_manual_confirmation: true, allow_process_exit: true, log_path: null, success_log: null, success_log_mode: 'keyword', failure_log: null, failure_log_mode: 'keyword', success_log_rules: [], failure_log_rules: [], preset_id: null, preset_evidence: null, timeout_seconds: 600 }] }
@@ -19,12 +20,12 @@ class QuietWebSocket {
   send() {}
 }
 
-function installBackend(config = makeConfig()) {
+function installBackend(config = makeConfig(), runtime: Runtime = { busy: false, activeTaskId: null, cooldownSeconds: 0, run: null }, history: { runs: Array<Record<string, unknown>> } = { runs: [] }) {
   const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
     const path = String(url)
     if (path.endsWith('/health')) return { ok: true, json: async () => ({ status: 'ok' }), text: async () => '' }
-    if (path.endsWith('/runtime')) return { ok: true, json: async () => ({ busy: false, activeTaskId: null, cooldownSeconds: 0, run: null }), text: async () => '' }
-    if (path.endsWith('/history')) return { ok: true, json: async () => ({ runs: [] }), text: async () => '' }
+    if (path.endsWith('/runtime')) return { ok: true, json: async () => runtime, text: async () => '' }
+    if (path.endsWith('/history')) return { ok: true, json: async () => history, text: async () => '' }
     if (path.endsWith('/presets')) return { ok: true, json: async () => [{ id: 'maa', label: 'MAA', executables: ['MAA.exe'], note: '日志成功', evidence: 'evidence', manualRequired: true }], text: async () => '' }
     if (path.includes('/api/presets/maa/apply')) {
       const body = JSON.parse(String(options?.body))
@@ -90,4 +91,17 @@ test('keeps a mismatched executable visible and blocks running until explicitly 
   await wrapper.findAll('button').find((button) => button.text().includes('返回脚本管理'))!.trigger('click')
   await flushPromises()
   expect(wrapper.find('button.run-button').attributes('disabled')).toBeDefined()
+})
+
+test('keeps a completed failure visible and opens the matching history record', async () => {
+  const failedItem = { task_id: 'task-1', task_name: '失败程序', script_id: 'q', script_name: '测试脚本', state: 'failed', error_summary: '日志命中失败标记' }
+  const completed = { busy: false, activeTaskId: null, cooldownSeconds: 0, cooldownUntil: null, runCenter: null, run: { id: 'run-failed', queue_name: '测试脚本', state: 'completed', items: [failedItem] } }
+  installBackend(makeConfig(), completed, { runs: [{ id: 'run-failed', queue_name: '测试脚本', trigger_source: 'manual', state: 'completed', started_at: '2026-10-13T10:00:00Z', items: [failedItem] }] })
+  window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }) }
+  const wrapper = mount(App)
+  await flushPromises()
+  expect(wrapper.text()).toContain('失败程序')
+  await wrapper.findAll('button').find((button) => button.text() === '查看失败详情')!.trigger('click')
+  expect(wrapper.text()).toContain('脚本运行历史')
+  expect(wrapper.text()).toContain('日志命中失败标记')
 })

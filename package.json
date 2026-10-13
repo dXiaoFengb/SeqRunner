@@ -12,7 +12,7 @@
     "electron:health": "cross-env RUNNER_HEALTH_CHECK=1 electron .",
     "package:backend": "backend\\.venv\\Scripts\\python.exe -m PyInstaller --noconfirm --clean --distpath portable\\backend --workpath build\\pyinstaller backend\\sequential_runner_backend.spec",
     "package:win": "npm run build && npm run package:backend && node scripts/package-portable.cjs",
-    "package:backend:validation": "backend\\.venv\\Scripts\\python.exe -m PyInstaller --noconfirm --clean --distpath portable-validation-v022/backend --workpath build/pyinstaller-v022 backend\\sequential_runner_backend.spec",
+    "package:backend:validation": "backend\\.venv\\Scripts\\python.exe -m PyInstaller --noconfirm --clean --distpath portable-validation-v023/backend --workpath build/pyinstaller-v023 backend\\sequential_runner_backend.spec",
     "package:validation": "npm run build && npm run package:backend:validation && node scripts/package-portable.cjs --validation"
   },
   "devDependencies": {

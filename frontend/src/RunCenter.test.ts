@@ -39,3 +39,19 @@ test('reports completed runs with a failed final program without a cooldown', ()
   expect(wrapper.text()).toContain('整轮执行完成，存在失败项')
   expect(wrapper.text()).not.toContain('秒后启动')
 })
+
+test('shows the failed program and opens its history detail from the completed run center', async () => {
+  const finished = structuredClone(runtime)
+  finished.busy = false
+  finished.cooldownSeconds = 0
+  finished.cooldownUntil = null
+  finished.run!.state = 'completed'
+  finished.run!.items = [{ task_id: 'task-1', task_name: '失败程序', script_name: '测试脚本', state: 'failed', error_summary: '日志命中失败标记' }]
+  finished.runCenter = null
+  const wrapper = mount(RunCenter, { props: { runtime: finished, countdown: 0, confirmationPending: false } })
+  expect(wrapper.text()).toContain('1/1')
+  expect(wrapper.text()).toContain('测试脚本 / 失败程序')
+  expect(wrapper.text()).toContain('日志命中失败标记')
+  await wrapper.findAll('button').find((button) => button.text() === '查看失败详情')!.trigger('click')
+  expect(wrapper.emitted('showFailures')?.[0]).toEqual(['run-1'])
+})

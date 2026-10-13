@@ -4,26 +4,22 @@
 
 ## 交接信息
 
-- 交接时间：2026-10-13T14:15:00+08:00
+- 交接时间：2026-10-13T18:46:00+08:00
 - 执行者 / 会话标识：Codex
-- 对应任务：见 `TASK.md`「v0.2.2 预设完整填充与末项完成流程修复」。
+- 对应任务：见 `TASK.md`「v0.2.3 脚本首页整理、编辑页分区与失败项详情」。
 
 ## 最近实际改动
 
-- 手动输入 EXE 与原生文件选择共用带令牌的预设同步：名称精确匹配时才调用本地 `/api/presets/{id}/apply`，返回参数、工作目录、日志、多条终态规则和证据；旧异步响应不会覆盖后续路径或预设。失配路径被保留、清除预设证据并阻止运行；MaaEnd、三月七小助手和 BetterGI 保持人工确认回退。
-- 脚本卡现只显示摘要、排序、运行和脚本级操作；“编辑脚本”进入同窗口独立完整编辑页。预设自动规则以独立面板显示，包含日志、成功/失败规则、完成方式和证据。卡片“更多”菜单经 Teleport 置于顶层，可点击外部或 Esc 关闭并回归焦点。
-- 左侧导航改为固定全高栏，主内容独立滚动；Electron 原生标题、左侧品牌和设置页通过受限 IPC 读取 `VERSION.md` 的开发版本。打包配置将同一版本纳入 app.asar，并新增读取版本的 portable 包装器与 v0.2.1 隔离输出目录。
-- v0.2.2 将预设的 600 秒超时显式写入本地证据表，并暴露“是否需要日志规则”元数据。路径匹配的旧任务在加载后自动补齐证据/规则；路径失配时保留路径、清除规则并保持运行保护。默认“新程序”改为预设名，已改名的任务不改名。
-- 执行器现仅在还有后续程序时冷却十秒：末项成功或失败均先执行受管收尾，再直接记录整轮完成并清空冷却截止。编辑页返回栏改为正常文档流，不再覆盖路径和规则区域；运行中心仍保持粘性。
+- 脚本首页已收紧为方案 A 的管理列表：每卡只展示顺序、名称、程序数、预设摘要、配置/运行状态和编辑、运行、更多操作；移除了首页程序预览、展开状态及残留边框。排序、复制和删除保留在可访问的顶层“更多”菜单中。
+- “编辑脚本”进入同窗口独立完整编辑页，并按基本信息、程序顺序、运行配置、预设自动规则和完成信号分区；编辑页返回栏为正常文档流，滚动不会遮挡表单。侧栏品牌改为模板中的唯一版本文本，不再由 CSS 伪元素拼接。
+- 运行中心在整轮终态以已处理项显示 `N/N`。若有失败，当前页面直接列出脚本名、程序名和错误摘要，并提供“查看失败详情”定位到展开的历史记录；终态 WebSocket 快照仅单飞刷新 `/api/history`，不会覆盖本地脚本草稿。
 
 ## 验证与证据
 
-- 后端：`backend\\.venv\\Scripts\\python.exe -m pytest backend\\tests` 为 **32 passed, 1 warning**；`backend\\.venv\\Scripts\\python.exe -m ruff check backend` 为 **All checks passed**。首次沙箱运行被临时目录 `WinError 5` 阻断，切换项目内临时目录并在普通 Windows 终端复测通过。
-- 前端：`corepack npm run typecheck`、`corepack npm run test:frontend`（**5 files / 11 tests**）、`corepack npm run build` 均通过；`corepack npm run electron:health` 隐藏窗口启动/停止通过。首次 Vitest 在受限沙盒因 `spawn EPERM` 无法启动 esbuild，普通 Windows 终端复测通过。
-- PyInstaller：新的无控制台后端 EXE 已生成，随机回环端口 `/health` 返回本次实例 `v021-backend-health`，预设接口返回 HTTP 200。最终后端 EXE SHA-256 为 `FB08DA48DFAA4B89B98FBFBF9AE157E74F9D2F936D81C8D0371DCA5DD906D13F`。
-- Portable：2026-10-13 以普通 Windows 终端重新执行 `corepack npm run package:validation`。输出 `portable-validation-v021\\electron\\顺序任务调度器-v0.2.1-portable.exe`，大小 95,382,239 字节，SHA-256 为 `BEC73EFB07A1EAED5DD8C9EDAB0FC28BEA97D04A185C87BD87523A4B9FBFD1CB`。设置 `RUNNER_HEALTH_CHECK=1` 后隐藏启动退出码为 0；退出后未发现位于验证目录的后端残留。未发布、未替换既有产物。
-- Portable：v0.2.2 重新生成于 `portable-validation-v022\\electron\\顺序任务调度器-v0.2.2-portable.exe`，大小 95,382,102 字节，SHA-256 为 `0A87402EC9D7F10F018B5B2FCD30015B139D101463F891BD6C6BF01A5672BEC1`。设置 `RUNNER_HEALTH_CHECK=1` 后隐藏启动退出码为 0；退出后未发现位于验证目录的 Electron 或后端残留。未发布、未替换既有产物。
-- Git：开发提交版本已按用户确认由 v0.2.1 更新至 v0.2.2；验证包、构建和最小自动化已完成。2026-10-13 当前受限执行环境写入 `.git/index.lock` 被拒绝，且普通终端的授权通道不可用，故尚未暂存或创建本地提交；未推送。
+- 后端：`backend\\.venv\\Scripts\\python.exe -m pytest backend\\tests` 为 **32 passed, 1 warning**；`backend\\.venv\\Scripts\\python.exe -m ruff check backend` 为 **All checks passed**。本轮未修改后端数据结构，回归覆盖了既有调度、日志、PID 收尾、停止、冷却及历史兼容。
+- 前端：`corepack npm run typecheck`、`corepack npm run test:frontend`（**5 files / 13 tests**）和 `corepack npm run build` 均通过；`corepack npm run electron:health` 隐藏窗口启动/停止通过。受限沙箱运行 Vitest 时仍会遇到 `spawn EPERM`，普通 Windows 终端复测通过。
+- Portable：2026-10-13 执行 `corepack npm run package:validation`，输出 `portable-validation-v023\\electron\\顺序任务调度器-v0.2.3-portable.exe`，大小 95,382,519 字节，SHA-256 为 `9555CAC3A39F5AFBE5BEF755BAA2F88558B782C93A21002016D4244A80600EAD`。设置 `RUNNER_HEALTH_CHECK=1` 后隐藏启动退出码为 0；未发布、未替换既有产物。
+- Git：开发提交版本已由 `v0.2.2` 推进至 `v0.2.3`，依据为本轮修复和界面整理；尚待按精确文件范围审查暂存差异并创建本地提交，绝不推送。
 
 ## 本次交接周期内的高风险操作
 
@@ -33,5 +29,5 @@
 
 ## 下一步
 
-1. 按 `docs/manual-acceptance.md` 完成 v0.2.2 可视验收：版本显示、手输/选择预设、手工规则分界、旧任务补齐、两项任务中间冷却/末项直达、编辑页滚动和停止/计划；真实业务软件仍不启动。
-2. 在可写入 Git 索引的普通 Windows 终端中，精确暂存本轮列出的文件，审查缓存差异后创建本地提交 `v0.2.2 修复:完善预设规则与末项完成流程`，不推送；完成后再据实记录人工验收结果。
+1. 按 `docs/manual-acceptance.md` 完成 v0.2.3 可视验收：紧凑脚本首页、独立编辑分区、更多菜单、失败项与历史定位、连接、停止、计划和无控制台启动；真实业务软件仍不启动。
+2. 完成精确暂存与缓存差异审查后，创建本地提交 `v0.2.3 修复:整理脚本首页并补充失败详情`，不推送；完成后再据实记录人工验收结果。
