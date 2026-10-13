@@ -41,6 +41,7 @@ coverage/
 /.pytest-local*/
 /.pytest-cache*/
 /backend/.pytest-cache*/
+/backend/.test-tmp*/
 /.portable-health-*.txt
 /node-compile-cache/
 

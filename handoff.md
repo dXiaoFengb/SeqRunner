@@ -23,6 +23,7 @@
 - 前端：`corepack npm run typecheck`、`corepack npm run test:frontend`（**3 files / 6 tests**）、`corepack npm run build` 均通过；`corepack npm run electron:health` 隐藏窗口启动/停止通过。
 - portable：`corepack npm run package:validation` 完成。包内未打包目录已核验含 `resources\\backend\\sequential-runner-backend.exe`；单文件 portable 以 `RUNNER_HEALTH_CHECK=1` 隐藏启动并退出码 **0**。验证包为 `portable-validation-v012-r3\\electron\\顺序任务调度器-0.1.0-portable.exe`，SHA-256 为 `0BF038DA8DA2CD5C038E5C610B4ACBD1D265E59AE3F0853EF0B3B02D6AC97582`；未发布。
 - 已知构建环境事实：首次验证打包因 Electron 全局缓存跨卷重命名失败；将缓存设为项目内忽略目录后完成。npm 的 `global-ignore-file` 提示为配置弃用警告，不影响构建结果。
+- Git：核心修复已创建本地提交 `aa552a7`（`v0.1.2 修复:修正实时连接与程序路径保存`），未推送。随后发现 pytest 生成的 `backend/.test-tmp*` 未被规则覆盖，已补充精确忽略项并将按自动留痕规则形成独立修订提交。
 - 人工验收与限制：普通 Windows 桌面可视验收仍待用户执行，步骤见 `docs/manual-acceptance.md`。需核对实际窗口无黑框、原生文件对话框、窄窗口布局、保存路径和预设不匹配处理；未启动真实业务程序。
 
 ## 本次交接周期内的高风险操作
