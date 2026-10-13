@@ -4,22 +4,22 @@
 
 ## 交接信息
 
-- 交接时间：2026-10-13T19:04:00+08:00
+- 交接时间：2026-10-13T19:30:00+08:00
 - 执行者 / 会话标识：Codex
-- 对应任务：见 `TASK.md`「v0.2.4 脚本编辑工作台重排」。
+- 对应任务：见 `TASK.md`「v0.2.5 独立 portable 验证包生成」。
 
 ## 最近实际改动
 
-- 脚本首页重排为一行式管理卡：左侧为拖拽把手、无素材的文字标识、脚本名、程序数和预设摘要，右侧为配置/运行状态及编辑、运行、更多操作；首页不再出现程序选择、配置表单或展开残留。
-- “编辑脚本”改为主从式独立工作台：先展示脚本基本信息和紧凑程序顺序列表；用户选择一个程序后，页面只展示当前程序的一份运行配置、预设自动规则和完成信号表单。新增程序后自动选中；移除当前程序后自动切换至相邻项；拖拽和键盘上移/下移继续保存顺序。
-- v0.2.3 的失败项历史定位、单飞历史刷新、固定导航与可访问“更多”菜单保持不变；本轮未改后端调度、预设、路径选择或 `queues/tasks` 数据格式。
+- 验证打包入口不再固定指向 v0.2.3：后端 PyInstaller 的输出与工作目录、Electron 资源路径、下载缓存和 portable 输出目录均从 `VERSION.md` 推导。例如 v0.2.5 对应 `portable-validation-v025/`，不会覆盖历史验证包。
+- 当前包为单文件 `portable-validation-v025\\electron\\顺序任务调度器-v0.2.5-portable.exe`；其解包资源中包含无控制台 `backend\\sequential-runner-backend.exe`。本轮没有改动前端调度、后端调度、预设、路径选择或 `queues/tasks` 数据格式。
 
 ## 验证与证据
 
-- 后端：`backend\\.venv\\Scripts\\python.exe -m pytest backend\\tests` 为 **32 passed, 1 warning**；`backend\\.venv\\Scripts\\python.exe -m ruff check backend` 为 **All checks passed**。本轮未修改后端数据结构，回归覆盖了既有调度、日志、PID 收尾、停止、冷却及历史兼容。
-- 前端：`corepack npm run typecheck`、`corepack npm run test:frontend`（**5 files / 14 tests**）和 `corepack npm run build` 均通过。受限沙箱运行 Vitest 时会遇到 `spawn EPERM`，普通 Windows 终端复测通过。
-- Portable：现有 `portable-validation-v023\\electron\\顺序任务调度器-v0.2.3-portable.exe` 不包含本轮界面调整，未替换、未发布，也未将它误记为 v0.2.4 验收产物。
-- Git：开发提交版本已由 `v0.2.3` 推进至 `v0.2.4`，依据为本轮界面修复；尚待按精确文件范围审查暂存差异并创建本地提交，绝不推送。
+- 打包：普通 Windows 终端执行 `corepack npm run package:validation` 成功；Vite 生产构建、PyInstaller 无控制台后端和 electron-builder portable 均完成。PyInstaller 仅提示未使用的隐藏导入 `tzdata`，不影响已打包模块。
+- 前端：`corepack npm run typecheck` 与 `corepack npm run test:frontend` 均通过（**5 files / 14 tests**）。受限沙箱运行 Vitest 时会遇到 `spawn EPERM`，普通 Windows 终端复测通过。
+- 后端：以项目内 Git 忽略临时目录在普通 Windows 终端复测，`backend\\.venv\\Scripts\\python.exe -m pytest backend\\tests` 为 **32 passed, 1 warning**，`backend\\.venv\\Scripts\\python.exe -m ruff check backend` 为 **All checks passed**；受限沙箱的 `WinError 5` 仅发生在 pytest 临时目录创建阶段。
+- Portable：隐藏启动时设置 `RUNNER_HEALTH_CHECK=1`，v0.2.5 portable 以退出码 **0** 结束；SHA-256 为 `CA09E3110520F713A8C681F20580652EAE3085FA9D72A10F8BB79372F8579BEF`，大小 95,389,744 字节。`git check-ignore` 已确认输出受 `/portable-validation-v*/` 规则保护；旧 v0.2.3 包仍存在且未被覆盖。未发布。
+- Git：开发提交版本已由 `v0.2.4` 推进至 `v0.2.5`，依据为版本隔离验证打包修复；待精确暂存、缓存差异审查并创建本地提交，绝不推送。
 
 ## 本次交接周期内的高风险操作
 
@@ -29,5 +29,5 @@
 
 ## 下一步
 
-1. 按 `docs/manual-acceptance.md` 完成 v0.2.4 可视验收：一行式脚本卡、独立的程序选择与单程序编辑表单、排序、预设、连接、停止和计划；真实业务软件仍不启动。
-2. 完成精确暂存与缓存差异审查后，创建本地提交 `v0.2.4 修复:重排脚本编辑工作台`，不推送；完成后再据实记录人工验收结果。
+1. 按 `docs/manual-acceptance.md` 使用 v0.2.5 portable 完成可视验收：无黑框启动、标题和版本、连接、脚本卡、单程序编辑工作台、排序、预设、停止和计划；真实业务软件仍不启动。
+2. 完成精确暂存与缓存差异审查后，创建本地提交 `v0.2.5 构建:隔离portable验证打包输出`，不推送；完成后再据实记录人工验收结果。

@@ -39,6 +39,7 @@ coverage/
 *.bak
 /.test-tmp/
 /.test-tmp-runner*/
+/.test-tmp-v*/
 /.tmp-test/
 /.pytest-local*/
 /.pytest-cache*/
