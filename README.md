@@ -54,7 +54,7 @@
 
 - 项目名称 / 定位：顺序任务调度器；独立精简版本地 Windows 桌面程序。界面中的“脚本”保持后端 `queues` 实体语义：一条脚本是顺序程序组，计划只触发一条脚本；“运行全部脚本”只支持手动开始，并按脚本卡排序展开为同一受管轮次。
 - 技术栈：Python 3.13、FastAPI、Pydantic、psutil、Uvicorn `websockets` 协议实现、PyInstaller、Vue 3、TypeScript、Vite、Electron、electron-builder。
-- 目录结构（源 / 测试 / 产物 / 发布）：`backend/` 为本地服务、预设证据元数据与测试；`frontend/` 为 Vue 脚本管理、独立编辑页及连接控制模块；`electron/` 为安全主进程/preload；`scripts/` 为读取 `VERSION.md` 的本地打包入口；`data/` 为本地配置和日志（不纳入 Git）；`frontend-dist/`、`portable/`、`build/`、`release/` 及 `portable-validation-v*` 为本地构建或验证输出（不纳入 Git）；不进行发布。脚本首页只提供检索、创建、全量运行和脚本级操作，程序配置只能在独立编辑页修改。
+- 目录结构（源 / 测试 / 产物 / 发布）：`backend/` 为本地服务、预设证据元数据与测试；`frontend/` 为 Vue 脚本管理、独立编辑页及连接控制模块；`electron/` 为安全主进程/preload；`scripts/` 为读取 `VERSION.md` 的本地打包入口；`data/` 为本地配置和日志（不纳入 Git）；`frontend-dist/`、`portable/`、`build/`、`release/` 及 `portable-validation-v*` 为本地构建或验证输出（不纳入 Git）；不进行发布。脚本首页为一行式脚本卡，只提供检索、创建、全量运行和脚本级操作；独立编辑页先选择程序，再只展示该程序的一份完整配置表单。
 - 预设路径：输入或选择 EXE 后，名称精确匹配时由本地证据表完整应用名称、参数、工作目录、日志、超时、完成方式与自动终态规则；预设规则以只读列表显示，手工附加规则独立保存。MAA、绝区零一条龙具有日志终态规则，MaaEnd、三月七小助手和 BetterGI 保持人工确认回退。应用不会在运行时访问外网或改写目标软件配置。
 - 失败可追溯：整轮终态仅刷新运行历史而不覆盖本地脚本草稿。存在失败项时，运行中心按脚本和程序列出错误摘要；“查看失败详情”会定位并展开相应历史记录，显示完成来源、退出码和日志摘要。
 - 构建命令：`npm run build`；`npm run package:backend` 生成隐藏控制台的后端；`npm run package:win` 生成 Windows portable EXE；`npm run package:validation` 将验证包与下载缓存写入独立的 Git 忽略目录（均不代表发布）。

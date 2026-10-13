@@ -17,6 +17,7 @@ const presets = ref<Preset[]>([])
 const logs = ref<string[]>([])
 const selectedScriptId = ref<string | null>(null)
 const editingScriptId = ref<string | null>(null)
+const selectedEditorTaskId = ref<string | null>(null)
 const selectedHistoryRunId = ref<string | null>(null)
 const expandedHistory = ref(new Set<string>())
 const query = ref('')
@@ -42,6 +43,8 @@ let countdownTimer: number | undefined
 const selectedScript = computed(() => config.value.queues.find((queue) => queue.id === selectedScriptId.value) || null)
 const editingScript = computed(() => config.value.queues.find((queue) => queue.id === editingScriptId.value) || null)
 const taskBook = computed(() => new Map(config.value.tasks.map((task) => [task.id, task])))
+const editorTasks = computed(() => editingScript.value ? scriptTasks(editingScript.value) : [])
+const editingTask = computed(() => editorTasks.value.find((task) => task.id === selectedEditorTaskId.value) || editorTasks.value[0] || null)
 const visibleScripts = computed(() => {
   const text = query.value.trim().toLocaleLowerCase()
   if (!text) return config.value.queues
@@ -207,11 +210,13 @@ function save() {
 function openEditor(script: Queue) {
   selectedScriptId.value = script.id
   editingScriptId.value = script.id
+  selectedEditorTaskId.value = script.task_ids[0] || null
   page.value = 'editor'
 }
 function closeEditor() {
   page.value = 'scripts'
   editingScriptId.value = null
+  selectedEditorTaskId.value = null
 }
 function openFailureDetails(runId: string) {
   selectedHistoryRunId.value = runId
@@ -233,13 +238,16 @@ function addTask(script: Queue) {
   const task = draft()
   config.value.tasks.push(task)
   script.task_ids.push(task.id)
+  selectedEditorTaskId.value = task.id
   void save()
 }
 function removeTask(script: Queue, id: string) {
+  const index = script.task_ids.indexOf(id)
   script.task_ids = script.task_ids.filter((taskId) => taskId !== id)
   config.value.tasks = config.value.tasks.filter((task) => task.id !== id)
   clearSelectionIssue(id)
   delete deferredPresets.value[id]
+  if (selectedEditorTaskId.value === id) selectedEditorTaskId.value = script.task_ids[index] || script.task_ids[index - 1] || null
   void save()
 }
 function duplicateScript(script: Queue) {
@@ -268,6 +276,13 @@ function moveTask(script: Queue, targetId: string) {
   script.task_ids.splice(from, 1)
   script.task_ids.splice(to, 0, draggedTask.value)
   draggedTask.value = null
+  void save()
+}
+function moveTaskBy(script: Queue, task: Task, direction: -1 | 1) {
+  const from = script.task_ids.indexOf(task.id)
+  const to = from + direction
+  if (from < 0 || to < 0 || to >= script.task_ids.length) return
+  ;[script.task_ids[from], script.task_ids[to]] = [script.task_ids[to], script.task_ids[from]]
   void save()
 }
 function moveScript(targetId: string) {
@@ -516,19 +531,39 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="page === 'editor' && editingScript" class="editor-page">
-        <div class="editor-page-head"><button @click="closeEditor">← 返回脚本管理</button><span>{{ editingScript.task_ids.length }} 个程序 · {{ runtime.busy ? '本轮运行中，配置已锁定' : hasUnsavedDraft ? '存在未保存草稿' : '修改会自动保存' }}</span></div>
-        <section class="editor-section editor-basic"><div class="section-heading"><div><span>基本信息</span><h2>脚本名称</h2></div><small>每条脚本按此页程序顺序执行。</small></div><label class="script-name">名称<input v-model="editingScript.name" :disabled="runtime.busy" @change="save"></label></section>
-        <section class="editor-section"><div class="section-heading"><div><span>程序顺序</span><h2>程序任务</h2></div><small>拖拽程序卡片可调整执行顺序。</small></div>
-          <article v-for="(task, index) in scriptTasks(editingScript)" :key="task.id" class="task editor-task" :draggable="!runtime.busy" @dragstart="draggedTask = task.id" @dragover.prevent @drop="moveTask(editingScript, task.id)">
-            <button class="grab" title="拖拽程序排序" :disabled="runtime.busy">⠿</button><b class="num">{{ String(index + 1).padStart(2, '0') }}</b><div class="title"><input v-model="task.name" aria-label="程序名称" :disabled="runtime.busy" @change="save"><small>{{ presetLabel(task) }}</small></div><TaskStatus v-if="taskState(task.id)" :state="taskState(task.id)?.state || 'queued'" :detail="taskState(task.id)?.error_summary"/><button class="textdanger" :disabled="runtime.busy" @click="removeTask(editingScript, task.id)">移除</button>
-            <div class="form">
-              <section class="form-section"><h3>运行配置</h3><label>软件预设<select v-model="task.preset_id" :disabled="runtime.busy" @change="selectPreset(task)"><option :value="null">通用程序</option><option v-for="preset in presets" :key="preset.id" :value="preset.id">{{ preset.label }}</option></select></label><label class="path">程序完整路径<div><input :value="task.executable" placeholder="请选择 .exe" :disabled="runtime.busy" @change="updateExecutable(task, $event)"><button :disabled="runtime.busy" @click="choose(task)">选择软件</button></div></label><p v-if="presetIssue(task)" class="selection-warning">{{ presetIssue(task) }}<span><button v-if="task.preset_id" @click="choose(task)">重新选择</button><button v-if="task.preset_id && task.executable && connection.restOnline.value" @click="retryPreset(task)">应用预设规则</button><button v-if="task.preset_id" @click="useGenericProgram(task)">切换为通用程序并保存</button></span></p><div class="grid"><label>参数<input :value="task.arguments.join(' ')" :disabled="runtime.busy" @change="setArgs(task, $event)"></label><label>工作目录<input :value="task.working_directory || ''" :disabled="runtime.busy" @change="setText(task, 'working_directory', $event)"></label><label>日志文件<input :value="task.log_path || ''" placeholder="仅本轮新增行" :disabled="runtime.busy" @change="setText(task, 'log_path', $event)"></label><label>超时（秒）<input v-model.number="task.timeout_seconds" type="number" min="1" :disabled="runtime.busy" @change="save"></label></div></section>
-              <section v-if="task.preset_id" class="preset-rule-panel form-section"><h3>预设自动规则</h3><b v-if="task.preset_evidence">{{ presetLabel(task) }} 预设自动规则已应用</b><b v-else>等待应用 {{ presetLabel(task) }} 预设规则</b><p>{{ presetFor(task)?.note }}</p><dl v-if="task.preset_evidence"><dt>日志文件</dt><dd>{{ task.log_path || '无：该预设仅人工确认' }}</dd><dt>成功规则</dt><dd>{{ ruleText(task, 'success') }}</dd><dt>失败规则</dt><dd>{{ ruleText(task, 'failure') }}</dd><dt>完成方式</dt><dd>{{ task.allow_manual_confirmation ? '人工确认可用' : '人工确认关闭' }}；{{ task.allow_process_exit ? '正常退出可用' : '正常退出不作为成功' }}</dd></dl><small>证据：{{ task.preset_evidence || presetFor(task)?.evidence }}</small></section>
-              <fieldset><legend>完成信号（首个成功信号锁定）</legend><div class="signals"><label><input v-model="task.allow_manual_confirmation" type="checkbox" :disabled="runtime.busy" @change="save">人工确认</label><label><input v-model="task.allow_process_exit" type="checkbox" :disabled="runtime.busy" @change="save">正常退出</label><label>手工附加成功<input :value="task.success_log || ''" placeholder="关键字或正则" :disabled="runtime.busy" @change="setText(task, 'success_log', $event)"><select v-model="task.success_log_mode" :disabled="runtime.busy" @change="save"><option value="keyword">关键字</option><option value="regex">正则</option></select></label><label>手工附加失败<input :value="task.failure_log || ''" placeholder="关键字或正则" :disabled="runtime.busy" @change="setText(task, 'failure_log', $event)"><select v-model="task.failure_log_mode" :disabled="runtime.busy" @change="save"><option value="keyword">关键字</option><option value="regex">正则</option></select></label></div></fieldset>
-              <button v-if="runtime.activeTaskId === task.id && task.allow_manual_confirmation" class="confirm" :disabled="confirmationPending" @click="confirm(task.id)">{{ confirmationPending ? '确认已接收' : '确认当前程序完成' }}</button>
+        <div class="editor-navigation">
+          <div><button @click="closeEditor">← 返回脚本管理</button><span>脚本管理 / 编辑脚本</span></div>
+          <small>{{ runtime.busy ? '本轮运行中，配置已锁定' : hasUnsavedDraft ? '存在未保存草稿' : '修改会自动保存' }}</small>
+        </div>
+        <section class="editor-sheet">
+          <div class="editor-sheet-title"><div><span>脚本配置</span><h2>{{ editingScript.name }}</h2><p>此处只编辑当前脚本；程序将按下方顺序依次执行。</p></div><b>{{ editorTasks.length }} 个程序</b></div>
+
+          <section class="editor-section editor-basic">
+            <div class="section-heading"><div><span>基本信息</span><h3>脚本名称</h3></div><small>名称用于计划、运行中心和历史记录。</small></div>
+            <label class="script-name">名称<input v-model="editingScript.name" :disabled="runtime.busy" @change="save"></label>
+          </section>
+
+          <section class="editor-section program-order-section">
+            <div class="section-heading"><div><span>程序顺序</span><h3>选择要编辑的程序</h3></div><div class="section-actions"><small>拖拽或使用方向按钮调整顺序。</small><button class="add" :disabled="runtime.busy || !connection.restOnline.value" @click="addTask(editingScript)">＋ 添加程序</button></div></div>
+            <p v-if="!editorTasks.length" class="empty-programs">尚未添加程序。点击“添加程序”后，在下方完成它的运行规则。</p>
+            <div v-else class="program-strip" role="listbox" aria-label="程序顺序与选择">
+              <article v-for="(task, index) in editorTasks" :key="task.id" class="program-choice" :class="{ active: editingTask?.id === task.id }" :draggable="!runtime.busy" @dragstart="draggedTask = task.id" @dragover.prevent @drop="moveTask(editingScript, task.id)">
+                <button class="program-choice-main" type="button" role="option" :aria-selected="editingTask?.id === task.id" @click="selectedEditorTaskId = task.id">
+                  <span class="grab" aria-hidden="true">⠿</span><b class="num">{{ String(index + 1).padStart(2, '0') }}</b><span class="program-choice-copy"><strong>{{ task.name }}</strong><small>{{ presetLabel(task) }}</small></span><TaskStatus v-if="taskState(task.id)" :state="taskState(task.id)?.state || 'queued'" :detail="taskState(task.id)?.error_summary"/>
+                </button>
+                <div class="program-choice-actions"><button :disabled="runtime.busy || index === 0" :aria-label="'上移 ' + task.name" @click="moveTaskBy(editingScript, task, -1)">↑</button><button :disabled="runtime.busy || index === editorTasks.length - 1" :aria-label="'下移 ' + task.name" @click="moveTaskBy(editingScript, task, 1)">↓</button><button class="textdanger" :disabled="runtime.busy" :aria-label="'移除 ' + task.name" @click="removeTask(editingScript, task.id)">移除</button></div>
+              </article>
             </div>
-          </article>
-          <button class="add" :disabled="runtime.busy || !connection.restOnline.value" @click="addTask(editingScript)">＋ 添加程序</button>
+          </section>
+
+          <section v-if="editingTask" class="editor-section task-detail-section">
+            <div class="section-heading"><div><span>当前程序</span><h3>编辑 {{ editingTask.name }}</h3></div><small>{{ presetLabel(editingTask) }} · 第 {{ editorTasks.findIndex((task) => task.id === editingTask.id) + 1 }} 项</small></div>
+            <div class="task-editor-title"><label>程序名称<input v-model="editingTask.name" aria-label="程序名称" :disabled="runtime.busy" @change="save"></label><TaskStatus v-if="taskState(editingTask.id)" :state="taskState(editingTask.id)?.state || 'queued'" :detail="taskState(editingTask.id)?.error_summary"/></div>
+            <section class="form-section"><h4>运行配置</h4><label>软件预设<select v-model="editingTask.preset_id" :disabled="runtime.busy" @change="selectPreset(editingTask)"><option :value="null">通用程序</option><option v-for="preset in presets" :key="preset.id" :value="preset.id">{{ preset.label }}</option></select></label><label class="path">程序完整路径<div><input :value="editingTask.executable" placeholder="请选择 .exe" :disabled="runtime.busy" @change="updateExecutable(editingTask, $event)"><button :disabled="runtime.busy" @click="choose(editingTask)">选择软件</button></div></label><p v-if="presetIssue(editingTask)" class="selection-warning">{{ presetIssue(editingTask) }}<span><button v-if="editingTask.preset_id" @click="choose(editingTask)">重新选择</button><button v-if="editingTask.preset_id && editingTask.executable && connection.restOnline.value" @click="retryPreset(editingTask)">应用预设规则</button><button v-if="editingTask.preset_id" @click="useGenericProgram(editingTask)">切换为通用程序并保存</button></span></p><div class="grid"><label>参数<input :value="editingTask.arguments.join(' ')" :disabled="runtime.busy" @change="setArgs(editingTask, $event)"></label><label>工作目录<input :value="editingTask.working_directory || ''" :disabled="runtime.busy" @change="setText(editingTask, 'working_directory', $event)"></label><label>日志文件<input :value="editingTask.log_path || ''" placeholder="仅本轮新增行" :disabled="runtime.busy" @change="setText(editingTask, 'log_path', $event)"></label><label>超时（秒）<input v-model.number="editingTask.timeout_seconds" type="number" min="1" :disabled="runtime.busy" @change="save"></label></div></section>
+            <section v-if="editingTask.preset_id" class="preset-rule-panel form-section"><h4>预设自动规则</h4><b v-if="editingTask.preset_evidence">{{ presetLabel(editingTask) }} 预设自动规则已应用</b><b v-else>等待应用 {{ presetLabel(editingTask) }} 预设规则</b><p>{{ presetFor(editingTask)?.note }}</p><dl v-if="editingTask.preset_evidence"><dt>日志文件</dt><dd>{{ editingTask.log_path || '无：该预设仅人工确认' }}</dd><dt>成功规则</dt><dd>{{ ruleText(editingTask, 'success') }}</dd><dt>失败规则</dt><dd>{{ ruleText(editingTask, 'failure') }}</dd><dt>完成方式</dt><dd>{{ editingTask.allow_manual_confirmation ? '人工确认可用' : '人工确认关闭' }}；{{ editingTask.allow_process_exit ? '正常退出可用' : '正常退出不作为成功' }}</dd></dl><small>证据：{{ editingTask.preset_evidence || presetFor(editingTask)?.evidence }}</small></section>
+            <fieldset><legend>完成信号（首个成功信号锁定）</legend><div class="signals"><label><input v-model="editingTask.allow_manual_confirmation" type="checkbox" :disabled="runtime.busy" @change="save">人工确认</label><label><input v-model="editingTask.allow_process_exit" type="checkbox" :disabled="runtime.busy" @change="save">正常退出</label><label>手工附加成功<input :value="editingTask.success_log || ''" placeholder="关键字或正则" :disabled="runtime.busy" @change="setText(editingTask, 'success_log', $event)"><select v-model="editingTask.success_log_mode" :disabled="runtime.busy" @change="save"><option value="keyword">关键字</option><option value="regex">正则</option></select></label><label>手工附加失败<input :value="editingTask.failure_log || ''" placeholder="关键字或正则" :disabled="runtime.busy" @change="setText(editingTask, 'failure_log', $event)"><select v-model="editingTask.failure_log_mode" :disabled="runtime.busy" @change="save"><option value="keyword">关键字</option><option value="regex">正则</option></select></label></div></fieldset>
+            <button v-if="runtime.activeTaskId === editingTask.id && editingTask.allow_manual_confirmation" class="confirm" :disabled="confirmationPending" @click="confirm(editingTask.id)">{{ confirmationPending ? '确认已接收' : '确认当前程序完成' }}</button>
+          </section>
         </section>
       </section>
 

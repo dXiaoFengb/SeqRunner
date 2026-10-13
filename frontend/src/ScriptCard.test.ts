@@ -8,6 +8,8 @@ const props = { script: { id: 'q', name: '晨间脚本', task_ids: ['t'], time_s
 
 test('keeps the homepage card compact and exposes keyboard order actions in the menu', async () => {
   const wrapper = mount(ScriptCard, { props })
+  expect(wrapper.find('.script-emblem').text()).toBe('通')
+  expect(wrapper.find('.script-preset').text()).toBe('通用程序')
   expect(wrapper.text()).not.toContain('上移')
   expect(wrapper.text()).not.toContain('程序摘要')
   await wrapper.find('button.run-button').trigger('click')

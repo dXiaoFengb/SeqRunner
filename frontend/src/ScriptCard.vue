@@ -52,10 +52,12 @@ onBeforeUnmount(() => closeMenu())
   <article class="script-card" :class="{ running }" :draggable="!locked" @dragstart="emit('dragstart', $event)" @dragover.prevent @drop="emit('drop', $event)">
     <div class="script-summary">
       <button class="grab" type="button" title="拖拽调整脚本顺序" :disabled="locked" aria-label="拖拽调整脚本顺序">⠿</button>
+      <span class="script-emblem" aria-hidden="true">{{ presetSummary === '通用程序' ? '通' : presetSummary.slice(0, 1) }}</span>
       <div class="script-title">
         <b>{{ script.name }}</b>
-        <small>{{ tasks.length }} 个程序 · {{ presetSummary }}</small>
+        <small>{{ tasks.length }} 个程序</small>
       </div>
+      <span class="script-preset">{{ presetSummary }}</span>
       <span v-if="running" class="script-running">运行中</span>
       <span v-else-if="blocked" class="script-incomplete">待完成配置</span>
       <span v-else class="script-ready">可运行</span>

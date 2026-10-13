@@ -7,6 +7,13 @@ function makeConfig() {
   return { schema_version: 1 as const, fired_slots: [], queues: [{ id: 'q', name: '测试脚本', task_ids: ['t'], time_slots: [] }], tasks: [{ id: 't', name: '测试程序', executable: '', arguments: [], working_directory: null, allow_manual_confirmation: true, allow_process_exit: true, log_path: null, success_log: null, success_log_mode: 'keyword', failure_log: null, failure_log_mode: 'keyword', success_log_rules: [], failure_log_rules: [], preset_id: null, preset_evidence: null, timeout_seconds: 600 }] }
 }
 
+function makeTwoProgramConfig() {
+  const config = makeConfig()
+  config.tasks.push({ ...config.tasks[0], id: 't-2', name: '第二程序' })
+  config.queues[0].task_ids.push('t-2')
+  return config
+}
+
 class QuietWebSocket {
   static readonly CONNECTING = 0
   static readonly OPEN = 1
@@ -91,6 +98,18 @@ test('keeps a mismatched executable visible and blocks running until explicitly 
   await wrapper.findAll('button').find((button) => button.text().includes('返回脚本管理'))!.trigger('click')
   await flushPromises()
   expect(wrapper.find('button.run-button').attributes('disabled')).toBeDefined()
+})
+
+test('edits one selected program at a time from the script workbench', async () => {
+  installBackend(makeTwoProgramConfig())
+  window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }) }
+  const wrapper = mount(App)
+  await flushPromises()
+  await wrapper.findAll('button').find((button) => button.text() === '编辑脚本')!.trigger('click')
+  expect(wrapper.findAll('.program-choice')).toHaveLength(2)
+  expect(wrapper.findAll('.task-detail-section')).toHaveLength(1)
+  await wrapper.findAll('.program-choice-main')[1].trigger('click')
+  expect((wrapper.find('.task-editor-title input').element as HTMLInputElement).value).toBe('第二程序')
 })
 
 test('keeps a completed failure visible and opens the matching history record', async () => {
