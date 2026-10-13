@@ -11,7 +11,7 @@ if (validation) args.push('--config', 'electron-builder.validation.json');
 // 直接执行 Corepack 的 JavaScript 入口，避开 Windows .cmd 与 POSIX shell shim 的派生差异。
 const command = process.execPath;
 const corepackEntrypoint = resolve(dirname(process.execPath), 'node_modules', 'corepack', 'dist', 'corepack.js');
-const cacheRoot = resolve(root, 'portable-validation-v021', 'cache');
+const cacheRoot = resolve(root, 'portable-validation-v022', 'cache');
 const env = validation ? { ...process.env, RUNNER_VERSION: match[1], ELECTRON_CACHE: resolve(cacheRoot, 'electron'), ELECTRON_BUILDER_CACHE: resolve(cacheRoot, 'builder') } : { ...process.env, RUNNER_VERSION: match[1] };
 const result = spawnSync(command, [corepackEntrypoint, ...args], { cwd: root, env, stdio: 'inherit', shell: false });
 if (result.error) throw result.error;

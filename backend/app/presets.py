@@ -18,6 +18,7 @@ PRESETS: dict[str, dict] = {
         "success": [_rule("任务已全部完成！")],
         "failure": [_rule(value) for value in ("任务已完成，但出现错误！", "任务已结束，以下任务出现错误", "未选择任务", "任务出错: 开始唤醒", "已停止", "MaaAssistantArknights GUI exited")],
         "manual": True,
+        "timeout_seconds": 600,
         "evidence": "https://github.com/AUTO-MAS-Project/AUTO-MAS/blob/699de5af57b7955a19ed4585f1fe64f9430e1e29/app/task/MAA/AutoProxy.py（本地只读同 SHA，2026-10-12）",
         "note": "日志成功；成功标记前退出视为失败。",
     },
@@ -29,6 +30,7 @@ PRESETS: dict[str, dict] = {
         "success": [_rule("指令[ 一条龙 ] 执行成功")],
         "failure": [_rule(value) for value in ("未找到有效的实例", "请先结束其他运行中的功能 再启动", "运行应用 one_dragon 失败", "指令[ 一条龙 ] 执行失败")],
         "manual": True,
+        "timeout_seconds": 600,
         "evidence": "https://github.com/AUTO-MAS-Project/AUTO-MAS/blob/699de5af57b7955a19ed4585f1fe64f9430e1e29/app/task/ZzzOd/AutoProxy.py（本地只读同 SHA，2026-10-12）",
         "note": "优先 RuntimeLauncher；日志成功，成功标记前退出视为失败。",
     },
@@ -36,6 +38,7 @@ PRESETS: dict[str, dict] = {
         "label": "MaaEnd",
         "executables": ["MaaEnd.exe"],
         "manual": True,
+        "timeout_seconds": 600,
         "evidence": "https://github.com/AUTO-MAS-Project/AUTO-MAS/blob/699de5af57b7955a19ed4585f1fe64f9430e1e29/app/task/MaaEnd/AutoProxy.py；https://github.com/MaaEnd/MaaEnd（官方文档访问 2026-10-12）",
         "note": "未找到安全的整项会话终态契约，需人工确认。",
     },
@@ -43,6 +46,7 @@ PRESETS: dict[str, dict] = {
         "label": "三月七小助手",
         "executables": ["March7th Assistant.exe"],
         "manual": True,
+        "timeout_seconds": 600,
         "evidence": "https://github.com/AUTO-MAS-Project/AUTO-MAS/blob/699de5af57b7955a19ed4585f1fe64f9430e1e29/app/task/HSR/manager.py；https://github.com/moesnow/March7thAssistant/blob/main/app/log_interface.py#L283-L285（官方文档访问 2026-10-12）",
         "note": "官方内部退出码不是外部稳定整项契约，需人工确认。",
     },
@@ -51,6 +55,7 @@ PRESETS: dict[str, dict] = {
         "executables": ["BetterGI.exe"],
         "arguments": ["startOneDragon"],
         "manual": True,
+        "timeout_seconds": 600,
         "evidence": "https://www.bettergi.com/feats/command/introduce.html（访问 2026-10-12）",
         "note": "命令启动当前一条龙配置；未声明全局终态，需人工确认。",
     },
@@ -59,7 +64,15 @@ PRESETS: dict[str, dict] = {
 
 def public_presets() -> list[dict]:
     return [
-        {"id": key, "label": data["label"], "executables": data["executables"], "note": data["note"], "evidence": data["evidence"], "manualRequired": bool(data["manual"])}
+        {
+            "id": key,
+            "label": data["label"],
+            "executables": data["executables"],
+            "note": data["note"],
+            "evidence": data["evidence"],
+            "manualRequired": bool(data["manual"]),
+            "requiresLogRules": bool(data.get("success") or data.get("failure")),
+        }
         for key, data in PRESETS.items()
     ]
 
@@ -88,4 +101,5 @@ def apply_preset(preset_id: str, executable: str, *, task_id: str, name: str) ->
         preset_evidence=preset["evidence"],
         success_log_rules=list(preset.get("success", [])),
         failure_log_rules=list(preset.get("failure", [])),
+        timeout_seconds=int(preset["timeout_seconds"]),
     )

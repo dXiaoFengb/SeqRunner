@@ -79,6 +79,7 @@ async function refresh() {
   runtime.value = await connection.request('/api/runtime') as Runtime
   history.value = (await connection.request('/api/history') as { runs: HistoryRun[] }).runs
   presets.value = await connection.request('/api/presets') as Preset[]
+  await reconcileLoadedPresets()
   if (hasUnsavedDraft.value) await flushSave()
   await resumeDeferredPresets()
 }
@@ -116,7 +117,8 @@ function clearAppliedRules(task: Task) { task.preset_evidence = null; task.log_p
 async function applyPresetForCurrentPath(task: Task, executable: string, serial: number) {
   const presetId = task.preset_id
   if (!presetId) return
-  const applied = await connection.request(`/api/presets/${presetId}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ executable, task_id: task.id, name: task.name }) }) as Task
+  const name = task.name === '新程序' ? '' : task.name
+  const applied = await connection.request(`/api/presets/${presetId}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ executable, task_id: task.id, name }) }) as Task
   if (presetRequestSerial.get(task.id) !== serial || task.preset_id !== presetId || task.executable !== executable) return
   Object.assign(task, applied)
   const next = { ...deferredPresets.value }; delete next[task.id]; deferredPresets.value = next
@@ -146,6 +148,28 @@ async function synchronizeExecutable(task: Task, rawPath: string) {
 }
 function selectPreset(task: Task) { clearSelectionIssue(task.id); delete deferredPresets.value[task.id]; if (!task.preset_id) { task.preset_evidence = null; notice.value = '通用程序：可自行配置完成信号。'; void save(); return }; clearAppliedRules(task); notice.value = task.executable ? `正在为 ${presetLabel(task)} 应用匹配规则。` : `已选择 ${presetLabel(task)}，请输入或选择对应 EXE。`; if (task.executable) void synchronizeExecutable(task, task.executable); else void save() }
 async function resumeDeferredPresets() { if (!connection.restOnline.value) return; for (const [taskId, deferred] of Object.entries(deferredPresets.value)) { const task = taskBook.value.get(taskId); if (!task || task.preset_id !== deferred.presetId || task.executable !== deferred.path) continue; await synchronizeExecutable(task, deferred.path) } }
+async function reconcileLoadedPresets() {
+  if (runtime.value.busy || !connection.restOnline.value || hasUnsavedDraft.value) return
+  for (const task of config.value.tasks) {
+    const preset = presetFor(task)
+    if (!preset || !task.executable) continue
+    const serial = (presetRequestSerial.get(task.id) || 0) + 1
+    presetRequestSerial.set(task.id, serial)
+    if (!matchesPreset(task)) {
+      clearAppliedRules(task)
+      setSelectionIssue(task, `已保留路径，但该 EXE 不符合 ${preset.label} 预设（预期：${preset.executables.join('、')}）。请选择正确程序或显式切换通用程序。`)
+      await save()
+      continue
+    }
+    const rulesMissing = Boolean(preset.requiresLogRules && (!task.success_log_rules.length || !task.failure_log_rules.length))
+    if (!task.preset_evidence || rulesMissing) {
+      const manualRules = { success_log: task.success_log, success_log_mode: task.success_log_mode, failure_log: task.failure_log, failure_log_mode: task.failure_log_mode }
+      await applyPresetForCurrentPath(task, task.executable, serial)
+      Object.assign(task, manualRules)
+      await save()
+    }
+  }
+}
 async function choose(task: Task) { const result = await window.desktopRunner?.selectExecutable(task.preset_id); if (!result || result.canceled || !result.path) return; await synchronizeExecutable(task, result.path) }
 function updateExecutable(task: Task, event: Event) { void synchronizeExecutable(task, (event.target as HTMLInputElement).value) }
 function retryPreset(task: Task) { if (task.executable && task.preset_id) void synchronizeExecutable(task, task.executable) }
@@ -162,7 +186,7 @@ function removeSlot(id: string) { if (!selectedScript.value) return; selectedScr
 function day(value: number) { return ['一', '二', '三', '四', '五', '六', '日'][value] }
 function taskState(taskId: string) { return runtime.value.run?.items.find((item) => item.task_id === taskId) }
 async function refreshDiagnostics() { backendDetail.value = (await window.desktopRunner?.getBackendStatus?.())?.detail || '' }
-onMounted(async () => { countdownTimer = window.setInterval(() => { countdownNow.value = Date.now() }, 250); appVersion.value = (await window.desktopRunner?.getBuildInfo?.())?.version || '开发版本不可用'; await connection.connect(); await refreshDiagnostics(); notice.value = connection.restOnline.value ? '本地后端已就绪；实时状态会自动保持连接。' : '本地后端尚不可用；可继续编辑本地草稿。' })
+onMounted(async () => { countdownTimer = window.setInterval(() => { countdownNow.value = Date.now() }, 250); appVersion.value = (await window.desktopRunner?.getBuildInfo?.())?.version || '开发版本不可用'; document.title = `顺序任务调度器 ${appVersion.value}`; document.documentElement.style.setProperty('--runner-brand', `"顺序任务调度器 ${appVersion.value}"`); await connection.connect(); await refreshDiagnostics(); notice.value = connection.restOnline.value ? '本地后端已就绪；实时状态会自动保持连接。' : '本地后端尚不可用；可继续编辑本地草稿。' })
 onBeforeUnmount(() => { if (countdownTimer) window.clearInterval(countdownTimer); connection.dispose() })
 </script>
 
@@ -181,3 +205,11 @@ onBeforeUnmount(() => { if (countdownTimer) window.clearInterval(countdownTimer)
     </section>
   </main>
 </template>
+
+<style>
+.brand b { font-size: 0; }
+.brand b::after { content: var(--runner-brand); font-size: 16px; line-height: 1.3; }
+.brand em { display: none; }
+.editor-page-head { position: static !important; top: auto !important; z-index: auto !important; }
+.preset-rule-panel dd { white-space: pre-wrap; }
+</style>

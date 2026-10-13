@@ -13,7 +13,9 @@ const stateText = computed(() => {
   if (center.value?.currentState === 'closing') return '正在请求程序正常关闭'
   if (center.value?.currentState === 'force_closing') return '正在收尾受管进程'
   if (center.value?.currentState === 'cooling_down') return `第 ${center.value.currentIndex} 项已完成，${props.countdown} 秒后启动下一程序`
-  if (props.runtime.run.state === 'completed') return '整轮执行完成'
+  if (props.runtime.run.state === 'completed') {
+    return props.runtime.run.items.some((item) => item.state === 'failed') ? '整轮执行完成，存在失败项' : '整轮执行完成'
+  }
   if (props.runtime.run.state === 'stopped') return '本轮已停止，不会启动下一程序'
   if (center.value?.currentState === 'waiting_manual') return '等待人工确认当前程序完成'
   return center.value?.currentState || props.runtime.run.state

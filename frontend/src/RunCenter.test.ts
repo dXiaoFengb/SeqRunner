@@ -26,3 +26,16 @@ test('emits confirmation only while the active program is waiting', async () => 
   await wrapper.get('button.confirm').trigger('click')
   expect(wrapper.emitted('confirm')?.[0]).toEqual(['task-1'])
 })
+
+test('reports completed runs with a failed final program without a cooldown', () => {
+  const finished = structuredClone(runtime)
+  finished.busy = false
+  finished.cooldownSeconds = 0
+  finished.cooldownUntil = null
+  finished.run!.state = 'completed'
+  finished.run!.items = [{ task_id: 'task-1', task_name: '最后程序', state: 'failed', error_summary: '退出码 3' }]
+  finished.runCenter = null
+  const wrapper = mount(RunCenter, { props: { runtime: finished, countdown: 0, confirmationPending: false } })
+  expect(wrapper.text()).toContain('整轮执行完成，存在失败项')
+  expect(wrapper.text()).not.toContain('秒后启动')
+})

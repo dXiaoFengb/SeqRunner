@@ -205,8 +205,9 @@ async def test_start_all_blocks_everything_when_a_script_is_incomplete(tmp_path:
 
 @pytest.mark.asyncio
 async def test_snapshot_exposes_cooldown_deadline_and_cancels_it_on_stop(tmp_path: Path) -> None:
-    task = python_task("短任务", "pass")
-    engine, queue = build_engine(tmp_path, [task])
+    first = python_task("第一项", "pass")
+    second = python_task("第二项", "import time; time.sleep(10)")
+    engine, queue = build_engine(tmp_path, [first, second])
     engine.cooldown_seconds = 1
     await engine.start(queue.id, "manual")
     for _ in range(20):
@@ -217,4 +218,32 @@ async def test_snapshot_exposes_cooldown_deadline_and_cancels_it_on_stop(tmp_pat
     assert engine.snapshot()["runCenter"]["currentState"] == "cooling_down"
     await engine.stop()
     await engine.wait_until_idle()
+    assert engine.snapshot()["cooldownUntil"] is None
+
+
+@pytest.mark.asyncio
+async def test_final_success_does_not_enter_cooldown(tmp_path: Path) -> None:
+    task = python_task("最后成功", "pass")
+    engine, queue = build_engine(tmp_path, [task])
+    engine.cooldown_seconds = 1
+
+    await engine.start(queue.id, "manual")
+    await engine.wait_until_idle()
+
+    assert engine.history.runs[0].state.value == "completed"
+    assert engine.history.runs[0].items[0].state.value == "succeeded"
+    assert engine.snapshot()["cooldownUntil"] is None
+
+
+@pytest.mark.asyncio
+async def test_final_failure_does_not_enter_cooldown(tmp_path: Path) -> None:
+    task = python_task("最后失败", "import sys; sys.exit(3)")
+    engine, queue = build_engine(tmp_path, [task])
+    engine.cooldown_seconds = 1
+
+    await engine.start(queue.id, "manual")
+    await engine.wait_until_idle()
+
+    assert engine.history.runs[0].state.value == "completed"
+    assert engine.history.runs[0].items[0].state.value == "failed"
     assert engine.snapshot()["cooldownUntil"] is None

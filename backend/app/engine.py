@@ -193,11 +193,11 @@ class RunnerEngine:
 
     async def _run(self, record: RunRecord, tasks: list[TaskDefinition]) -> None:
         try:
-            for item, task in zip(record.items, tasks, strict=True):
+            for index, (item, task) in enumerate(zip(record.items, tasks, strict=True)):
                 if self._stop_requested.is_set():
                     item.state = ItemState.STOPPED
                     break
-                await self._run_item(record, item, task)
+                await self._run_item(record, item, task, has_next=index < len(tasks) - 1)
                 if self._stop_requested.is_set():
                     break
             record.state = RunState.STOPPED if self._stop_requested.is_set() else RunState.COMPLETED
@@ -211,7 +211,9 @@ class RunnerEngine:
             self.store.save_history(self.history)
             await self._publish_state()
 
-    async def _run_item(self, record: RunRecord, item: ItemRecord, task: TaskDefinition) -> None:
+    async def _run_item(
+        self, record: RunRecord, item: ItemRecord, task: TaskDefinition, *, has_next: bool
+    ) -> None:
         item.state = ItemState.VALIDATING
         self._active_task_id = task.id
         self._manual_confirmed.clear()
@@ -220,7 +222,7 @@ class RunnerEngine:
         await self._publish_state()
         executable = Path(task.executable)
         if not executable.exists():
-            await self._fail_then_cool(item, "目标程序不存在")
+            await self._fail_then_cool(item, "目标程序不存在", has_next=has_next)
             return
         watcher: LogWatcher | None = None
         if task.log_path:
@@ -237,7 +239,7 @@ class RunnerEngine:
                 # 必须先取得游标，后启动目标进程，避免历史成功行误判本轮。
                 await watcher.start_at_end()
             except (OSError, UnicodeError) as error:
-                await self._fail_then_cool(item, f"日志读取失败：{error}")
+                await self._fail_then_cool(item, f"日志读取失败：{error}", has_next=has_next)
                 return
         try:
             item.state = ItemState.STARTING
@@ -252,7 +254,7 @@ class RunnerEngine:
             self._owned_process = await capture_owned_process(process.pid)
             await self._log(item, f"已启动受管进程 PID {process.pid}")
         except (OSError, RuntimeError, ValueError) as error:  # 启动错误是可记录的单项失败。
-            await self._fail_then_cool(item, f"启动失败：{error}")
+            await self._fail_then_cool(item, f"启动失败：{error}", has_next=has_next)
             return
 
         item.state = ItemState.WAITING_MANUAL if task.allow_manual_confirmation else ItemState.MONITORING
@@ -275,10 +277,10 @@ class RunnerEngine:
             await self._log(item, f"任务成功，来源：{detail}")
             await self._publish_state()
             await self._cleanup_owned(item)
-            await self._cooldown(item, ItemState.SUCCEEDED)
+            await self._finish_after_cleanup(item, ItemState.SUCCEEDED, has_next=has_next)
             return
         item.exit_code = process.returncode
-        await self._fail_then_cool(item, str(detail))
+        await self._fail_then_cool(item, str(detail), has_next=has_next)
 
     async def _wait_for_outcome(
         self,
@@ -345,13 +347,28 @@ class RunnerEngine:
             await force_stop_process_tree(owned, self.close_grace_seconds)
         self._owned_process = None
 
-    async def _fail_then_cool(self, item: ItemRecord, message: str) -> None:
+    async def _fail_then_cool(self, item: ItemRecord, message: str, *, has_next: bool) -> None:
         item.state = ItemState.FAILED
         item.error_summary = message
         await self._log(item, f"任务失败：{message}")
         await self._publish_state()
         await self._cleanup_owned(item)
-        await self._cooldown(item, ItemState.FAILED)
+        await self._finish_after_cleanup(item, ItemState.FAILED, has_next=has_next)
+
+    async def _finish_after_cleanup(
+        self, item: ItemRecord, final_state: ItemState, *, has_next: bool
+    ) -> None:
+        """Only an intermediate item waits before dispatching its successor."""
+        if not has_next:
+            self._cooldown_until = None
+            if self._stop_requested.is_set():
+                item.state = ItemState.STOPPED
+            else:
+                item.state = final_state
+                await self._log(item, "收尾完成，已是最后一项，整轮即将结束")
+            await self._publish_state()
+            return
+        await self._cooldown(item, final_state)
 
     async def _cooldown(self, item: ItemRecord, final_state: ItemState) -> None:
         if self._stop_requested.is_set():

@@ -9,15 +9,15 @@
 ```text
 queued → validating → starting → monitoring / waiting_manual
   → succeeded / failed → closing → force_closing（仅正常关闭超时）
-  → cooling_down → succeeded / failed → 下一任务或 completed
+  → cooling_down（仅仍有下一项）→ succeeded / failed → 下一任务或 completed
 
 任一非终态 → stopped（全局停止）
 ```
 
 - `validating`：检查可执行文件，并在启动前取得日志游标。
 - `monitoring` / `waiting_manual`：并发监听人工确认、进程退出、成功/失败日志、超时和停止。第一个终态信号锁定结果。人工确认仅在当前运行项允许确认且仍处于 `waiting_manual` 时被接受；重复、过期或不匹配确认会返回明确错误。
-- `succeeded`：人工确认、成功日志或符合条件的零退出任一先到。随后请求目标主窗口关闭，等待 3 秒，再只强制结束本轮保存 PID 的进程树；然后冷却 10 秒。运行快照会提供 `cooldownUntil`（服务端 UTC 截止时刻）与兼容字段 `cooldownSeconds`，界面据此显示秒级倒计时。
-- `failed`：启动失败、失败日志、非零退出、已配置成功日志却提前退出、超时或日志读取错误。也执行同一受管收尾和 10 秒冷却，再继续后续任务。
+- `succeeded`：人工确认、成功日志或符合条件的零退出任一先到。随后请求目标主窗口关闭，等待 3 秒，再只强制结束本轮保存 PID 的进程树；仅在仍有下一项时冷却 10 秒。运行快照会提供 `cooldownUntil`（服务端 UTC 截止时刻）与兼容字段 `cooldownSeconds`，界面据此显示秒级倒计时；最后一项收尾后直接结束整轮。
+- `failed`：启动失败、失败日志、非零退出、已配置成功日志却提前退出、超时或日志读取错误。也执行同一受管收尾；仅中间项冷却 10 秒后继续，最后一项直接记录整轮完成且在运行中心提示存在失败项。
 - `stopped`：全局停止取消监听和冷却，只收尾当前受管 PID，绝不派发下一项。
 
 整轮状态为 `running → completed`，或在停止后为 `running → stopping → stopped`。每轮记录每项状态、完成来源、退出码、时间、错误摘要和有限日志摘要到 `data/history.json`；全部脚本运行另记录 `run_mode=all_scripts`，每项保留所属脚本 ID/名称。旧历史缺少这些字段时按单脚本、无归属读取。
