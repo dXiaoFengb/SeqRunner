@@ -163,6 +163,10 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
                     event_sender = asyncio.create_task(anext(subscription))
         except (WebSocketDisconnect, asyncio.CancelledError):
             return
+        except Exception:
+            logger.exception("实时连接异常，已关闭本次会话")
+            with __import__("contextlib").suppress(RuntimeError):
+                await socket.close(code=1011, reason="服务器实时通信异常")
         finally:
             for task in (receiver, event_sender):
                 if task:

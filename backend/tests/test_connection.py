@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi.testclient import TestClient
 
+from app.events import EventHub
 from app.main import create_app
 
 
@@ -30,3 +33,20 @@ def test_websocket_answers_ping_and_cleans_up_subscription(tmp_path) -> None:
             socket.close()
         # TestClient drives the disconnect message before leaving the app lifespan.
         assert app.state.events.subscriber_count == 0
+
+
+def test_event_hub_broadcasts_and_releases_closed_subscription() -> None:
+    async def exercise() -> None:
+        hub = EventHub()
+        subscription = hub.subscribe()
+        message = asyncio.create_task(anext(subscription))
+        await asyncio.sleep(0)
+        assert hub.subscriber_count == 1
+
+        await hub.publish("runtime", {"busy": False})
+        assert await message == {"type": "runtime", "data": {"busy": False}}
+
+        await subscription.aclose()
+        assert hub.subscriber_count == 0
+
+    asyncio.run(exercise())

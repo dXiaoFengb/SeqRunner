@@ -4,26 +4,26 @@
 
 ## 交接信息
 
-- 交接时间：2026-10-12T20:21:00+08:00
+- 交接时间：2026-10-13T12:26:00+08:00
 - 执行者 / 会话标识：Codex
-- 对应任务：见 `TASK.md`
+- 对应任务：见 `TASK.md`「v0.1.2 连接稳定性与路径选择修复」。
 
 ## 最近实际改动
 
-- 前端连接逻辑抽至 `useRunnerConnection.ts`：REST 与实时状态独立、初始化/连接/重连单飞、指数退避上限与诊断、20 秒 `ping`/45 秒超时、实时断开时 5 秒降级轮询。保存、脚本运行和停止只依赖 REST 在线状态。
-- 后端 `/ws` 同时订阅事件与接收客户端消息，回应 `ping` 为 `pong`；断开时取消接收/订阅任务并释放订阅。新增 WebSocket ping 与订阅清理测试。
-- 工作台正式把队列呈现为脚本管理：搜索、全部展开/收起、紧凑卡片、编辑/运行/更多、复制不复制定时槽；计划、历史和设置页同步采用脚本语义，但 API 与 JSON 的 `queues`/`tasks` 保持兼容。
-- Electron 通过只读 IPC 提供后台状态诊断；关闭路径改为只对本进程持有的后端根 PID 使用 Windows `/T` 受控收尾，以覆盖 PyInstaller 窗口隐藏启动器的子进程，未按名称扫描。
-- 修复 portable 启动入口：打包模式不再根据解包临时目录的 `__dirname` 查找 `index.html`，而是通过 `app.getAppPath()` 定位 `app.asar` 内的 `frontend-dist/index.html`。
-- 启用开发提交版本自动推进：自动提交前按主/次/修订规则更新 `VERSION.md`；本轮为修订号级别，不改变未启用的正式发布版本。
+- 后端固定声明 `websockets==15.0.1`，启动前验证协议实现、显式以 Uvicorn `websockets` 协议运行；`/ws` 对异常记录后端日志、受控关闭，并持续保持首帧、`ping/pong`、事件订阅和断开清理。
+- PyInstaller spec 显式收集 Uvicorn WebSocket 与 `websockets` 子模块。后端 EXE 使用无控制台 bootloader；Electron 继续以 `windowsHide` 启动它，窗口关闭只回收本应用持有的 PID 树。
+- 前端保存改为带本地修订号的单通道快照队列，过期响应不再回写旧空路径。选择 EXE 会立即回填路径和工作目录；离线时保留草稿；预设不匹配时保留路径、禁止运行，并要求重新选择或显式切换通用程序。
+- 脚本页顶部只保留 API/实时状态与停止操作；完整中文诊断移入“设置”页并默认折叠。样式分离运行按钮与运行记录，保持脚本、计划、历史、设置的紧凑工作台布局。
+- 新增隔离验证构建配置和项目内 Electron 缓存，避免本机缓存跨卷重命名失败。所有本轮验证产物均在 Git 忽略的 `portable-validation-v012-*` 下，未覆盖 `portable/`、`release/` 或既有 EXE。
 
 ## 验证与证据
 
-- 自动化测试 / 构建：受限沙箱外已执行 `pytest backend\\tests`（21 passed）、`ruff check backend`、`npm run typecheck`、`npm run test:frontend`（3 files / 4 tests）、`npm run build`、PyInstaller 后端回环 `/health`（实例标识匹配）、Electron 开发健康检查和打包 `win-unpacked` 健康检查（退出码 0）。首次 portable 打包的 Electron 与 NSIS 缓存存在跨盘重命名错误；将构建缓存固定到项目忽略的临时目录并使用项目本地 Electron 运行时后成功完成。
-- 产物或发布核对：包结构已核验，含 `release/win-unpacked/resources/backend/sequential-runner-backend.exe`、`frontend-dist/index.html` 与 `electron/main.cjs`。单文件 portable 在实际临时解包模式下隐藏健康启动并以 0 退出。供本轮人工验收的本地被忽略产物为 `release/顺序任务调度器-0.1.0-portable-startup-fix.exe`，95,078,042 字节，SHA-256 `474CE563E4609A250D8AC70E86D0DDFD12F16F3023A2D39DF0C95C5AE0017B62`。未发布、未替换正式产物。
-- 人工验收：连接修复包等待用户在普通 Windows 桌面会话执行；首项为三分钟空闲连接观察，其后验证脚本管理操作、无黑框、定时与进程行为。
-- 证据位置：`docs/state-machine.md`、`docs/manual-acceptance.md`；本地命令输出见本次执行记录。
-- 未验证项与限制：未启动真实业务程序；新包的用户 Windows 可视验收仍待完成。自动健康检查证明隐藏窗口启动/退出和后端回收，但不替代三分钟真实桌面连接观察、文件对话框、任务卡拖拽和窄窗口视觉验收。
+- 后端：`backend\\.venv\\Scripts\\python.exe -m pytest backend\\tests` 为 **23 passed, 1 warning**；`backend\\.venv\\Scripts\\python.exe -m ruff check backend` 为 **All checks passed**。真实 Uvicorn 子进程测试完成首帧和 `ping/pong`，事件广播与订阅释放由新增用例覆盖。
+- 打包后端：`portable-validation-v012\\backend\\sequential-runner-backend.exe` 实际输出 `RUNNER_READY`，随后回环 WebSocket 收到 `runtime` 首帧和 `pong`。隐藏观察器维持一个会话 180.1 秒、十次心跳均为 `pong`，未记录 1006 或重连。
+- 前端：`corepack npm run typecheck`、`corepack npm run test:frontend`（**3 files / 6 tests**）、`corepack npm run build` 均通过；`corepack npm run electron:health` 隐藏窗口启动/停止通过。
+- portable：`corepack npm run package:validation` 完成。包内未打包目录已核验含 `resources\\backend\\sequential-runner-backend.exe`；单文件 portable 以 `RUNNER_HEALTH_CHECK=1` 隐藏启动并退出码 **0**。验证包为 `portable-validation-v012-r3\\electron\\顺序任务调度器-0.1.0-portable.exe`，SHA-256 为 `0BF038DA8DA2CD5C038E5C610B4ACBD1D265E59AE3F0853EF0B3B02D6AC97582`；未发布。
+- 已知构建环境事实：首次验证打包因 Electron 全局缓存跨卷重命名失败；将缓存设为项目内忽略目录后完成。npm 的 `global-ignore-file` 提示为配置弃用警告，不影响构建结果。
+- 人工验收与限制：普通 Windows 桌面可视验收仍待用户执行，步骤见 `docs/manual-acceptance.md`。需核对实际窗口无黑框、原生文件对话框、窄窗口布局、保存路径和预设不匹配处理；未启动真实业务程序。
 
 ## 本次交接周期内的高风险操作
 
@@ -33,5 +33,5 @@
 
 ## 下一步
 
-1. 用户按 `docs/manual-acceptance.md` 的第 1–3 项双击 `portable-startup-fix.exe`，先确认不再显示临时目录 `index.html` 错误，再完成三分钟空闲连接观察和脚本管理基本操作；如失败，提供折叠诊断和日志末尾内容。
-2. 完成后续脚本、日志、定时、停止、预设及窄窗口验收，并提供真实程序路径、参数及完成信号后另行安排真实程序验收。
+1. 用户双击 `portable-validation-v012-r3\\electron\\顺序任务调度器-0.1.0-portable.exe`，按 `docs/manual-acceptance.md` 完成 3 分钟桌面观察、路径/预设、脚本运行、停止和计划验收。
+2. 用户提供真实程序路径与完成信号后，另建任务安排真实业务程序验收；本轮不启动它们。

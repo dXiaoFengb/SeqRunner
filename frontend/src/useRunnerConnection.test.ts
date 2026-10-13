@@ -40,6 +40,7 @@ describe('useRunnerConnection', () => {
     FakeWebSocket.instances[0].open()
     expect(manager.restOnline.value).toBe(true)
     expect(manager.realtimeState.value).toBe('online')
+    expect(manager.diagnostic.value.lastHealthyAt).toBeTruthy()
 
     FakeWebSocket.instances[0].close(1006, 'network lost')
     expect(manager.restOnline.value).toBe(true)

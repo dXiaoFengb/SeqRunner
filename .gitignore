@@ -21,6 +21,10 @@ dist-electron/
 build/
 release/
 portable/
+/portable-validation/
+/portable-validation-v012/
+/portable-validation-v012-r2/
+/portable-validation-v012-r3/
 backend/build/
 backend/dist/
 coverage/
