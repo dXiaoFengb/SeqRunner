@@ -8,9 +8,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
+from .completion_actions import CompletionActionDispatcher
 from .events import EventHub
 from .logwatch import LogSignal, LogWatcher
 from .models import (
+    CompletionAction,
     CompletionSource,
     ItemRecord,
     ItemState,
@@ -47,6 +49,10 @@ class ConfirmRejectedError(RuntimeError):
     pass
 
 
+class _CompletionCancelled(Exception):
+    pass
+
+
 class RunnerEngine:
     """单一运行器；配置在每轮开始时深拷贝，防止热更新改变执行顺序。"""
 
@@ -58,6 +64,7 @@ class RunnerEngine:
         cooldown_seconds: float = 10,
         close_grace_seconds: float = 3,
         logger: logging.Logger | None = None,
+        completion_dispatcher: CompletionActionDispatcher | None = None,
     ) -> None:
         self.store = store
         self.events = events
@@ -75,6 +82,11 @@ class RunnerEngine:
         self._active_task_id: str | None = None
         self._manual_accepting_task_id: str | None = None
         self._cooldown_until: datetime | None = None
+        self._plan_by_run_id: dict[str, SchedulePlan] = {}
+        self._completion_dispatcher = completion_dispatcher or CompletionActionDispatcher()
+        self._completion_task: asyncio.Task[None] | None = None
+        self._completion_cancel = asyncio.Event()
+        self._pending_completion: dict[str, object] | None = None
         self._logger = logger or logging.getLogger("sequential-runner")
 
     @property
@@ -94,6 +106,7 @@ class RunnerEngine:
     async def start(self, queue_id: str, source: Literal["manual", "scheduled"]) -> RunRecord:
         if self.is_busy:
             raise RunBusyError("已有软件脚本正在运行，当前触发被跳过")
+        await self.cancel_pending_completion_action("新的运行已开始")
         queue = copy.deepcopy(self.queue_by_id(queue_id))
         task_book = {task.id: copy.deepcopy(task) for task in self.config.tasks}
         if len(queue.task_ids) != 1:
@@ -117,6 +130,7 @@ class RunnerEngine:
         """按配置中的脚本卡顺序展开为一条手动运行记录，不改写配置。"""
         if self.is_busy:
             raise RunBusyError("已有脚本正在运行，当前触发被跳过")
+        await self.cancel_pending_completion_action("新的运行已开始")
         selected, items, problems = self._collect_scripts(copy.deepcopy(self.config.queues))
         if problems:
             raise RunValidationError(problems)
@@ -136,18 +150,23 @@ class RunnerEngine:
         await self._publish_state()
         return record
 
-    async def start_plan(self, plan_id: str, source: Literal["scheduled", "startup"]) -> RunRecord:
+    async def start_plan(
+        self, plan_id: str, source: Literal["scheduled", "startup"], due_at: datetime | None = None
+    ) -> RunRecord:
         """按计划中保存的软件顺序展开；始终复用唯一运行器。"""
         if self.is_busy:
             raise RunBusyError("已有计划正在运行，当前计划触发被跳过")
+        await self.cancel_pending_completion_action("新的运行已开始")
         plan = copy.deepcopy(self.plan_by_id(plan_id))
-        if len(plan.script_ids) < 2:
+        if len(plan.items) < 2:
             raise RunValidationError([f"计划“{plan.name}”至少需要两个软件脚本"])
         script_book = {script.id: script for script in copy.deepcopy(self.config.queues)}
-        missing = [script_id for script_id in plan.script_ids if script_id not in script_book]
+        missing = [item.script_id for item in plan.items if item.script_id not in script_book]
         if missing:
             raise RunValidationError([f"计划“{plan.name}”引用的软件脚本不存在"])
-        selected, items, problems = self._collect_scripts([script_book[item] for item in plan.script_ids])
+        weekday = (due_at or datetime.now().astimezone()).weekday()
+        eligible = [item for item in plan.items if weekday in item.days]
+        selected, items, problems = self._collect_scripts([script_book[item.script_id] for item in eligible])
         if problems:
             raise RunValidationError(problems)
         record = RunRecord(
@@ -157,8 +176,20 @@ class RunnerEngine:
             run_mode="plan",
             plan_id=plan.id,
             items=items,
+            completion_action=plan.completion_action,
         )
+        if not selected:
+            record.state = RunState.COMPLETED
+            record.ended_at = datetime.now(UTC)
+            record.message = "当天没有匹配“运行周几”的软件任务"
+            self.history.runs.insert(0, record)
+            self.history.runs = self.history.runs[:200]
+            self.store.save_history(self.history)
+            self.current_run = record
+            await self._publish_state()
+            return record
         self.current_run = record
+        self._plan_by_run_id[record.id] = plan
         self._stop_requested.clear()
         self._manual_confirmed.clear()
         self._runner_task = asyncio.create_task(self._run(record, selected))
@@ -216,6 +247,7 @@ class RunnerEngine:
 
     async def stop(self) -> None:
         if not self.is_busy:
+            await self.cancel_pending_completion_action("用户已取消完成后操作")
             return
         self._stop_requested.set()
         if self.current_run:
@@ -254,6 +286,77 @@ class RunnerEngine:
             self.history.runs = self.history.runs[:200]
             self.store.save_history(self.history)
             await self._publish_state()
+            plan = self._plan_by_run_id.pop(record.id, None)
+            if plan and self._run_succeeded(record):
+                self._schedule_completion_action(record, plan)
+
+    @staticmethod
+    def _run_succeeded(record: RunRecord) -> bool:
+        return record.state == RunState.COMPLETED and bool(record.items) and all(
+            item.state == ItemState.SUCCEEDED for item in record.items
+        )
+
+    def _schedule_completion_action(self, record: RunRecord, plan: SchedulePlan) -> None:
+        if plan.completion_action == CompletionAction.NONE:
+            return
+        self._completion_cancel = asyncio.Event()
+        self._completion_task = asyncio.create_task(self._wait_then_complete_action(record, plan))
+
+    async def cancel_pending_completion_action(self, reason: str) -> None:
+        if not self._pending_completion:
+            return
+        self._completion_cancel.set()
+        self._pending_completion["status"] = "cancelled"
+        self._pending_completion["message"] = reason
+        run_id = str(self._pending_completion["runId"])
+        record = next((item for item in self.history.runs if item.id == run_id), None)
+        if record:
+            record.completion_action_status = f"已取消：{reason}"
+            self.store.save_history(self.history)
+        await self._publish_state()
+
+    async def _wait_then_complete_action(self, record: RunRecord, plan: SchedulePlan) -> None:
+        self._pending_completion = {
+            "runId": record.id, "planId": plan.id, "planName": plan.name,
+            "action": plan.completion_action.value, "status": "delaying",
+            "remainingSeconds": plan.completion_delay_minutes * 60,
+        }
+        try:
+            if plan.completion_delay_minutes:
+                await self._completion_countdown(plan.completion_delay_minutes * 60, "delaying")
+            self._pending_completion["status"] = "countdown"
+            await self._completion_countdown(60, "countdown")
+            self._pending_completion["status"] = "executing"
+            self._pending_completion["remainingSeconds"] = 0
+            await self._publish_state()
+            await self._completion_dispatcher.execute(plan.completion_action)
+            record.completion_action_status = "请求退出软件" if plan.completion_action == CompletionAction.EXIT_APP else "已执行"
+            self._pending_completion["status"] = "executed"
+        except _CompletionCancelled:
+            return
+        except Exception as error:  # noqa: BLE001 - system adapter errors must become a visible history result.
+            record.completion_action_status = f"执行失败：{error}"
+            if self._pending_completion:
+                self._pending_completion["status"] = "failed"
+                self._pending_completion["message"] = str(error)
+        finally:
+            self.store.save_history(self.history)
+            await self._publish_state()
+
+    async def _completion_countdown(self, seconds: int, status: str) -> None:
+        for remaining in range(seconds, -1, -1):
+            if self._completion_cancel.is_set():
+                raise _CompletionCancelled()
+            if self._pending_completion:
+                self._pending_completion["status"] = status
+                self._pending_completion["remainingSeconds"] = remaining
+            await self._publish_state()
+            if remaining:
+                try:
+                    await asyncio.wait_for(self._completion_cancel.wait(), timeout=1)
+                except TimeoutError:
+                    continue
+                raise _CompletionCancelled()
 
     async def _run_item(
         self, record: RunRecord, item: ItemRecord, task: TaskDefinition, *, has_next: bool
@@ -538,6 +641,7 @@ class RunnerEngine:
             "cooldownSeconds": cooldown_seconds,
             "cooldownUntil": self._cooldown_until.isoformat() if self._cooldown_until else None,
             "migrationNotice": self.migration_notice,
+            "completionAction": dict(self._pending_completion) if self._pending_completion else None,
             "runCenter": {
                 "currentScriptId": active_item.script_id if active_item else None,
                 "currentScriptName": active_item.script_name if active_item else None,

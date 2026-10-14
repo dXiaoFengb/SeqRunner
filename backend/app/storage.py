@@ -35,10 +35,11 @@ class JsonStore:
             plan_notice = None
         else:
             migrated, plan_notice = self._migrate_to_plans(migrated)
-        notice = "；".join(item for item in (script_notice, plan_notice) if item) or None
+        migrated, schedule_notice = self._migrate_plan_items(migrated)
+        notice = "；".join(item for item in (script_notice, plan_notice, schedule_notice) if item) or None
         config = AppConfig.model_validate(migrated)
         if notice:
-            self._backup_config_before_migration(raw)
+            self._backup_config_before_migration(raw, config.schema_version)
             self._save(self.config_path, config)
             self.last_config_migration_notice = notice
         return config
@@ -71,12 +72,12 @@ class JsonStore:
             temporary.unlink(missing_ok=True)
             raise
 
-    def _backup_config_before_migration(self, raw: object) -> None:
+    def _backup_config_before_migration(self, raw: object, version: int) -> None:
         """迁移会清空旧定时槽，先保留仅本机可用的恢复副本。"""
         backups = self.data_directory / "backups"
         backups.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        target = backups / f"config-before-v2-{stamp}.json"
+        target = backups / f"config-before-v{version}-{stamp}.json"
         target.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
 
     @staticmethod
@@ -159,7 +160,7 @@ class JsonStore:
         """v2 将时间槽从单软件脚本彻底移交给多软件计划管理。"""
         if not isinstance(raw, dict):
             return raw, None
-        if raw.get("schema_version") == 2:
+        if raw.get("schema_version") in {2, 3}:
             return raw, None
         queues = raw.get("queues")
         if not isinstance(queues, list):
@@ -183,3 +184,35 @@ class JsonStore:
         if removed:
             return migrated, f"已清空 {removed} 个旧单软件定时槽，请在计划管理重新创建多软件计划"
         return migrated, "已升级到多软件计划管理；请在计划管理创建计划"
+
+    @staticmethod
+    def _migrate_plan_items(raw: object) -> tuple[object, str | None]:
+        """v3 将计划脚本顺序升级为可按星期筛选的任务行。"""
+        if not isinstance(raw, dict) or raw.get("schema_version") == 3:
+            return raw, None
+        if raw.get("schema_version") != 2:
+            return raw, None
+        plans = raw.get("plans")
+        if not isinstance(plans, list):
+            return raw, None
+        next_plans: list[dict[str, object]] = []
+        for plan in plans:
+            if not isinstance(plan, dict):
+                return raw, None
+            script_ids = plan.get("script_ids", [])
+            if not isinstance(script_ids, list) or not all(isinstance(item, str) for item in script_ids):
+                return raw, None
+            next_plans.append({
+                **{key: value for key, value in plan.items() if key not in {"script_ids", "run_on_startup"}},
+                "items": [{"id": str(uuid4()), "script_id": script_id, "days": list(range(7))} for script_id in script_ids],
+                "startup_mode": "always" if plan.get("run_on_startup") else "never",
+                "scheduled_enabled": True,
+                "completion_action": "none",
+                "completion_delay_minutes": 0,
+            })
+        return {
+            **raw,
+            "schema_version": 3,
+            "plans": next_plans,
+            "startup_fired_dates": raw.get("startup_fired_dates") if isinstance(raw.get("startup_fired_dates"), dict) else {},
+        }, "已将计划升级为可按星期筛选的软件任务；原有任务默认每日运行"

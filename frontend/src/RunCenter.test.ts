@@ -55,3 +55,14 @@ test('shows the failed program and opens its history detail from the completed r
   await wrapper.findAll('button').find((button) => button.text() === '查看失败详情')!.trigger('click')
   expect(wrapper.emitted('showFailures')?.[0]).toEqual(['run-1'])
 })
+
+test('shows and cancels a pending completion action countdown', async () => {
+  const finished = structuredClone(runtime)
+  finished.busy = false
+  finished.run!.state = 'completed'
+  finished.completionAction = { runId: 'run-1', planId: 'plan-1', planName: '早班', action: 'shutdown', status: 'countdown', remainingSeconds: 47 }
+  const wrapper = mount(RunCenter, { props: { runtime: finished, countdown: 0, confirmationPending: false } })
+  expect(wrapper.text()).toContain('将在 47 秒后关机')
+  await wrapper.findAll('button').find((button) => button.text() === '取消完成后操作')!.trigger('click')
+  expect(wrapper.emitted('cancelCompletionAction')).toHaveLength(1)
+})

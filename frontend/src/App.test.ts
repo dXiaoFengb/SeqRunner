@@ -8,7 +8,7 @@ function task(id: string, name: string, executable = '') {
 }
 function config(two = false): Config {
   const first = task('t1', '第一软件')
-  const result: Config = { schema_version: 2, fired_slots: [], plans: [], queues: [{ id: 's1', name: '第一软件', task_ids: ['t1'], time_slots: [] }], tasks: [first] }
+  const result: Config = { schema_version: 3, fired_slots: [], startup_fired_dates: {}, plans: [], queues: [{ id: 's1', name: '第一软件', task_ids: ['t1'], time_slots: [] }], tasks: [first] }
   if (two) { result.tasks.push(task('t2', '第二软件')); result.queues.push({ id: 's2', name: '第二软件', task_ids: ['t2'], time_slots: [] }) }
   return result
 }
@@ -34,10 +34,10 @@ test('keeps script cards free from timing controls and makes plans the timing en
   installBackend(config(true)); const wrapper = runner(); await flushPromises()
   expect(wrapper.text()).not.toContain('添加定时槽')
   await wrapper.findAll('button').find((button) => button.text() === '计划')!.trigger('click')
-  expect(wrapper.text()).toContain('多软件计划')
+  expect(wrapper.text()).toContain('计划队列')
   await wrapper.findAll('button').find((button) => button.text().includes('新建计划'))!.trigger('click')
-  expect(wrapper.text()).toContain('软件执行顺序')
-  expect(wrapper.text()).toContain('定时表')
+  expect(wrapper.text()).toContain('计划选择')
+  expect(wrapper.text()).toContain('定时列表')
 })
 
 test('shows only Android emulator connection controls for an MAA script', async () => {

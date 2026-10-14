@@ -5,4 +5,5 @@ contextBridge.exposeInMainWorld('desktopRunner', {
   getBuildInfo: () => ipcRenderer.invoke('runner:get-build-info'),
   selectExecutable: (presetId) => ipcRenderer.invoke('runner:select-executable', presetId || null),
   selectDirectory: () => ipcRenderer.invoke('runner:select-directory'),
+  quitApp: () => ipcRenderer.invoke('runner:quit-app'),
 });

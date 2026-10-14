@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class MatchMode(str, Enum):
@@ -41,6 +41,23 @@ class RunState(str, Enum):
     STOPPING = "stopping"
     COMPLETED = "completed"
     STOPPED = "stopped"
+
+
+class StartupMode(str, Enum):
+    NEVER = "never"
+    ALWAYS = "always"
+    DAILY_FIRST = "daily_first"
+
+
+class CompletionAction(str, Enum):
+    NONE = "none"
+    SHUTDOWN = "shutdown"
+    FORCE_SHUTDOWN = "force_shutdown"
+    RESTART = "restart"
+    HIBERNATE = "hibernate"
+    SLEEP = "sleep"
+    EXIT_APP = "exit_app"
+    LOGOFF = "logoff"
 
 
 class TimeSlot(BaseModel):
@@ -109,24 +126,36 @@ class QueueDefinition(BaseModel):
     time_slots: list[TimeSlot] = Field(default_factory=list)
 
 
+class PlanTask(BaseModel):
+    """计划中的单软件项；运行星期只影响该计划的当日展开。"""
+
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    script_id: str
+    days: list[int] = Field(default_factory=lambda: list(range(7)), min_length=1)
+
+
 class SchedulePlan(BaseModel):
     """面向用户的多软件计划；脚本本身仍保存在 queues/tasks。"""
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     name: str = Field(min_length=1, max_length=120)
-    script_ids: list[str] = Field(default_factory=list)
+    items: list[PlanTask] = Field(default_factory=list)
     time_slots: list[TimeSlot] = Field(default_factory=list)
-    run_on_startup: bool = False
+    startup_mode: StartupMode = StartupMode.NEVER
+    scheduled_enabled: bool = True
+    completion_action: CompletionAction = CompletionAction.NONE
+    completion_delay_minutes: int = Field(default=0, ge=0, le=10_080)
 
 
 class AppConfig(BaseModel):
     # 损坏的旧配置必须可被读取并以诊断方式阻止运行，不能因为版本字段
-    # 直接把用户留在无法打开应用的状态。所有正常保存的新配置均为 v2。
-    schema_version: Literal[1, SCHEMA_VERSION] = SCHEMA_VERSION
+    # 直接把用户留在无法打开应用的状态。所有正常保存的新配置均为 v3。
+    schema_version: Literal[1, 2, SCHEMA_VERSION] = SCHEMA_VERSION
     queues: list[QueueDefinition] = Field(default_factory=list)
     tasks: list[TaskDefinition] = Field(default_factory=list)
     plans: list[SchedulePlan] = Field(default_factory=list)
     fired_slots: list[str] = Field(default_factory=list)
+    startup_fired_dates: dict[str, str] = Field(default_factory=dict)
 
 
 class ItemRecord(BaseModel):
@@ -158,8 +187,10 @@ class RunRecord(BaseModel):
     items: list[ItemRecord] = Field(default_factory=list)
     message: str | None = None
     scheduler_skips: list[str] = Field(default_factory=list)
+    completion_action: CompletionAction = CompletionAction.NONE
+    completion_action_status: str | None = None
 
 
 class HistoryDocument(BaseModel):
-    schema_version: Literal[1, SCHEMA_VERSION] = SCHEMA_VERSION
+    schema_version: Literal[1, 2, SCHEMA_VERSION] = SCHEMA_VERSION
     runs: list[RunRecord] = Field(default_factory=list)

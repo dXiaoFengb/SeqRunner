@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import type { RunItem, Runtime } from './types'
 
 const props = defineProps<{ runtime: Runtime; countdown: number; confirmationPending: boolean }>()
-const emit = defineEmits<{ confirm: [taskId: string]; showFailures: [runId: string] }>()
+const emit = defineEmits<{ confirm: [taskId: string]; showFailures: [runId: string]; cancelCompletionAction: [] }>()
 
 const center = computed(() => props.runtime.runCenter)
 const visible = computed(() => Boolean(props.runtime.run))
@@ -36,6 +36,16 @@ const statusLabel = computed(() => ({
   closing: '正在收尾', force_closing: '正在收尾', cooling_down: '冷却中', completed: '已完成', failed: '存在失败', stopped: '已停止',
 }[statusKind.value] || '运行中'))
 const skips = computed(() => props.runtime.run?.scheduler_skips || [])
+const completion = computed(() => props.runtime.completionAction)
+const completionPending = computed(() => ['delaying', 'countdown'].includes(completion.value?.status || ''))
+const completionText = computed(() => {
+  if (!completion.value) return ''
+  const names: Record<string, string> = { shutdown: '关机', force_shutdown: '强制关机', restart: '重启', hibernate: '休眠', sleep: '睡眠', exit_app: '退出软件', logoff: '注销此账户' }
+  const action = names[completion.value.action] || '完成后操作'
+  if (completion.value.status === 'delaying') return `整轮成功，${completion.value.remainingSeconds} 秒后开始${action}倒计时`
+  if (completion.value.status === 'countdown') return `将在 ${completion.value.remainingSeconds} 秒后${action}`
+  return completion.value.message || ''
+})
 </script>
 
 <template>
@@ -44,6 +54,7 @@ const skips = computed(() => props.runtime.run?.scheduler_skips || [])
     <div class="run-center-progress"><b>{{ progress }}/{{ center?.totalPrograms || runtime.run?.items.length || 0 }}</b><span>{{ currentScript }}</span><strong>{{ currentTask }}</strong></div>
     <div class="run-center-state"><span>{{ stateText }}</span><b v-if="countdown > 0" class="countdown">{{ countdown }} 秒</b></div>
     <button v-if="runtime.activeTaskId && center?.currentState === 'waiting_manual'" class="confirm" :disabled="confirmationPending" @click="emit('confirm', runtime.activeTaskId)">{{ confirmationPending ? '确认已接收' : '确认当前程序完成' }}</button>
+    <div v-if="completionText" class="run-center-completion" :class="completion?.status"><span>{{ completionText }}</span><button v-if="completionPending" @click="emit('cancelCompletionAction')">取消完成后操作</button></div>
     <div v-if="failures.length" class="run-center-failures" role="alert">
       <b>失败项</b>
       <ul><li v-for="item in failures" :key="item.task_id"><span>{{ item.script_name ? `${item.script_name} / ` : '' }}{{ item.task_name }}</span><small>{{ itemReason(item) }}</small></li></ul>

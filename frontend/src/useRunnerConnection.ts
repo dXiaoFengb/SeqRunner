@@ -18,6 +18,7 @@ declare global {
       selectDirectory?(): Promise<{ canceled: boolean; path?: string }>
       getBackendStatus?(): Promise<{ state: string; detail: string }>
       getBuildInfo?(): Promise<{ version: string }>
+      quitApp?(): Promise<{ accepted: boolean }>
     }
   }
 }

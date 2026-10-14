@@ -4,22 +4,22 @@
 
 ## 交接信息
 
-- 交接时间：2026-10-14T19:43:00+08:00
+- 交接时间：2026-10-14T23:43:00+08:00
 - 执行者 / 会话标识：Codex
-- 对应任务：见 `TASK.md`「v0.4.0 专用脚本配置与多软件计划管理」。
+- 对应任务：见 `TASK.md`「v0.5.0 计划队列对标重构、完成后操作与 MaaEnd 预设修复」。
 
 ## 最近实际改动
 
-- 配置架构升级为 v2：首次迁移先创建 `data/backups/config-before-v2-*.json` 恢复副本，再清空旧单软件时间槽；旧软件脚本、预设与历史保持不变。多软件计划独立保存，要求至少两个软件、同刻冲突拒绝且全局只允许一个启动时运行计划；执行器忙碌时计划直接跳过并写入运行/历史摘要。
-- MAA 编辑页仅保存安装目录与安卓模拟器 ADB 预检信息；预检失败写警告但仍启动 MAA GUI，绝不改写 MAA 或模拟器配置。MaaEnd 仅支持受管 Windows 游戏→等待→MaaEnd，按开关收尾本轮创建的游戏 PID 与子树。
-- 运行中心改为整合状态徽标，显示运行来源、计划、当前软件、进度、失败详情和跳过计划；脚本管理不再提供定时入口，计划管理成为唯一的多软件定时页。
-- 验证包构建脚本的验证专用配置采用 `compression: store`，避免受限会话中长时间压缩子进程被中断；正式发布构建配置未改变。已生成独立无控制台验证包：`portable-validation-v040\\electron\\顺序任务调度器-v0.4.0-portable.exe`，未覆盖既有验证包或正式产物。
+- 配置架构升级为 v3：v2 计划迁移为有序任务项，每项默认周一至周日；启动布尔值迁移为“是 / 否”，原定时槽保留。迁移前生成 `data/backups/config-before-v3-*.json`；损坏数据不静默删除。
+- 计划页重排为居中空状态、计划选择、单张队列配置卡、定时列表和任务列表。循环队列仅作为禁用的下一版占位项；已实现启动时运行（否 / 是 / 每日首次启动时）、定时运行开关、任务级运行周几、小时分钟定时编辑、拖拽/按钮排序及同刻冲突校验。
+- 整轮成功后才会进入完成后操作：先按分钟延时，后显示固定 60 秒可取消倒计时；新运行会自动取消旧操作。系统动作由受控 Windows 适配器处理；测试只注入替身。运行中心显示等待、倒计时、已取消和失败状态。MaaEnd 预设不再克隆 Vue 响应式适配对象，路径与规则可正常应用。
+- Electron 新增受限“退出软件” IPC，仅在完成后倒计时实际到期时调用；未修改 MAA、MaaEnd 或其他目标软件的外部配置。
 
 ## 验证与证据
 
-- 回归：项目内临时目录的后端 pytest **40 passed, 1 warning**，`ruff check backend`、Vue typecheck、Vitest **5 文件 / 14 项**、生产构建与开发模式 Electron 健康检查均通过。最初受限会话的 Chromium 单实例锁失败，已在正常权限会话复测通过；未启动真实业务软件。
-- 构建与健康：`corepack npm run package:validation` 完成 Vite、PyInstaller 无控制台后端和 Windows portable 封装；包内存在 `portable-validation-v040\\electron\\win-unpacked\\resources\\backend\\sequential-runner-backend.exe`。最终 EXE 大小 **322,983,367** 字节，SHA-256 `B56C3175D0D935A65A874116203BB4FC3054C5DC87D085217EAEF17EA3FA7229`；`RUNNER_HEALTH_CHECK=1` 隐藏启动退出码为 0。
-- Git：开发提交版本已从 `v0.3.5` 推进为 `v0.4.0`；待本轮精确暂存、缓存差异审查和本地提交。不得推送或发布。
+- 回归：正常权限会话中后端 pytest **45 passed, 1 warning**，`ruff check backend`、Vue typecheck、Vitest **6 文件 / 17 项**、生产构建和隐藏 Electron 健康检查均通过。受限环境的 pytest 临时目录和 esbuild 子进程权限不足已改由正常权限会话验证；未启动真实业务软件、ADB、游戏或系统电源操作。
+- 构建与健康：`corepack npm run package:validation` 完成 Vite、PyInstaller 无控制台后端和 Windows portable 封装；包内存在 `portable-validation-v050\\electron\\win-unpacked\\resources\\backend\\sequential-runner-backend.exe`。最终 EXE 大小 **323,008,750** 字节，SHA-256 `33DE97740C9003759B9F80E4A622C8C1A3045451A5B3DB0E3D366D6904F23575`；`RUNNER_HEALTH_CHECK=1` 隐藏启动退出码为 0，目录已确认 Git 忽略。
+- Git：开发提交版本已从 `v0.4.0` 推进为 `v0.5.0`；待本轮精确暂存、缓存差异审查和本地提交。不得推送或发布。
 
 ## 本次交接周期内的高风险操作
 
@@ -29,4 +29,4 @@
 
 ## 下一步
 
-1. 由用户使用 `portable-validation-v040\\electron\\顺序任务调度器-v0.4.0-portable.exe` 按 `docs/manual-acceptance.md` 进行 v0.4.0 桌面可视验收，重点确认多软件计划冲突/跳过提示、MAA/MaaEnd 专用字段、运行中心状态条与窄窗口布局；真实业务软件仍不启动。
+1. 由用户使用 `portable-validation-v050\\electron\\顺序任务调度器-v0.5.0-portable.exe` 按 `docs/manual-acceptance.md` 进行 v0.5.0 桌面可视验收，重点确认队列空状态、队列设置、定时/任务表、周几选择、完成后取消倒计时与 MaaEnd 预设回填；真实业务软件与真实系统动作仍不执行。

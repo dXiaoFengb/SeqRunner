@@ -7,21 +7,21 @@ import pytest
 
 from app.engine import RunnerEngine
 from app.events import EventHub
-from app.models import AppConfig, SchedulePlan, TimeSlot
+from app.models import AppConfig, PlanTask, SchedulePlan, TimeSlot
 from app.scheduler import QueueScheduler
 from app.storage import JsonStore
 
 
 @pytest.mark.asyncio
 async def test_scheduler_deduplicates_multiple_slots_and_persists(tmp_path: Path) -> None:
-    plan = SchedulePlan(name="定时", script_ids=["one", "two"], time_slots=[TimeSlot(time="09:00", days=[0]), TimeSlot(time="09:00", days=[0])])
+    plan = SchedulePlan(name="定时", items=[PlanTask(script_id="one"), PlanTask(script_id="two")], time_slots=[TimeSlot(time="09:00", days=[0]), TimeSlot(time="09:00", days=[0])])
     store = JsonStore(tmp_path / "data")
     store.save_config(AppConfig(plans=[plan]))
     engine = RunnerEngine(store, EventHub(), cooldown_seconds=0.01)
     scheduler = QueueScheduler(engine)
     started: list[str] = []
 
-    async def capture(plan_id: str, source: str):
+    async def capture(plan_id: str, source: str, due_at=None):
         started.append(f"{plan_id}:{source}")
 
     engine.start_plan = capture  # type: ignore[method-assign]
@@ -35,7 +35,7 @@ async def test_scheduler_deduplicates_multiple_slots_and_persists(tmp_path: Path
 
 @pytest.mark.asyncio
 async def test_busy_scheduler_marks_slot_without_queueing(tmp_path: Path) -> None:
-    plan = SchedulePlan(name="定时", script_ids=["one", "two"], time_slots=[TimeSlot(time="09:00", days=[0])])
+    plan = SchedulePlan(name="定时", items=[PlanTask(script_id="one"), PlanTask(script_id="two")], time_slots=[TimeSlot(time="09:00", days=[0])])
     store = JsonStore(tmp_path / "data")
     store.save_config(AppConfig(plans=[plan]))
     engine = RunnerEngine(store, EventHub())

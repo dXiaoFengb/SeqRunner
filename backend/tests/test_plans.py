@@ -14,8 +14,10 @@ from app.models import (
     ItemRecord,
     MAAAdapterConfig,
     MaaEndAdapterConfig,
+    PlanTask,
     QueueDefinition,
     SchedulePlan,
+    StartupMode,
     TaskDefinition,
     TimeSlot,
 )
@@ -34,7 +36,7 @@ async def test_plan_runs_two_scripts_in_saved_order(tmp_path: Path) -> None:
     second = task("第二", "from pathlib import Path; import sys; Path(sys.argv[1]).open('a').write('2')")
     second.arguments.append(str(output))
     one, two = QueueDefinition(name="一", task_ids=[first.id]), QueueDefinition(name="二", task_ids=[second.id])
-    plan = SchedulePlan(name="早班", script_ids=[one.id, two.id])
+    plan = SchedulePlan(name="早班", items=[PlanTask(script_id=one.id), PlanTask(script_id=two.id)])
     store = JsonStore(tmp_path / "data")
     store.save_config(AppConfig(queues=[one, two], tasks=[first, second], plans=[plan]))
     engine = RunnerEngine(store, EventHub(), cooldown_seconds=0.01, close_grace_seconds=0.05)
@@ -49,8 +51,8 @@ async def test_plan_runs_two_scripts_in_saved_order(tmp_path: Path) -> None:
 
 def test_plan_validation_rejects_overlap_and_multiple_startup() -> None:
     one, two, three = QueueDefinition(name="一", task_ids=["a"]), QueueDefinition(name="二", task_ids=["b"]), QueueDefinition(name="三", task_ids=["c"])
-    first = SchedulePlan(name="计划甲", script_ids=[one.id, two.id], run_on_startup=True, time_slots=[TimeSlot(time="09:00", days=[0, 1])])
-    second = SchedulePlan(name="计划乙", script_ids=[two.id, three.id], run_on_startup=True, time_slots=[TimeSlot(time="09:00", days=[1])])
+    first = SchedulePlan(name="计划甲", items=[PlanTask(script_id=one.id), PlanTask(script_id=two.id)], startup_mode=StartupMode.ALWAYS, time_slots=[TimeSlot(time="09:00", days=[0, 1])])
+    second = SchedulePlan(name="计划乙", items=[PlanTask(script_id=two.id), PlanTask(script_id=three.id)], startup_mode=StartupMode.ALWAYS, time_slots=[TimeSlot(time="09:00", days=[1])])
     with pytest.raises(ValueError) as error:
         validate_schedule_plans(AppConfig(queues=[one, two, three], plans=[first, second]))
     assert "仅允许一个" in str(error.value)
@@ -63,7 +65,7 @@ async def test_busy_plan_is_recorded_as_skipped_in_current_run(tmp_path: Path) -
     task_two, task_three = task("二"), task("三")
     one = QueueDefinition(name="一", task_ids=[task_one.id])
     two, three = QueueDefinition(name="二", task_ids=[task_two.id]), QueueDefinition(name="三", task_ids=[task_three.id])
-    plan = SchedulePlan(name="待跳过", script_ids=[two.id, three.id])
+    plan = SchedulePlan(name="待跳过", items=[PlanTask(script_id=two.id), PlanTask(script_id=three.id)])
     store = JsonStore(tmp_path / "data")
     store.save_config(AppConfig(queues=[one, two, three], tasks=[task_one, task_two, task_three], plans=[plan]))
     engine = RunnerEngine(store, EventHub(), close_grace_seconds=0.05)

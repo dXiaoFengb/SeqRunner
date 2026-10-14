@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from .engine import ConfirmRejectedError, RunBusyError, RunnerEngine, RunValidationError
 from .events import EventHub
-from .models import AppConfig, QueueDefinition, TaskDefinition
+from .models import AppConfig, QueueDefinition, StartupMode, TaskDefinition
 from .presets import apply_preset, public_presets
 from .scheduler import QueueScheduler
 from .storage import JsonStore
@@ -60,19 +60,22 @@ def validate_single_software_config(config: AppConfig) -> None:
 def validate_schedule_plans(config: AppConfig) -> None:
     """校验计划引用与启用时间槽，避免依赖前端提示维持调度不变量。"""
     scripts = {script.id for script in config.queues}
-    startup_plans = [plan.name for plan in config.plans if plan.run_on_startup]
+    startup_plans = [plan.name for plan in config.plans if plan.startup_mode != StartupMode.NEVER]
     problems: list[str] = []
     if len(startup_plans) > 1:
         problems.append("仅允许一个计划设置为“启动时运行”：" + "、".join(startup_plans))
     occupied: list[tuple[str, str, set[int]]] = []
     for plan in config.plans:
-        if len(plan.script_ids) < 2:
+        script_ids = [item.script_id for item in plan.items]
+        if len(script_ids) < 2:
             problems.append(f"计划“{plan.name}”至少需要两个软件脚本")
-        if len(set(plan.script_ids)) != len(plan.script_ids):
+        if len(set(script_ids)) != len(script_ids):
             problems.append(f"计划“{plan.name}”不能重复添加同一软件脚本")
-        missing = [script_id for script_id in plan.script_ids if script_id not in scripts]
+        missing = [script_id for script_id in script_ids if script_id not in scripts]
         if missing:
             problems.append(f"计划“{plan.name}”引用了不存在的软件脚本")
+        if not plan.scheduled_enabled:
+            continue
         for slot in plan.time_slots:
             if not slot.enabled:
                 continue
@@ -226,6 +229,11 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
     async def stop():
         await engine.stop()
         return {"status": "stopping"}
+
+    @app.post("/api/cancel-completion-action")
+    async def cancel_completion_action():
+        await engine.cancel_pending_completion_action("用户已取消完成后操作")
+        return {"status": "cancelled"}
 
     @app.post("/api/confirm")
     async def confirm(payload: ConfirmIn):

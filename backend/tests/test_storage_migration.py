@@ -32,13 +32,13 @@ def test_load_splits_legacy_multi_program_script_and_clears_slots(tmp_path):
 
     assert [script.task_ids for script in config.queues] == [["a"], ["b"]]
     assert all(not script.time_slots for script in config.queues)
-    assert config.schema_version == 2
+    assert config.schema_version == 3
     assert config.plans == []
     assert "原组合定时已清空" in (store.last_config_migration_notice or "")
     persisted = json.loads((root / "config.json").read_text(encoding="utf-8"))
     assert len(persisted["queues"]) == 2
-    assert persisted["schema_version"] == 2
-    assert list((root / "backups").glob("config-before-v2-*.json"))
+    assert persisted["schema_version"] == 3
+    assert list((root / "backups").glob("config-before-v3-*.json"))
 
 
 def test_load_preserves_damaged_references_without_unsafe_migration(tmp_path):
@@ -72,3 +72,30 @@ def test_load_repairs_empty_script_and_orphan_without_losing_tasks(tmp_path):
     assert all(len(script.task_ids) == 1 for script in config.queues)
     assert any(item.name == "孤立程序" for item in config.tasks)
     assert "补建单软件脚本" in (store.last_config_migration_notice or "")
+
+
+def test_load_upgrades_v2_plan_items_without_reordering_or_losing_slots(tmp_path):
+    root = tmp_path / "data"
+    root.mkdir()
+    (root / "config.json").write_text(json.dumps({
+        "schema_version": 2,
+        "fired_slots": [],
+        "queues": [
+            {"id": "one", "name": "一", "task_ids": ["a"], "time_slots": []},
+            {"id": "two", "name": "二", "task_ids": ["b"], "time_slots": []},
+        ],
+        "tasks": [task("a", "程序一"), task("b", "程序二")],
+        "plans": [{
+            "id": "plan", "name": "早班", "script_ids": ["two", "one"], "run_on_startup": True,
+            "time_slots": [{"id": "slot", "enabled": True, "days": [0, 2], "time": "09:00"}],
+        }],
+    }), encoding="utf-8")
+
+    config = JsonStore(root).load_config()
+
+    assert config.schema_version == 3
+    assert [item.script_id for item in config.plans[0].items] == ["two", "one"]
+    assert all(item.days == list(range(7)) for item in config.plans[0].items)
+    assert config.plans[0].startup_mode.value == "always"
+    assert config.plans[0].time_slots[0].time == "09:00"
+    assert list((root / "backups").glob("config-before-v3-*.json"))

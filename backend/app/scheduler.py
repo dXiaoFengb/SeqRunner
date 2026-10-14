@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from .engine import RunBusyError, RunnerEngine, RunValidationError
+from .models import StartupMode
 
 
 class QueueScheduler:
@@ -17,12 +18,19 @@ class QueueScheduler:
         if self._startup_triggered:
             return
         self._startup_triggered = True
-        plans = [plan for plan in self.engine.config.plans if plan.run_on_startup]
+        plans = [plan for plan in self.engine.config.plans if plan.startup_mode != StartupMode.NEVER]
         if not plans:
             return
         plan = plans[0]
+        local_now = datetime.now().astimezone()
+        today = local_now.date().isoformat()
+        if plan.startup_mode == StartupMode.DAILY_FIRST and self.engine.config.startup_fired_dates.get(plan.id) == today:
+            return
         try:
-            await self.engine.start_plan(plan.id, "startup")
+            await self.engine.start_plan(plan.id, "startup", local_now)
+            if plan.startup_mode == StartupMode.DAILY_FIRST:
+                self.engine.config.startup_fired_dates[plan.id] = today
+                await self.engine.save_config()
         except RunBusyError:
             await self.engine.record_schedule_skip(plan, datetime.now(UTC))
         except (RunValidationError, StopIteration) as error:
@@ -34,6 +42,8 @@ class QueueScheduler:
         fired = set(self.engine.config.fired_slots)
         changed = False
         for plan in self.engine.config.plans:
+            if not plan.scheduled_enabled:
+                continue
             due_keys: list[str] = []
             for slot in plan.time_slots:
                 if not slot.enabled:
@@ -52,7 +62,7 @@ class QueueScheduler:
                 await self.engine.record_schedule_skip(plan, current)
                 continue
             try:
-                await self.engine.start_plan(plan.id, "scheduled")
+                await self.engine.start_plan(plan.id, "scheduled", current)
             except RunBusyError:
                 await self.engine.record_schedule_skip(plan, current)
         if changed:
