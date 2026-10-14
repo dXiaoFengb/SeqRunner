@@ -33,7 +33,7 @@ function installBackend(config = makeConfig(), runtime: Runtime = { busy: false,
     if (path.endsWith('/health')) return { ok: true, json: async () => ({ status: 'ok' }), text: async () => '' }
     if (path.endsWith('/runtime')) return { ok: true, json: async () => runtime, text: async () => '' }
     if (path.endsWith('/history')) return { ok: true, json: async () => history, text: async () => '' }
-    if (path.endsWith('/presets')) return { ok: true, json: async () => [{ id: 'maa', label: 'MAA', executables: ['MAA.exe'], note: '日志成功', evidence: 'evidence', manualRequired: true }], text: async () => '' }
+    if (path.endsWith('/presets')) return { ok: true, json: async () => [{ id: 'maa', label: 'MAA', executables: ['MAA.exe'], note: '日志成功', evidence: 'evidence', manualRequired: true, successRules: [{ pattern: '完成', mode: 'keyword' }], failureRules: [{ pattern: '失败', mode: 'keyword' }] }], text: async () => '' }
     if (path.includes('/api/presets/maa/apply')) {
       const body = JSON.parse(String(options?.body))
       return { ok: true, json: async () => ({ ...config.tasks[0], executable: body.executable, working_directory: 'C:\\MAA', preset_id: 'maa', preset_evidence: 'evidence', allow_manual_confirmation: true, allow_process_exit: false, success_log_rules: [{ pattern: '完成', mode: 'keyword' }] }), text: async () => '' }
@@ -79,7 +79,7 @@ test('manual matching executable applies and displays preset rules', async () =>
   await flushPromises()
   expect((wrapper.find('input[placeholder="请选择 .exe"]').element as HTMLInputElement).value).toBe('C:\\MAA\\MAA.exe')
   expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/presets/maa/apply'))).toBe(true)
-  expect(wrapper.text()).toContain('预设自动规则已应用')
+  expect(wrapper.text()).toContain('MAA 模板规则')
   expect(wrapper.text()).toContain('脚本配置已保存')
 })
 
@@ -100,16 +100,30 @@ test('keeps a mismatched executable visible and blocks running until explicitly 
   expect(wrapper.find('button.run-button').attributes('disabled')).toBeDefined()
 })
 
-test('edits one selected program at a time from the script workbench', async () => {
+test('edits exactly one software without a program selector or add action', async () => {
   installBackend(makeTwoProgramConfig())
   window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }) }
   const wrapper = mount(App)
   await flushPromises()
   await wrapper.findAll('button').find((button) => button.text() === '编辑脚本')!.trigger('click')
-  expect(wrapper.findAll('.program-choice')).toHaveLength(2)
-  expect(wrapper.findAll('.task-detail-section')).toHaveLength(1)
-  await wrapper.findAll('.program-choice-main')[1].trigger('click')
-  expect((wrapper.find('.task-editor-title input').element as HTMLInputElement).value).toBe('第二程序')
+  expect(wrapper.findAll('.program-choice')).toHaveLength(0)
+  expect(wrapper.text()).not.toContain('添加程序')
+  expect(wrapper.text()).not.toContain('选择要编辑的程序')
+  expect((wrapper.find('input[aria-label="软件名称"]').element as HTMLInputElement).value).toBe('测试程序')
+})
+
+test('shows template rules immediately and keeps custom rules separate', async () => {
+  installBackend()
+  window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }) }
+  const wrapper = mount(App)
+  await flushPromises()
+  await wrapper.findAll('button').find((button) => button.text() === '编辑脚本')!.trigger('click')
+  await wrapper.find('select').setValue('maa')
+  await flushPromises()
+  expect(wrapper.text()).toContain('模板成功规则')
+  expect(wrapper.text()).toContain('关键字：完成')
+  expect(wrapper.text()).toContain('添加自定义规则')
+  expect(wrapper.text()).not.toContain('手工附加成功')
 })
 
 test('keeps a completed failure visible and opens the matching history record', async () => {

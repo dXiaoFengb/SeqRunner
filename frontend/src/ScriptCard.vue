@@ -2,7 +2,7 @@
 import { nextTick, onBeforeUnmount, ref } from 'vue'
 import type { Queue, Task } from './types'
 
-const props = defineProps<{ script: Queue; tasks: Task[]; locked: boolean; blocked: boolean; running: boolean; presetSummary: string }>()
+const props = defineProps<{ script: Queue; task: Task | null; locked: boolean; blocked: boolean; running: boolean; presetSummary: string }>()
 const emit = defineEmits<{ edit: []; run: []; duplicate: []; remove: []; dragstart: [event: DragEvent]; drop: [event: DragEvent]; move: [direction: -1 | 1] }>()
 
 const moreOpen = ref(false)
@@ -54,8 +54,8 @@ onBeforeUnmount(() => closeMenu())
       <button class="grab" type="button" title="拖拽调整脚本顺序" :disabled="locked" aria-label="拖拽调整脚本顺序">⠿</button>
       <span class="script-emblem" aria-hidden="true">{{ presetSummary === '通用程序' ? '通' : presetSummary.slice(0, 1) }}</span>
       <div class="script-title">
-        <b>{{ script.name }}</b>
-        <small>{{ tasks.length }} 个程序</small>
+        <b>{{ task?.name || '新程序' }}</b>
+        <small>{{ task?.executable || '尚未选择软件' }}</small>
       </div>
       <span class="script-preset">{{ presetSummary }}</span>
       <span v-if="running" class="script-running">运行中</span>
@@ -63,7 +63,7 @@ onBeforeUnmount(() => closeMenu())
       <span v-else class="script-ready">可运行</span>
       <div class="card-actions">
         <button :disabled="locked" @click="emit('edit')">编辑脚本</button>
-        <button class="run-button" :disabled="locked || blocked || !tasks.length" @click="emit('run')">运行</button>
+        <button class="run-button" :disabled="locked || blocked || !task" @click="emit('run')">运行</button>
         <button ref="trigger" class="more-trigger" :aria-expanded="moreOpen" aria-haspopup="menu" :disabled="locked" @click="toggleMenu" @keydown.esc="closeMenu(true)">更多</button>
       </div>
     </div>

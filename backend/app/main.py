@@ -31,6 +31,24 @@ class PresetApplyIn(BaseModel):
     name: str = ""
 
 
+def validate_single_software_config(config: AppConfig) -> None:
+    task_ids = {task.id for task in config.tasks}
+    problems: list[str] = []
+    seen: set[str] = set()
+    for script in config.queues:
+        if len(script.task_ids) != 1:
+            problems.append(f"软件脚本“{script.name}”必须且只能包含一个程序")
+            continue
+        task_id = script.task_ids[0]
+        if task_id not in task_ids:
+            problems.append(f"软件脚本“{script.name}”引用的程序不存在")
+        elif task_id in seen:
+            problems.append(f"程序不能同时属于多个软件脚本：{task_id}")
+        seen.add(task_id)
+    if problems:
+        raise ValueError("；".join(problems))
+
+
 def create_app(data_directory: Path | None = None, *, instance_id: str = "development") -> FastAPI:
     root = data_directory or Path(__file__).resolve().parents[2] / "data"
     logs = root / "logs"
@@ -92,17 +110,26 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
     @app.put("/api/config", response_model=AppConfig)
     async def put_config(config: AppConfig):
         if engine.is_busy:
-            raise HTTPException(409, "队列运行中，配置将于本轮结束后再修改")
+            raise HTTPException(409, "软件脚本运行中，配置将于本轮结束后再修改")
         try:
+            validate_single_software_config(config)
             engine.config = config
             await engine.save_config()
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
         except OSError as error:
             raise HTTPException(500, f"配置保存失败，原配置未被覆盖：{error}") from error
         return engine.config
 
     @app.post("/api/queues", response_model=QueueDefinition)
     async def add_queue(queue: QueueDefinition):
-        engine.config.queues.append(queue)
+        candidate = engine.config.model_copy(deep=True)
+        candidate.queues.append(queue)
+        try:
+            validate_single_software_config(candidate)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        engine.config = candidate
         await engine.save_config()
         return queue
 
@@ -117,9 +144,11 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
         try:
             return await engine.start(payload.queue_id, "manual")
         except StopIteration:
-            raise HTTPException(404, "队列不存在") from None
+            raise HTTPException(404, "软件脚本不存在") from None
         except RunBusyError as error:
             raise HTTPException(409, str(error)) from error
+        except RunValidationError as error:
+            raise HTTPException(422, {"message": "软件脚本配置无效", "problems": error.problems}) from error
 
     @app.post("/api/start-all")
     async def start_all():

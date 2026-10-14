@@ -72,6 +72,8 @@ def public_presets() -> list[dict]:
             "evidence": data["evidence"],
             "manualRequired": bool(data["manual"]),
             "requiresLogRules": bool(data.get("success") or data.get("failure")),
+            "successRules": [rule.model_dump(mode="json") for rule in data.get("success", [])],
+            "failureRules": [rule.model_dump(mode="json") for rule in data.get("failure", [])],
         }
         for key, data in PRESETS.items()
     ]

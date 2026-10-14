@@ -13,10 +13,10 @@ from app.storage import JsonStore
 
 
 def build_engine(tmp_path: Path, tasks: list[TaskDefinition]) -> tuple[RunnerEngine, QueueDefinition]:
-    queue = QueueDefinition(name="测试队列", task_ids=[task.id for task in tasks])
+    queues = [QueueDefinition(name=task.name, task_ids=[task.id]) for task in tasks]
     store = JsonStore(tmp_path / "data")
-    store.save_config(AppConfig(queues=[queue], tasks=tasks))
-    return RunnerEngine(store, EventHub(), cooldown_seconds=0.01, close_grace_seconds=0.05), queue
+    store.save_config(AppConfig(queues=queues, tasks=tasks))
+    return RunnerEngine(store, EventHub(), cooldown_seconds=0.01, close_grace_seconds=0.05), queues[0]
 
 
 def python_task(name: str, source: str, *args: str) -> TaskDefinition:
@@ -29,9 +29,9 @@ async def test_process_exit_runs_tasks_in_strict_order(tmp_path: Path) -> None:
     source = "from pathlib import Path; import sys; Path(sys.argv[1]).open('a').write(sys.argv[2] + '\\n')"
     first = python_task("第一项", source, str(output), "first")
     second = python_task("第二项", source, str(output), "second")
-    engine, queue = build_engine(tmp_path, [first, second])
+    engine, _ = build_engine(tmp_path, [first, second])
 
-    await engine.start(queue.id, "manual")
+    await engine.start_all()
     await engine.wait_until_idle()
 
     assert output.read_text(encoding="utf-8").splitlines() == ["first", "second"]
@@ -49,9 +49,9 @@ async def test_success_log_locks_success_before_process_exit(tmp_path: Path) -> 
     task = python_task("日志成功", source, str(log))
     task.log_path = str(log)
     task.success_log = "DONE"
-    engine, queue = build_engine(tmp_path, [task])
+    engine, _ = build_engine(tmp_path, [task])
 
-    await engine.start(queue.id, "manual")
+    await engine.start_all()
     await engine.wait_until_idle()
 
     item = engine.history.runs[0].items[0]
@@ -64,9 +64,9 @@ async def test_manual_confirmation_stops_only_owned_process(tmp_path: Path) -> N
     task = python_task("人工确认", "import time; time.sleep(10)")
     task.allow_manual_confirmation = True
     task.allow_process_exit = False
-    engine, queue = build_engine(tmp_path, [task])
+    engine, _ = build_engine(tmp_path, [task])
 
-    await engine.start(queue.id, "manual")
+    await engine.start_all()
     await asyncio.sleep(0.2)
     await engine.confirm(task.id)
     await engine.wait_until_idle()
@@ -83,9 +83,9 @@ async def test_configured_success_log_and_early_exit_is_failure(tmp_path: Path) 
     task = python_task("提前退出", "pass")
     task.log_path = str(log)
     task.success_log = "DONE"
-    engine, queue = build_engine(tmp_path, [task])
+    engine, _ = build_engine(tmp_path, [task])
 
-    await engine.start(queue.id, "manual")
+    await engine.start_all()
     await engine.wait_until_idle()
 
     assert "命中前退出" in (engine.history.runs[0].items[0].error_summary or "")
@@ -96,9 +96,9 @@ async def test_stop_prevents_next_task(tmp_path: Path) -> None:
     output = tmp_path / "should-not-run.txt"
     first = python_task("长任务", "import time; time.sleep(10)")
     second = python_task("后续任务", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')", str(output))
-    engine, queue = build_engine(tmp_path, [first, second])
+    engine, _ = build_engine(tmp_path, [first, second])
 
-    await engine.start(queue.id, "manual")
+    await engine.start_all()
     await asyncio.sleep(0.2)
     await engine.stop()
     await engine.wait_until_idle()
@@ -120,9 +120,9 @@ async def test_failure_log_regex_cleans_up_then_continues(tmp_path: Path) -> Non
     first.failure_log = r"ERROR\s+\d+"
     first.failure_log_mode = MatchMode.REGEX
     second = python_task("后续任务", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')", str(output))
-    engine, queue = build_engine(tmp_path, [first, second])
+    engine, _ = build_engine(tmp_path, [first, second])
 
-    await engine.start(queue.id, "manual")
+    await engine.start_all()
     await engine.wait_until_idle()
 
     assert engine.history.runs[0].items[0].state.value == "failed"
@@ -135,9 +135,9 @@ async def test_timeout_marks_failure_and_continues(tmp_path: Path) -> None:
     first = python_task("超时", "import time; time.sleep(10)")
     first.timeout_seconds = 1
     second = python_task("后续任务", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')", str(output))
-    engine, queue = build_engine(tmp_path, [first, second])
+    engine, _ = build_engine(tmp_path, [first, second])
 
-    await engine.start(queue.id, "manual")
+    await engine.start_all()
     await engine.wait_until_idle()
 
     assert "运行超时" in (engine.history.runs[0].items[0].error_summary or "")
@@ -207,9 +207,9 @@ async def test_start_all_blocks_everything_when_a_script_is_incomplete(tmp_path:
 async def test_snapshot_exposes_cooldown_deadline_and_cancels_it_on_stop(tmp_path: Path) -> None:
     first = python_task("第一项", "pass")
     second = python_task("第二项", "import time; time.sleep(10)")
-    engine, queue = build_engine(tmp_path, [first, second])
+    engine, _ = build_engine(tmp_path, [first, second])
     engine.cooldown_seconds = 1
-    await engine.start(queue.id, "manual")
+    await engine.start_all()
     for _ in range(20):
         if engine.snapshot()["cooldownUntil"]:
             break

@@ -63,6 +63,7 @@ class RunnerEngine:
         self.cooldown_seconds = cooldown_seconds
         self.close_grace_seconds = close_grace_seconds
         self.config = store.load_config()
+        self.migration_notice = store.last_config_migration_notice
         self.history = store.load_history()
         self.current_run: RunRecord | None = None
         self._runner_task: asyncio.Task[None] | None = None
@@ -87,9 +88,13 @@ class RunnerEngine:
 
     async def start(self, queue_id: str, source: Literal["manual", "scheduled"]) -> RunRecord:
         if self.is_busy:
-            raise RunBusyError("已有队列正在运行，当前触发被跳过")
+            raise RunBusyError("已有软件脚本正在运行，当前触发被跳过")
         queue = copy.deepcopy(self.queue_by_id(queue_id))
         task_book = {task.id: copy.deepcopy(task) for task in self.config.tasks}
+        if len(queue.task_ids) != 1:
+            raise RunValidationError([f"软件脚本“{queue.name}”必须且只能包含一个程序"])
+        if queue.task_ids[0] not in task_book:
+            raise RunValidationError([f"软件脚本“{queue.name}”引用的程序不存在"])
         selected = [task_book[item] for item in queue.task_ids if item in task_book]
         record = RunRecord(queue_id=queue.id, queue_name=queue.name, trigger_source=source)
         record.items = [
@@ -114,30 +119,22 @@ class RunnerEngine:
         items: list[ItemRecord] = []
         for script in scripts:
             label = f"脚本“{script.name}”"
-            if not script.task_ids:
-                problems.append(f"{label}没有程序")
+            if len(script.task_ids) != 1:
+                problems.append(f"{label}必须且只能包含一个程序")
                 continue
-            for position, task_id in enumerate(script.task_ids, start=1):
-                task = task_book.get(task_id)
-                if task is None:
-                    problems.append(f"{label}第 {position} 项不存在")
-                    continue
-                if not task.executable.strip():
-                    problems.append(f"{label}的“{task.name}”未选择程序路径")
-                    continue
-                preset_problem = self._preset_problem(task)
-                if preset_problem:
-                    problems.append(f"{label}的“{task.name}”{preset_problem}")
-                    continue
-                selected.append(task)
-                items.append(
-                    ItemRecord(
-                        task_id=task.id,
-                        task_name=task.name,
-                        script_id=script.id,
-                        script_name=script.name,
-                    )
-                )
+            task = task_book.get(script.task_ids[0])
+            if task is None:
+                problems.append(f"{label}引用的程序不存在")
+                continue
+            if not task.executable.strip():
+                problems.append(f"{label}的“{task.name}”未选择程序路径")
+                continue
+            preset_problem = self._preset_problem(task)
+            if preset_problem:
+                problems.append(f"{label}的“{task.name}”{preset_problem}")
+                continue
+            selected.append(task)
+            items.append(ItemRecord(task_id=task.id, task_name=task.name, script_id=script.id, script_name=script.name))
         if problems:
             raise RunValidationError(problems)
         if not selected:
@@ -418,6 +415,7 @@ class RunnerEngine:
             "activeTaskId": self._active_task_id,
             "cooldownSeconds": cooldown_seconds,
             "cooldownUntil": self._cooldown_until.isoformat() if self._cooldown_until else None,
+            "migrationNotice": self.migration_notice,
             "runCenter": {
                 "currentScriptId": active_item.script_id if active_item else None,
                 "currentScriptName": active_item.script_name if active_item else None,

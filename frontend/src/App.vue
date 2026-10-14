@@ -17,15 +17,14 @@ const presets = ref<Preset[]>([])
 const logs = ref<string[]>([])
 const selectedScriptId = ref<string | null>(null)
 const editingScriptId = ref<string | null>(null)
-const selectedEditorTaskId = ref<string | null>(null)
 const selectedHistoryRunId = ref<string | null>(null)
 const expandedHistory = ref(new Set<string>())
 const query = ref('')
 const page = ref<Page>('scripts')
 const notice = ref('正在确认本地后端…')
+const migrationNotice = ref('')
 const backendDetail = ref('')
 const appVersion = ref('开发版本读取中')
-const draggedTask = ref<string | null>(null)
 const draggedScript = ref<string | null>(null)
 const selectionIssues = ref<Record<string, string>>({})
 const deferredPresets = ref<Record<string, DeferredPreset>>({})
@@ -43,8 +42,7 @@ let countdownTimer: number | undefined
 const selectedScript = computed(() => config.value.queues.find((queue) => queue.id === selectedScriptId.value) || null)
 const editingScript = computed(() => config.value.queues.find((queue) => queue.id === editingScriptId.value) || null)
 const taskBook = computed(() => new Map(config.value.tasks.map((task) => [task.id, task])))
-const editorTasks = computed(() => editingScript.value ? scriptTasks(editingScript.value) : [])
-const editingTask = computed(() => editorTasks.value.find((task) => task.id === selectedEditorTaskId.value) || editorTasks.value[0] || null)
+const editingTask = computed(() => editingScript.value ? scriptTasks(editingScript.value)[0] || null : null)
 const visibleScripts = computed(() => {
   const text = query.value.trim().toLocaleLowerCase()
   if (!text) return config.value.queues
@@ -90,17 +88,19 @@ function draft(): Task {
 function presetFor(task: Task) { return presets.value.find((preset) => preset.id === task.preset_id) }
 function presetLabel(task: Task) { return presetFor(task)?.label || '通用程序' }
 function presetSummary(script: Queue) {
-  const labels = scriptTasks(script).map(presetLabel).filter((value, index, list) => list.indexOf(value) === index)
-  return labels.join('、') || '尚未添加程序'
+  const task = scriptTasks(script)[0]
+  return task ? presetLabel(task) : '通用程序'
 }
 function matchesPreset(task: Task, executable = task.executable) {
   const preset = presetFor(task)
   return !task.preset_id || !!preset?.executables.some((name) => name.toLocaleLowerCase() === fileName(executable))
 }
-function ruleText(task: Task, kind: 'success' | 'failure') {
-  const rules = kind === 'success' ? task.success_log_rules : task.failure_log_rules
-  return rules.map((rule) => (rule.mode === 'regex' ? '正则：' : '关键字：') + rule.pattern).join('；') || (kind === 'success' ? '无：需人工确认' : '无')
+function presetRuleText(task: Task, kind: 'success' | 'failure') {
+  const preset = presetFor(task)
+  const rules = kind === 'success' ? preset?.successRules : preset?.failureRules
+  return (rules || []).map((rule) => (rule.mode === 'regex' ? '正则：' : '关键字：') + rule.pattern).join('；') || (kind === 'success' ? '无：需人工确认' : '无')
 }
+function scriptTask(script: Queue) { return scriptTasks(script)[0] || null }
 function report(title: string, error: unknown) { notice.value = title + '：' + (error instanceof Error ? error.message : String(error)) }
 function clearSelectionIssue(taskId: string) {
   const next = { ...selectionIssues.value }
@@ -121,7 +121,7 @@ function taskProblem(task: Task): string | null {
 }
 function scriptProblems(script: Queue) {
   const tasks = scriptTasks(script)
-  if (!tasks.length) return ['脚本“' + script.name + '”没有程序']
+  if (tasks.length !== 1) return ['软件脚本“' + script.name + '”必须且只能包含一个程序']
   return tasks.flatMap((task) => {
     const problem = taskProblem(task)
     return problem ? ['脚本“' + script.name + '”的“' + task.name + '”' + problem] : []
@@ -158,11 +158,13 @@ async function refresh() {
   if (!hasUnsavedDraft.value) config.value = remoteConfig
   selectedScriptId.value ??= config.value.queues[0]?.id || null
   runtime.value = await connection.request('/api/runtime') as Runtime
+  migrationNotice.value = runtime.value.migrationNotice || ''
   presets.value = await connection.request('/api/presets') as Preset[]
   await refreshHistory()
   await reconcileLoadedPresets()
   if (hasUnsavedDraft.value) await flushSave()
   await resumeDeferredPresets()
+  if (migrationNotice.value) notice.value = migrationNotice.value
 }
 function handleRealtimeEvent(event: { type: string; data: unknown }) {
   if (event.type === 'runtime') {
@@ -210,13 +212,11 @@ function save() {
 function openEditor(script: Queue) {
   selectedScriptId.value = script.id
   editingScriptId.value = script.id
-  selectedEditorTaskId.value = script.task_ids[0] || null
   page.value = 'editor'
 }
 function closeEditor() {
   page.value = 'scripts'
   editingScriptId.value = null
-  selectedEditorTaskId.value = null
 }
 function openFailureDetails(runId: string) {
   selectedHistoryRunId.value = runId
@@ -229,31 +229,19 @@ function toggleHistory(runId: string) {
   expandedHistory.value = next
 }
 function newScript() {
-  const script: Queue = { id: uid(), name: '脚本 ' + (config.value.queues.length + 1), task_ids: [], time_slots: [] }
+  const task = draft()
+  const script: Queue = { id: uid(), name: task.name, task_ids: [task.id], time_slots: [] }
+  config.value.tasks.push(task)
   config.value.queues.push(script)
   void save()
   openEditor(script)
 }
-function addTask(script: Queue) {
-  const task = draft()
-  config.value.tasks.push(task)
-  script.task_ids.push(task.id)
-  selectedEditorTaskId.value = task.id
-  void save()
-}
-function removeTask(script: Queue, id: string) {
-  const index = script.task_ids.indexOf(id)
-  script.task_ids = script.task_ids.filter((taskId) => taskId !== id)
-  config.value.tasks = config.value.tasks.filter((task) => task.id !== id)
-  clearSelectionIssue(id)
-  delete deferredPresets.value[id]
-  if (selectedEditorTaskId.value === id) selectedEditorTaskId.value = script.task_ids[index] || script.task_ids[index - 1] || null
-  void save()
-}
 function duplicateScript(script: Queue) {
-  const clonedTasks = scriptTasks(script).map((task) => ({ ...structuredClone(task), id: uid(), name: task.name + ' 副本' }))
-  const clone: Queue = { id: uid(), name: script.name + ' 副本', task_ids: clonedTasks.map((task) => task.id), time_slots: [] }
-  config.value.tasks.push(...clonedTasks)
+  const task = scriptTask(script)
+  if (!task) return
+  const clonedTask = { ...structuredClone(task), id: uid(), name: task.name + ' 副本' }
+  const clone: Queue = { id: uid(), name: clonedTask.name, task_ids: [clonedTask.id], time_slots: [] }
+  config.value.tasks.push(clonedTask)
   config.value.queues.push(clone)
   selectedScriptId.value = clone.id
   notice.value = '已复制脚本；定时槽未复制。'
@@ -266,23 +254,6 @@ function deleteScript(script: Queue) {
   config.value.tasks = config.value.tasks.filter((task) => !owned.has(task.id))
   if (selectedScriptId.value === script.id) selectedScriptId.value = config.value.queues[0]?.id || null
   if (editingScriptId.value === script.id) closeEditor()
-  void save()
-}
-function moveTask(script: Queue, targetId: string) {
-  if (!draggedTask.value || draggedTask.value === targetId) return
-  const from = script.task_ids.indexOf(draggedTask.value)
-  const to = script.task_ids.indexOf(targetId)
-  if (from < 0 || to < 0) return
-  script.task_ids.splice(from, 1)
-  script.task_ids.splice(to, 0, draggedTask.value)
-  draggedTask.value = null
-  void save()
-}
-function moveTaskBy(script: Queue, task: Task, direction: -1 | 1) {
-  const from = script.task_ids.indexOf(task.id)
-  const to = from + direction
-  if (from < 0 || to < 0 || to >= script.task_ids.length) return
-  ;[script.task_ids[from], script.task_ids[to]] = [script.task_ids[to], script.task_ids[from]]
   void save()
 }
 function moveScript(targetId: string) {
@@ -319,6 +290,8 @@ async function applyPresetForCurrentPath(task: Task, executable: string, serial:
   }) as Task
   if (presetRequestSerial.get(task.id) !== serial || task.preset_id !== presetId || task.executable !== executable) return
   Object.assign(task, applied)
+  const script = config.value.queues.find((item) => item.task_ids[0] === task.id)
+  if (script && script.name === '新程序') script.name = task.name
   const next = { ...deferredPresets.value }
   delete next[task.id]
   deferredPresets.value = next
@@ -364,6 +337,12 @@ function selectPreset(task: Task) {
     return
   }
   clearAppliedRules(task)
+  const preset = presetFor(task)
+  if (task.name === '新程序' && preset) {
+    task.name = preset.label
+    const script = config.value.queues.find((item) => item.task_ids[0] === task.id)
+    if (script && script.name === '新程序') script.name = preset.label
+  }
   notice.value = task.executable ? '正在为 ' + presetLabel(task) + ' 应用匹配规则。' : '已选择 ' + presetLabel(task) + '，请输入或选择对应 EXE。'
   if (task.executable) void synchronizeExecutable(task, task.executable)
   else void save()
@@ -467,7 +446,19 @@ async function confirm(taskId: string) {
   }
 }
 function setText(task: Task, key: keyof Task, event: Event) {
-  ;(task as Record<string, unknown>)[key] = (event.target as HTMLInputElement).value.trim() || null
+  const value = (event.target as HTMLInputElement).value.trim() || null
+  if ((key === 'success_log' || key === 'failure_log') && value) {
+    const preset = presetFor(task)
+    const automatic = key === 'success_log'
+      ? [...task.success_log_rules, ...(preset?.successRules || [])]
+      : [...task.failure_log_rules, ...(preset?.failureRules || [])]
+    if (automatic.some((rule) => rule.pattern === value)) {
+      notice.value = '自定义规则不能与模板自动规则重复。'
+      ;(event.target as HTMLInputElement).value = ''
+      return
+    }
+  }
+  ;(task as Record<string, unknown>)[key] = value
   void save()
 }
 function setArgs(task: Task, event: Event) {
@@ -521,13 +512,14 @@ onBeforeUnmount(() => {
         <div class="actions"><span class="connection-chip" :class="{ offline: !connection.restOnline.value }">API {{ connection.restOnline.value ? '在线' : '离线' }}</span><span class="connection-chip" :class="{ warning: connection.realtimeState.value !== 'online' }">{{ connection.realtimeLabel.value }}</span><button class="danger" :disabled="!runtime.busy || !connection.restOnline.value" @click="stop">全局停止</button></div>
       </header>
       <RunCenter :runtime="runtime" :countdown="cooldown" :confirmation-pending="confirmationPending" @confirm="confirm" @show-failures="openFailureDetails" />
+      <p v-if="migrationNotice" class="migration-notice" role="status">{{ migrationNotice }}</p>
       <p class="notice"><span>{{ notice }}</span><span v-if="hasUnsavedDraft" class="draft-state">未保存草稿</span></p>
 
       <section v-if="page === 'scripts'" class="scripts-page">
         <div class="toolbar"><input v-model="query" placeholder="搜索脚本、程序或预设" aria-label="搜索脚本、程序或预设"><div><button class="primary" :disabled="runtime.busy || !connection.restOnline.value" @click="newScript">＋ 新建脚本</button><button class="run-all" :disabled="!connection.restOnline.value || runtime.busy || !config.queues.length" @click="runAllScripts">▶ 运行全部脚本</button></div></div>
         <div v-if="allRunProblems.length" class="run-problems"><b>无法运行全部脚本</b><ul><li v-for="problem in allRunProblems" :key="problem">{{ problem }}</li></ul></div>
-        <p v-if="!visibleScripts.length" class="empty">没有匹配的脚本。新建脚本后，添加需要顺序运行的程序。</p>
-        <ScriptCard v-for="script in visibleScripts" :key="script.id" :script="script" :tasks="scriptTasks(script)" :locked="runtime.busy" :blocked="scriptBlocked(script)" :running="runtime.run?.items.some((item) => item.script_id === script.id) || runtime.run?.queue_name === script.name" :preset-summary="presetSummary(script)" @edit="openEditor(script)" @run="runScript(script)" @duplicate="duplicateScript(script)" @remove="deleteScript(script)" @dragstart="draggedScript = script.id" @drop="moveScript(script.id)" @move="moveScriptBy(script, $event)" />
+        <p v-if="!visibleScripts.length" class="empty">没有匹配的软件脚本。新建脚本后，直接配置一个软件。</p>
+        <ScriptCard v-for="script in visibleScripts" :key="script.id" :script="script" :task="scriptTask(script)" :locked="runtime.busy" :blocked="scriptBlocked(script)" :running="runtime.run?.items.some((item) => item.script_id === script.id) || runtime.run?.queue_name === script.name" :preset-summary="presetSummary(script)" @edit="openEditor(script)" @run="runScript(script)" @duplicate="duplicateScript(script)" @remove="deleteScript(script)" @dragstart="draggedScript = script.id" @drop="moveScript(script.id)" @move="moveScriptBy(script, $event)" />
       </section>
 
       <section v-else-if="page === 'editor' && editingScript" class="editor-page">
@@ -536,38 +528,25 @@ onBeforeUnmount(() => {
           <small>{{ runtime.busy ? '本轮运行中，配置已锁定' : hasUnsavedDraft ? '存在未保存草稿' : '修改会自动保存' }}</small>
         </div>
         <section class="editor-sheet">
-          <div class="editor-sheet-title"><div><span>脚本配置</span><h2>{{ editingScript.name }}</h2><p>此处只编辑当前脚本；程序将按下方顺序依次执行。</p></div><b>{{ editorTasks.length }} 个程序</b></div>
+          <div class="editor-sheet-title"><div><span>软件脚本配置</span><h2>{{ editingTask?.name || editingScript.name }}</h2><p>一个软件脚本只对应一个软件；运行全部脚本时按首页卡片顺序执行。</p></div><b>{{ editingTask ? presetLabel(editingTask) : '通用程序' }}</b></div>
 
           <section class="editor-section editor-basic">
-            <div class="section-heading"><div><span>基本信息</span><h3>脚本名称</h3></div><small>名称用于计划、运行中心和历史记录。</small></div>
-            <label class="script-name">名称<input v-model="editingScript.name" :disabled="runtime.busy" @change="save"></label>
-          </section>
-
-          <section class="editor-section program-order-section">
-            <div class="section-heading"><div><span>程序顺序</span><h3>选择要编辑的程序</h3></div><div class="section-actions"><small>拖拽或使用方向按钮调整顺序。</small><button class="add" :disabled="runtime.busy || !connection.restOnline.value" @click="addTask(editingScript)">＋ 添加程序</button></div></div>
-            <p v-if="!editorTasks.length" class="empty-programs">尚未添加程序。点击“添加程序”后，在下方完成它的运行规则。</p>
-            <div v-else class="program-strip" role="listbox" aria-label="程序顺序与选择">
-              <article v-for="(task, index) in editorTasks" :key="task.id" class="program-choice" :class="{ active: editingTask?.id === task.id }" :draggable="!runtime.busy" @dragstart="draggedTask = task.id" @dragover.prevent @drop="moveTask(editingScript, task.id)">
-                <button class="program-choice-main" type="button" role="option" :aria-selected="editingTask?.id === task.id" @click="selectedEditorTaskId = task.id">
-                  <span class="grab" aria-hidden="true">⠿</span><b class="num">{{ String(index + 1).padStart(2, '0') }}</b><span class="program-choice-copy"><strong>{{ task.name }}</strong><small>{{ presetLabel(task) }}</small></span><TaskStatus v-if="taskState(task.id)" :state="taskState(task.id)?.state || 'queued'" :detail="taskState(task.id)?.error_summary"/>
-                </button>
-                <div class="program-choice-actions"><button :disabled="runtime.busy || index === 0" :aria-label="'上移 ' + task.name" @click="moveTaskBy(editingScript, task, -1)">↑</button><button :disabled="runtime.busy || index === editorTasks.length - 1" :aria-label="'下移 ' + task.name" @click="moveTaskBy(editingScript, task, 1)">↓</button><button class="textdanger" :disabled="runtime.busy" :aria-label="'移除 ' + task.name" @click="removeTask(editingScript, task.id)">移除</button></div>
-              </article>
-            </div>
+            <div class="section-heading"><div><span>基本信息</span><h3>软件名称</h3></div><small>名称用于首页、计划、运行中心和历史记录。</small></div>
+            <label class="script-name">名称<input v-if="editingTask" v-model="editingTask.name" aria-label="软件名称" :disabled="runtime.busy" @change="editingScript.name = editingTask.name; save()"></label>
           </section>
 
           <section v-if="editingTask" class="editor-section task-detail-section">
-            <div class="section-heading"><div><span>当前程序</span><h3>编辑 {{ editingTask.name }}</h3></div><small>{{ presetLabel(editingTask) }} · 第 {{ editorTasks.findIndex((task) => task.id === editingTask.id) + 1 }} 项</small></div>
-            <div class="task-editor-title"><label>程序名称<input v-model="editingTask.name" aria-label="程序名称" :disabled="runtime.busy" @change="save"></label><TaskStatus v-if="taskState(editingTask.id)" :state="taskState(editingTask.id)?.state || 'queued'" :detail="taskState(editingTask.id)?.error_summary"/></div>
+            <div class="section-heading"><div><span>运行配置</span><h3>{{ editingTask.name }}</h3></div><TaskStatus v-if="taskState(editingTask.id)" :state="taskState(editingTask.id)?.state || 'queued'" :detail="taskState(editingTask.id)?.error_summary"/></div>
             <section class="form-section"><h4>运行配置</h4><label>软件预设<select v-model="editingTask.preset_id" :disabled="runtime.busy" @change="selectPreset(editingTask)"><option :value="null">通用程序</option><option v-for="preset in presets" :key="preset.id" :value="preset.id">{{ preset.label }}</option></select></label><label class="path">程序完整路径<div><input :value="editingTask.executable" placeholder="请选择 .exe" :disabled="runtime.busy" @change="updateExecutable(editingTask, $event)"><button :disabled="runtime.busy" @click="choose(editingTask)">选择软件</button></div></label><p v-if="presetIssue(editingTask)" class="selection-warning">{{ presetIssue(editingTask) }}<span><button v-if="editingTask.preset_id" @click="choose(editingTask)">重新选择</button><button v-if="editingTask.preset_id && editingTask.executable && connection.restOnline.value" @click="retryPreset(editingTask)">应用预设规则</button><button v-if="editingTask.preset_id" @click="useGenericProgram(editingTask)">切换为通用程序并保存</button></span></p><div class="grid"><label>参数<input :value="editingTask.arguments.join(' ')" :disabled="runtime.busy" @change="setArgs(editingTask, $event)"></label><label>工作目录<input :value="editingTask.working_directory || ''" :disabled="runtime.busy" @change="setText(editingTask, 'working_directory', $event)"></label><label>日志文件<input :value="editingTask.log_path || ''" placeholder="仅本轮新增行" :disabled="runtime.busy" @change="setText(editingTask, 'log_path', $event)"></label><label>超时（秒）<input v-model.number="editingTask.timeout_seconds" type="number" min="1" :disabled="runtime.busy" @change="save"></label></div></section>
-            <section v-if="editingTask.preset_id" class="preset-rule-panel form-section"><h4>预设自动规则</h4><b v-if="editingTask.preset_evidence">{{ presetLabel(editingTask) }} 预设自动规则已应用</b><b v-else>等待应用 {{ presetLabel(editingTask) }} 预设规则</b><p>{{ presetFor(editingTask)?.note }}</p><dl v-if="editingTask.preset_evidence"><dt>日志文件</dt><dd>{{ editingTask.log_path || '无：该预设仅人工确认' }}</dd><dt>成功规则</dt><dd>{{ ruleText(editingTask, 'success') }}</dd><dt>失败规则</dt><dd>{{ ruleText(editingTask, 'failure') }}</dd><dt>完成方式</dt><dd>{{ editingTask.allow_manual_confirmation ? '人工确认可用' : '人工确认关闭' }}；{{ editingTask.allow_process_exit ? '正常退出可用' : '正常退出不作为成功' }}</dd></dl><small>证据：{{ editingTask.preset_evidence || presetFor(editingTask)?.evidence }}</small></section>
-            <fieldset><legend>完成信号（首个成功信号锁定）</legend><div class="signals"><label><input v-model="editingTask.allow_manual_confirmation" type="checkbox" :disabled="runtime.busy" @change="save">人工确认</label><label><input v-model="editingTask.allow_process_exit" type="checkbox" :disabled="runtime.busy" @change="save">正常退出</label><label>手工附加成功<input :value="editingTask.success_log || ''" placeholder="关键字或正则" :disabled="runtime.busy" @change="setText(editingTask, 'success_log', $event)"><select v-model="editingTask.success_log_mode" :disabled="runtime.busy" @change="save"><option value="keyword">关键字</option><option value="regex">正则</option></select></label><label>手工附加失败<input :value="editingTask.failure_log || ''" placeholder="关键字或正则" :disabled="runtime.busy" @change="setText(editingTask, 'failure_log', $event)"><select v-model="editingTask.failure_log_mode" :disabled="runtime.busy" @change="save"><option value="keyword">关键字</option><option value="regex">正则</option></select></label></div></fieldset>
+            <section v-if="editingTask.preset_id" class="preset-rule-panel form-section"><h4>预设自动规则</h4><b>{{ presetLabel(editingTask) }} 模板规则</b><p>{{ presetFor(editingTask)?.note }}</p><dl><dt>日志文件</dt><dd>{{ editingTask.log_path || '匹配 EXE 后自动填写；该预设也可能仅人工确认' }}</dd><dt>模板成功规则</dt><dd>{{ presetRuleText(editingTask, 'success') }}</dd><dt>模板失败规则</dt><dd>{{ presetRuleText(editingTask, 'failure') }}</dd><dt>完成方式</dt><dd>{{ editingTask.allow_manual_confirmation ? '人工确认可用' : '人工确认关闭' }}；{{ editingTask.allow_process_exit ? '正常退出可用' : '正常退出不作为成功' }}</dd></dl><small>证据：{{ editingTask.preset_evidence || presetFor(editingTask)?.evidence }}</small></section>
+            <fieldset><legend>完成信号（首个成功信号锁定）</legend><div class="signals"><label><input v-model="editingTask.allow_manual_confirmation" type="checkbox" :disabled="runtime.busy" @change="save">人工确认</label><label><input v-model="editingTask.allow_process_exit" type="checkbox" :disabled="runtime.busy" @change="save">正常退出</label></div><details class="custom-rules"><summary>添加自定义规则</summary><div class="signals"><label>自定义成功<input :value="editingTask.success_log || ''" placeholder="关键字或正则" :disabled="runtime.busy" @change="setText(editingTask, 'success_log', $event)"><select v-model="editingTask.success_log_mode" :disabled="runtime.busy" @change="save"><option value="keyword">关键字</option><option value="regex">正则</option></select></label><label>自定义失败<input :value="editingTask.failure_log || ''" placeholder="关键字或正则" :disabled="runtime.busy" @change="setText(editingTask, 'failure_log', $event)"><select v-model="editingTask.failure_log_mode" :disabled="runtime.busy" @change="save"><option value="keyword">关键字</option><option value="regex">正则</option></select></label></div></details></fieldset>
             <button v-if="runtime.activeTaskId === editingTask.id && editingTask.allow_manual_confirmation" class="confirm" :disabled="confirmationPending" @click="confirm(editingTask.id)">{{ confirmationPending ? '确认已接收' : '确认当前程序完成' }}</button>
           </section>
+          <section class="editor-section danger-zone"><div class="section-heading"><div><span>危险操作</span><h3>删除软件脚本</h3></div><small>删除后无法恢复该软件配置。</small></div><button class="danger" :disabled="runtime.busy" @click="deleteScript(editingScript)">删除当前软件脚本</button></section>
         </section>
       </section>
 
-      <section v-else-if="page === 'schedule'" class="page"><h2>整脚本计划</h2><p>计划只触发单条脚本；“运行全部脚本”仅支持手动开始。</p><label class="script-picker">选择脚本<select v-model="selectedScriptId"><option v-for="script in config.queues" :key="script.id" :value="script.id">{{ script.name }}</option></select></label><template v-if="selectedScript"><article v-for="slot in selectedScript.time_slots" :key="slot.id" class="slot"><input v-model="slot.enabled" type="checkbox" :disabled="runtime.busy" @change="save"><input v-model="slot.time" type="time" :disabled="runtime.busy" @change="save"><label v-for="number in 7" :key="number"><input v-model="slot.days" :value="number - 1" type="checkbox" :disabled="runtime.busy" @change="save">周{{ day(number - 1) }}</label><button class="textdanger" :disabled="runtime.busy" @click="removeSlot(slot.id)">删除</button></article><button :disabled="!connection.restOnline.value || runtime.busy" @click="addSlot">添加定时槽</button></template></section>
+      <section v-else-if="page === 'schedule'" class="page"><h2>软件脚本计划</h2><p>计划只触发一个软件脚本；“运行全部脚本”仅支持手动开始。</p><label class="script-picker">选择软件脚本<select v-model="selectedScriptId"><option v-for="script in config.queues" :key="script.id" :value="script.id">{{ scriptTask(script)?.name || script.name }}</option></select></label><template v-if="selectedScript"><article v-for="slot in selectedScript.time_slots" :key="slot.id" class="slot"><input v-model="slot.enabled" type="checkbox" :disabled="runtime.busy" @change="save"><input v-model="slot.time" type="time" :disabled="runtime.busy" @change="save"><label v-for="number in 7" :key="number"><input v-model="slot.days" :value="number - 1" type="checkbox" :disabled="runtime.busy" @change="save">周{{ day(number - 1) }}</label><button class="textdanger" :disabled="runtime.busy" @click="removeSlot(slot.id)">删除</button></article><button :disabled="!connection.restOnline.value || runtime.busy" @click="addSlot">添加定时槽</button></template></section>
       <section v-else-if="page === 'history'" class="page history-page"><h2>脚本运行历史</h2><p v-if="!history.length">尚无已完成脚本运行。</p><article v-for="run in history" :key="run.id" class="run-record" :class="{ selected: selectedHistoryRunId === run.id, failed: runHasFailures(run) }"><div class="run-record-head"><div><b>{{ run.run_mode === 'all_scripts' ? '全部脚本' : run.queue_name }}</b><small>{{ run.trigger_source }} · {{ run.state }}</small></div><button @click="toggleHistory(run.id)">{{ expandedHistory.has(run.id) ? '收起详情' : runHasFailures(run) ? '查看失败详情' : '查看详情' }}</button></div><ul v-if="expandedHistory.has(run.id)"><li v-for="item in run.items" :key="(item.script_id || '') + '-' + item.task_id" :class="{ 'history-item-failed': item.state === 'failed' }"><b>{{ item.script_name ? item.script_name + ' / ' : '' }}{{ item.task_name }}</b><span>{{ itemOutcome(item) }}</span><small v-if="item.log_summary?.length">日志：{{ item.log_summary.join('；') }}</small></li></ul></article><h2>本轮日志摘要</h2><ol class="logs"><li v-for="(line, index) in logs" :key="index">{{ line }}</li></ol></section>
       <section v-else class="page settings-page"><h2>连接与设置</h2><dl><dt>开发版本</dt><dd>{{ appVersion }}</dd><dt>API 状态</dt><dd>{{ connection.restOnline.value ? '在线：保存与运行可用' : '离线：等待后端恢复' }}</dd><dt>实时状态</dt><dd>{{ connection.realtimeLabel.value }}</dd><dt>数据目录</dt><dd>开发模式根目录 data\；便携版 EXE 同级 data\。</dd><dt>隐私边界</dt><dd>只保存本项目脚本、历史和应用日志，不改写目标软件数据。</dd></dl><div class="settings-actions"><button @click="refreshDiagnostics">刷新主进程诊断</button></div><details class="connection-diagnostics"><summary>连接诊断</summary><code>{{ diagnosticText }}</code></details></section>
     </section>

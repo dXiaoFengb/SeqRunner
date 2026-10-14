@@ -1,10 +1,10 @@
 export type Mode = 'keyword' | 'regex'
 export type Rule = { pattern: string; mode: Mode }
-export type Preset = { id: string; label: string; executables: string[]; note: string; evidence: string; manualRequired: boolean; requiresLogRules?: boolean }
+export type Preset = { id: string; label: string; executables: string[]; note: string; evidence: string; manualRequired: boolean; requiresLogRules?: boolean; successRules?: Rule[]; failureRules?: Rule[] }
 export type Task = { id: string; name: string; executable: string; arguments: string[]; working_directory: string | null; allow_manual_confirmation: boolean; allow_process_exit: boolean; log_path: string | null; success_log: string | null; success_log_mode: Mode; failure_log: string | null; failure_log_mode: Mode; success_log_rules: Rule[]; failure_log_rules: Rule[]; preset_id: string | null; preset_evidence: string | null; timeout_seconds: number }
 export type Slot = { id: string; enabled: boolean; days: number[]; time: string }
 export type Queue = { id: string; name: string; task_ids: string[]; time_slots: Slot[] }
 export type Config = { schema_version: 1; queues: Queue[]; tasks: Task[]; fired_slots: string[] }
 export type RunItem = { task_id: string; task_name: string; script_id?: string | null; script_name?: string | null; state: string; completion_source?: string | null; error_summary?: string | null; exit_code?: number | null; log_summary?: string[] }
 export type RunCenter = { currentScriptId: string | null; currentScriptName: string | null; currentTaskId: string | null; currentTaskName: string | null; currentState: string | null; completionSource: string | null; currentIndex: number; totalPrograms: number }
-export type Runtime = { busy: boolean; activeTaskId: string | null; cooldownSeconds: number; cooldownUntil?: string | null; runCenter?: RunCenter | null; run: { id: string; queue_name: string; run_mode?: 'script' | 'all_scripts'; state: string; items: RunItem[] } | null }
+export type Runtime = { busy: boolean; activeTaskId: string | null; cooldownSeconds: number; cooldownUntil?: string | null; migrationNotice?: string | null; runCenter?: RunCenter | null; run: { id: string; queue_name: string; run_mode?: 'script' | 'all_scripts'; state: string; items: RunItem[] } | null }
