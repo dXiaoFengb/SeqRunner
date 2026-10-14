@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -53,7 +53,7 @@ ipcMain.handle('runner:get-connection', () => connection || null);
 ipcMain.handle('runner:get-backend-status', () => ({ state: backendState, detail: backendDetail }));
 ipcMain.handle('runner:get-build-info', () => ({ version: developmentVersion() }));
 ipcMain.handle('runner:select-executable', async (_event, presetId) => { const picked = await dialog.showOpenDialog(windowRef, { properties: ['openFile'], filters: [{ name: 'Windows 可执行程序', extensions: ['exe'] }] }); if (picked.canceled || !picked.filePaths[0]) return { canceled: true }; const selected = picked.filePaths[0]; const expected = executableNames[presetId] || []; return { canceled: false, path: selected, matchesPreset: !presetId || expected.includes(path.basename(selected).toLowerCase()) }; });
-async function createWindow() { await startBackend(); await verifyBackend(); const healthCheck = process.env.RUNNER_HEALTH_CHECK === '1'; windowRef = new BrowserWindow({ width: 1280, height: 820, minWidth: 960, minHeight: 680, show: !healthCheck, backgroundColor: '#0b1722', title: `顺序任务调度器 ${developmentVersion()}`, webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs') } }); windowRef.webContents.setWindowOpenHandler(() => ({ action: 'deny' })); const devServer = process.env.VITE_DEV_SERVER_URL; if (devServer) await windowRef.loadURL(devServer); else await windowRef.loadFile(frontendEntry()); if (healthCheck) setTimeout(shutdown, 1000); }
+async function createWindow() { await startBackend(); await verifyBackend(); Menu.setApplicationMenu(null); const healthCheck = process.env.RUNNER_HEALTH_CHECK === '1'; windowRef = new BrowserWindow({ width: 1280, height: 820, minWidth: 960, minHeight: 680, show: !healthCheck, backgroundColor: '#0b1722', title: `顺序任务调度器 ${developmentVersion()}`, webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs') } }); windowRef.webContents.setWindowOpenHandler(() => ({ action: 'deny' })); const devServer = process.env.VITE_DEV_SERVER_URL; if (devServer) await windowRef.loadURL(devServer); else await windowRef.loadFile(frontendEntry()); if (healthCheck) setTimeout(shutdown, 1000); }
 const lock = app.requestSingleInstanceLock(); if (!lock) app.quit();
 app.on('second-instance', () => { if (windowRef) { if (windowRef.isMinimized()) windowRef.restore(); windowRef.focus(); } });
 app.whenReady().then(createWindow).catch(async (error) => { await dialog.showMessageBox({ type: 'error', title: '启动失败', message: error.message }); app.quit(); });

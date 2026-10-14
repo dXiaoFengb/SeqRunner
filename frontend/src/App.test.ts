@@ -95,7 +95,7 @@ test('keeps a mismatched executable visible and blocks running until explicitly 
   await flushPromises()
   expect((wrapper.find('input[placeholder="请选择 .exe"]').element as HTMLInputElement).value).toBe('C:\\Other\\Other.exe')
   expect(wrapper.text()).toContain('切换为通用程序并保存')
-  await wrapper.findAll('button').find((button) => button.text().includes('返回脚本管理'))!.trigger('click')
+  await wrapper.findAll('button').find((button) => button.text() === '← 返回')!.trigger('click')
   await flushPromises()
   expect(wrapper.find('button.run-button').attributes('disabled')).toBeDefined()
 })
@@ -118,6 +118,9 @@ test('uses one clear editor sheet with explicit save confirmation while preservi
   const wrapper = mount(App)
   await flushPromises()
   await wrapper.findAll('button').find((button) => button.text() === '编辑脚本')!.trigger('click')
+  expect(wrapper.findAll('.editor-sheet')).toHaveLength(1)
+  expect(wrapper.find('.editor-navigation').text()).toContain('脚本管理 / 编辑软件')
+  expect(wrapper.find('.content > header').exists()).toBe(false)
   expect(wrapper.text()).toContain('测试程序 脚本配置')
   expect(wrapper.text()).toContain('使用说明')
   expect(wrapper.text()).toContain('基本信息')
@@ -127,6 +130,28 @@ test('uses one clear editor sheet with explicit save confirmation while preservi
   await flushPromises()
   expect(fetchMock.mock.calls.some(([url, options]) => String(url).endsWith('/config') && options?.method === 'PUT')).toBe(true)
   expect(wrapper.text()).toContain('保存更改已完成')
+})
+
+test('uses the two-column basic editor layout and keeps configuration controls dark-styled', async () => {
+  installBackend()
+  window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }) }
+  const wrapper = mount(App)
+  await flushPromises()
+  await wrapper.findAll('button').find((button) => button.text() === '编辑脚本')!.trigger('click')
+  expect(wrapper.find('.basic-grid .script-name').exists()).toBe(true)
+  expect(wrapper.find('.basic-grid .path input[placeholder="请选择 .exe"]').exists()).toBe(true)
+  expect(wrapper.find('.editor-run-config select').exists()).toBe(true)
+})
+
+test('organizes settings into application information and connection diagnostics', async () => {
+  installBackend()
+  window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }) }
+  const wrapper = mount(App)
+  await flushPromises()
+  await wrapper.findAll('button').find((button) => button.text() === '设置')!.trigger('click')
+  expect(wrapper.findAll('.settings-section')).toHaveLength(2)
+  expect(wrapper.text()).toContain('应用信息')
+  expect(wrapper.text()).toContain('连接诊断')
 })
 
 test('maps each software card to its own waiting and terminal run states', async () => {
