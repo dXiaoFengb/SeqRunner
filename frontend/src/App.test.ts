@@ -112,6 +112,46 @@ test('edits exactly one software without a program selector or add action', asyn
   expect((wrapper.find('input[aria-label="软件名称"]').element as HTMLInputElement).value).toBe('测试程序')
 })
 
+test('uses one clear editor sheet with explicit save confirmation while preserving automatic save', async () => {
+  const fetchMock = installBackend()
+  window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }) }
+  const wrapper = mount(App)
+  await flushPromises()
+  await wrapper.findAll('button').find((button) => button.text() === '编辑脚本')!.trigger('click')
+  expect(wrapper.text()).toContain('测试程序 脚本配置')
+  expect(wrapper.text()).toContain('使用说明')
+  expect(wrapper.text()).toContain('基本信息')
+  expect(wrapper.text()).toContain('运行配置')
+  expect(wrapper.text()).toContain('完成信号')
+  await wrapper.findAll('button').find((button) => button.text() === '保存更改')!.trigger('click')
+  await flushPromises()
+  expect(fetchMock.mock.calls.some(([url, options]) => String(url).endsWith('/config') && options?.method === 'PUT')).toBe(true)
+  expect(wrapper.text()).toContain('保存更改已完成')
+})
+
+test('maps each software card to its own waiting and terminal run states', async () => {
+  const config = makeConfig()
+  config.queues.push({ id: 'q-2', name: '第二脚本', task_ids: ['t-2'], time_slots: [] })
+  config.tasks.push({ ...config.tasks[0], id: 't-2', name: '第二程序', executable: 'C:\\second.exe' })
+  config.tasks[0].executable = 'C:\\first.exe'
+  const runtime: Runtime = {
+    busy: true,
+    activeTaskId: 't-2',
+    cooldownSeconds: 0,
+    cooldownUntil: null,
+    runCenter: { currentScriptId: 'q-2', currentScriptName: '第二脚本', currentTaskId: 't-2', currentTaskName: '第二程序', currentState: 'waiting_manual', completionSource: null, currentIndex: 2, totalPrograms: 2 },
+    run: { id: 'run-1', queue_name: '全部脚本', run_mode: 'all_scripts', state: 'running', items: [{ task_id: 't', task_name: '测试程序', script_id: 'q', script_name: '测试脚本', state: 'succeeded', completion_source: 'manual' }, { task_id: 't-2', task_name: '第二程序', script_id: 'q-2', script_name: '第二脚本', state: 'waiting_manual' }] },
+  }
+  installBackend(config, runtime)
+  window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }) }
+  const wrapper = mount(App)
+  await flushPromises()
+  const cards = wrapper.findAll('.script-card')
+  expect(cards[0].text()).toContain('已完成')
+  expect(cards[0].text()).not.toContain('运行中')
+  expect(cards[1].text()).toContain('等待确认')
+})
+
 test('shows template rules immediately and keeps custom rules separate', async () => {
   installBackend()
   window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }) }

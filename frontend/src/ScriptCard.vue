@@ -2,7 +2,8 @@
 import { nextTick, onBeforeUnmount, ref } from 'vue'
 import type { Queue, Task } from './types'
 
-const props = defineProps<{ script: Queue; task: Task | null; locked: boolean; blocked: boolean; running: boolean; presetSummary: string }>()
+type Execution = { kind: 'idle' | 'queued' | 'running' | 'waiting_manual' | 'closing' | 'cooling_down' | 'succeeded' | 'failed' | 'stopped'; label: string; detail?: string }
+const props = defineProps<{ script: Queue; task: Task | null; locked: boolean; blocked: boolean; execution?: Execution; presetSummary: string }>()
 const emit = defineEmits<{ edit: []; run: []; duplicate: []; remove: []; dragstart: [event: DragEvent]; drop: [event: DragEvent]; move: [direction: -1 | 1] }>()
 
 const moreOpen = ref(false)
@@ -49,7 +50,7 @@ onBeforeUnmount(() => closeMenu())
 </script>
 
 <template>
-  <article class="script-card" :class="{ running }" :draggable="!locked" @dragstart="emit('dragstart', $event)" @dragover.prevent @drop="emit('drop', $event)">
+  <article class="script-card" :class="[execution?.kind, { running: execution?.kind === 'running' || execution?.kind === 'waiting_manual' || execution?.kind === 'closing' || execution?.kind === 'cooling_down' }]" :draggable="!locked" @dragstart="emit('dragstart', $event)" @dragover.prevent @drop="emit('drop', $event)">
     <div class="script-summary">
       <button class="grab" type="button" title="拖拽调整脚本顺序" :disabled="locked" aria-label="拖拽调整脚本顺序">⠿</button>
       <span class="script-emblem" aria-hidden="true">{{ presetSummary === '通用程序' ? '通' : presetSummary.slice(0, 1) }}</span>
@@ -58,7 +59,7 @@ onBeforeUnmount(() => closeMenu())
         <small>{{ task?.executable || '尚未选择软件' }}</small>
       </div>
       <span class="script-preset">{{ presetSummary }}</span>
-      <span v-if="running" class="script-running">运行中</span>
+      <span v-if="execution && execution.kind !== 'idle'" class="script-state" :class="'state-' + execution.kind" :title="execution.detail || execution.label">{{ execution.label }}</span>
       <span v-else-if="blocked" class="script-incomplete">待完成配置</span>
       <span v-else class="script-ready">可运行</span>
       <div class="card-actions">

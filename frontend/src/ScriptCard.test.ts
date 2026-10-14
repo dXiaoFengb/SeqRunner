@@ -4,7 +4,7 @@ import ScriptCard from './ScriptCard.vue'
 import type { Task } from './types'
 
 const task: Task = { id: 't', name: '启动器', executable: '', arguments: [], working_directory: null, allow_manual_confirmation: true, allow_process_exit: true, log_path: null, success_log: null, success_log_mode: 'keyword', failure_log: null, failure_log_mode: 'keyword', success_log_rules: [], failure_log_rules: [], preset_id: null, preset_evidence: null, timeout_seconds: 600 }
-const props = { script: { id: 'q', name: '晨间脚本', task_ids: ['t'], time_slots: [] }, task, locked: false, blocked: false, running: false, presetSummary: '通用程序' }
+const props = { script: { id: 'q', name: '晨间脚本', task_ids: ['t'], time_slots: [] }, task, locked: false, blocked: false, presetSummary: '通用程序' }
 
 test('keeps the homepage card compact and exposes keyboard order actions in the menu', async () => {
   const wrapper = mount(ScriptCard, { props })
@@ -34,4 +34,17 @@ test('uses a top-layer more menu that can be dismissed with Escape', async () =>
   await wrapper.vm.$nextTick()
   expect(document.body.querySelector('[role="menu"]')).toBeNull()
   wrapper.unmount()
+})
+
+test('shows the software-specific terminal state instead of marking every run item as running', () => {
+  const completed = mount(ScriptCard, { props: { ...props, execution: { kind: 'succeeded', label: '已完成', detail: 'manual' } } })
+  expect(completed.text()).toContain('已完成')
+  expect(completed.text()).not.toContain('运行中')
+  expect(completed.classes()).toContain('succeeded')
+  completed.unmount()
+
+  const failed = mount(ScriptCard, { props: { ...props, execution: { kind: 'failed', label: '失败', detail: '退出码 3' } } })
+  expect(failed.text()).toContain('失败')
+  expect(failed.find('.script-state').attributes('title')).toBe('退出码 3')
+  failed.unmount()
 })

@@ -32,6 +32,7 @@ const presetRequestSerial = new Map<string, number>()
 const confirmationPending = ref(false)
 const countdownNow = ref(Date.now())
 const allRunProblems = ref<string[]>([])
+const saveState = ref<'saved' | 'saving' | 'draft' | 'failed'>('saved')
 let localRevision = 0
 let savedRevision = 0
 let saveFlight: Promise<void> | undefined
@@ -52,6 +53,13 @@ const visibleScripts = computed(() => {
   )
 })
 const hasUnsavedDraft = computed(() => localRevision > savedRevision)
+const editorSaveLabel = computed(() => {
+  if (runtime.value.busy) return '本轮运行中，配置已锁定'
+  if (saveState.value === 'saving') return '保存中…'
+  if (saveState.value === 'failed') return '保存失败，请重试'
+  if (hasUnsavedDraft.value || saveState.value === 'draft') return '未保存草稿，等待后端恢复'
+  return '已保存'
+})
 const connectionSummary = computed(() => connection.restOnline.value
   ? (connection.realtimeState.value === 'online' ? '本地后端与实时状态已连接' : '实时状态正在恢复，保存与运行仍可继续')
   : '本地后端不可用，需要后端的操作已暂停')
@@ -138,7 +146,21 @@ function itemOutcome(item: RunItem) {
   if (item.state === 'succeeded') return '成功：' + (item.completion_source || '已完成')
   return item.state
 }
-function runHasFailures(run: HistoryRun) { return run.items.some((item) => item.state === 'failed') }
+function runHasFailures(run: Pick<HistoryRun, 'items'>) { return run.items.some((item) => item.state === 'failed') }
+type ScriptExecution = { kind: 'idle' | 'queued' | 'running' | 'waiting_manual' | 'closing' | 'cooling_down' | 'succeeded' | 'failed' | 'stopped'; label: string; detail?: string }
+function executionFor(script: Queue): ScriptExecution {
+  const task = scriptTask(script)
+  const item = runtime.value.run?.items.find((candidate) => candidate.script_id === script.id || candidate.task_id === task?.id)
+  if (!item) return { kind: 'idle', label: '' }
+  if (item.state === 'queued') return { kind: 'queued', label: '等待运行' }
+  if (['validating', 'starting', 'monitoring'].includes(item.state)) return { kind: 'running', label: '运行中' }
+  if (item.state === 'waiting_manual') return { kind: 'waiting_manual', label: '等待确认' }
+  if (['closing', 'force_closing'].includes(item.state)) return { kind: 'closing', label: '正在收尾' }
+  if (item.state === 'cooling_down') return { kind: 'cooling_down', label: '冷却中' }
+  if (item.state === 'succeeded') return { kind: 'succeeded', label: '已完成', detail: item.completion_source || undefined }
+  if (item.state === 'failed') return { kind: 'failed', label: '失败', detail: itemReason(item) }
+  return { kind: 'stopped', label: '已停止' }
+}
 
 async function refreshHistory(focusRunId?: string) {
   if (!connection.restOnline.value) return
@@ -173,6 +195,10 @@ function handleRealtimeEvent(event: { type: string; data: unknown }) {
     const finished = runtime.value.run && ['completed', 'stopped'].includes(runtime.value.run.state)
     if (finished && runtime.value.run!.id !== terminalHistoryRunId) {
       terminalHistoryRunId = runtime.value.run!.id
+      confirmationPending.value = false
+      notice.value = runtime.value.run!.state === 'stopped'
+        ? '本轮已停止，不会启动下一程序。'
+        : runHasFailures(runtime.value.run!) ? '整轮执行完成，存在失败项。' : '整轮执行完成。'
       void refreshHistory(runtime.value.run!.id)
     }
   }
@@ -183,6 +209,7 @@ function handleRealtimeEvent(event: { type: string; data: unknown }) {
 async function flushSave(): Promise<void> {
   if (saveFlight) return saveFlight
   saveFlight = (async () => {
+    if (savedRevision < localRevision) saveState.value = 'saving'
     while (connection.restOnline.value && savedRevision < localRevision) {
       const revision = localRevision
       const snapshot = JSON.parse(JSON.stringify(config.value)) as Config
@@ -193,21 +220,30 @@ async function flushSave(): Promise<void> {
         savedRevision = revision
         if (revision === localRevision) config.value = accepted
       } catch (error) {
+        saveState.value = 'failed'
         report('保存失败，草稿将保留至后端恢复', error)
         break
       }
     }
-    if (savedRevision === localRevision && connection.restOnline.value) notice.value = '脚本配置已保存'
+    if (savedRevision === localRevision && connection.restOnline.value) {
+      saveState.value = 'saved'
+      notice.value = '脚本配置已保存'
+    }
   })().finally(() => { saveFlight = undefined })
   return saveFlight
 }
 function save() {
   localRevision += 1
   if (!connection.restOnline.value) {
+    saveState.value = 'draft'
     notice.value = '后端暂不可用，当前编辑已保留为未保存草稿。'
     return Promise.resolve()
   }
   return flushSave()
+}
+async function saveEditorChanges() {
+  await save()
+  if (connection.restOnline.value && savedRevision === localRevision) notice.value = '保存更改已完成。'
 }
 function openEditor(script: Queue) {
   selectedScriptId.value = script.id
@@ -519,27 +555,36 @@ onBeforeUnmount(() => {
         <div class="toolbar"><input v-model="query" placeholder="搜索脚本、程序或预设" aria-label="搜索脚本、程序或预设"><div><button class="primary" :disabled="runtime.busy || !connection.restOnline.value" @click="newScript">＋ 新建脚本</button><button class="run-all" :disabled="!connection.restOnline.value || runtime.busy || !config.queues.length" @click="runAllScripts">▶ 运行全部脚本</button></div></div>
         <div v-if="allRunProblems.length" class="run-problems"><b>无法运行全部脚本</b><ul><li v-for="problem in allRunProblems" :key="problem">{{ problem }}</li></ul></div>
         <p v-if="!visibleScripts.length" class="empty">没有匹配的软件脚本。新建脚本后，直接配置一个软件。</p>
-        <ScriptCard v-for="script in visibleScripts" :key="script.id" :script="script" :task="scriptTask(script)" :locked="runtime.busy" :blocked="scriptBlocked(script)" :running="runtime.run?.items.some((item) => item.script_id === script.id) || runtime.run?.queue_name === script.name" :preset-summary="presetSummary(script)" @edit="openEditor(script)" @run="runScript(script)" @duplicate="duplicateScript(script)" @remove="deleteScript(script)" @dragstart="draggedScript = script.id" @drop="moveScript(script.id)" @move="moveScriptBy(script, $event)" />
+        <ScriptCard v-for="script in visibleScripts" :key="script.id" :script="script" :task="scriptTask(script)" :locked="runtime.busy" :blocked="scriptBlocked(script)" :execution="executionFor(script)" :preset-summary="presetSummary(script)" @edit="openEditor(script)" @run="runScript(script)" @duplicate="duplicateScript(script)" @remove="deleteScript(script)" @dragstart="draggedScript = script.id" @drop="moveScript(script.id)" @move="moveScriptBy(script, $event)" />
       </section>
 
       <section v-else-if="page === 'editor' && editingScript" class="editor-page">
         <div class="editor-navigation">
-          <div><button @click="closeEditor">← 返回脚本管理</button><span>脚本管理 / 编辑脚本</span></div>
-          <small>{{ runtime.busy ? '本轮运行中，配置已锁定' : hasUnsavedDraft ? '存在未保存草稿' : '修改会自动保存' }}</small>
+          <div class="editor-breadcrumb"><button @click="closeEditor">← 返回脚本管理</button><span>脚本管理 / 编辑软件</span></div>
+          <div class="editor-save-actions"><small :class="'save-' + saveState">{{ editorSaveLabel }}</small><button class="primary" :disabled="runtime.busy || saveState === 'saving' || !connection.restOnline.value" @click="saveEditorChanges">{{ saveState === 'saving' ? '保存中…' : '保存更改' }}</button></div>
         </div>
         <section class="editor-sheet">
-          <div class="editor-sheet-title"><div><span>软件脚本配置</span><h2>{{ editingTask?.name || editingScript.name }}</h2><p>一个软件脚本只对应一个软件；运行全部脚本时按首页卡片顺序执行。</p></div><b>{{ editingTask ? presetLabel(editingTask) : '通用程序' }}</b></div>
+          <div class="editor-sheet-title"><div><h2>{{ editingTask?.name || editingScript.name }} 脚本配置</h2><p>配置这个软件的启动方式、完成判断和预设规则。</p></div><b>{{ editingTask ? presetLabel(editingTask) : '通用程序' }}</b></div>
+          <aside class="editor-guidance" role="note"><b>使用说明</b><span>一个软件脚本只对应一个软件。修改会自动保存；也可随时点击“保存更改”确认当前配置。运行期间所有配置将锁定。</span></aside>
 
           <section class="editor-section editor-basic">
-            <div class="section-heading"><div><span>基本信息</span><h3>软件名称</h3></div><small>名称用于首页、计划、运行中心和历史记录。</small></div>
-            <label class="script-name">名称<input v-if="editingTask" v-model="editingTask.name" aria-label="软件名称" :disabled="runtime.busy" @change="editingScript.name = editingTask.name; save()"></label>
+            <div class="section-heading"><div><h3>基本信息</h3></div><small>名称用于首页、计划、运行中心和历史记录。</small></div>
+            <label class="script-name">软件名称<input v-if="editingTask" v-model="editingTask.name" aria-label="软件名称" :disabled="runtime.busy" @change="editingScript.name = editingTask.name; save()"></label>
           </section>
 
-          <section v-if="editingTask" class="editor-section task-detail-section">
-            <div class="section-heading"><div><span>运行配置</span><h3>{{ editingTask.name }}</h3></div><TaskStatus v-if="taskState(editingTask.id)" :state="taskState(editingTask.id)?.state || 'queued'" :detail="taskState(editingTask.id)?.error_summary"/></div>
-            <section class="form-section"><h4>运行配置</h4><label>软件预设<select v-model="editingTask.preset_id" :disabled="runtime.busy" @change="selectPreset(editingTask)"><option :value="null">通用程序</option><option v-for="preset in presets" :key="preset.id" :value="preset.id">{{ preset.label }}</option></select></label><label class="path">程序完整路径<div><input :value="editingTask.executable" placeholder="请选择 .exe" :disabled="runtime.busy" @change="updateExecutable(editingTask, $event)"><button :disabled="runtime.busy" @click="choose(editingTask)">选择软件</button></div></label><p v-if="presetIssue(editingTask)" class="selection-warning">{{ presetIssue(editingTask) }}<span><button v-if="editingTask.preset_id" @click="choose(editingTask)">重新选择</button><button v-if="editingTask.preset_id && editingTask.executable && connection.restOnline.value" @click="retryPreset(editingTask)">应用预设规则</button><button v-if="editingTask.preset_id" @click="useGenericProgram(editingTask)">切换为通用程序并保存</button></span></p><div class="grid"><label>参数<input :value="editingTask.arguments.join(' ')" :disabled="runtime.busy" @change="setArgs(editingTask, $event)"></label><label>工作目录<input :value="editingTask.working_directory || ''" :disabled="runtime.busy" @change="setText(editingTask, 'working_directory', $event)"></label><label>日志文件<input :value="editingTask.log_path || ''" placeholder="仅本轮新增行" :disabled="runtime.busy" @change="setText(editingTask, 'log_path', $event)"></label><label>超时（秒）<input v-model.number="editingTask.timeout_seconds" type="number" min="1" :disabled="runtime.busy" @change="save"></label></div></section>
-            <section v-if="editingTask.preset_id" class="preset-rule-panel form-section"><h4>预设自动规则</h4><b>{{ presetLabel(editingTask) }} 模板规则</b><p>{{ presetFor(editingTask)?.note }}</p><dl><dt>日志文件</dt><dd>{{ editingTask.log_path || '匹配 EXE 后自动填写；该预设也可能仅人工确认' }}</dd><dt>模板成功规则</dt><dd>{{ presetRuleText(editingTask, 'success') }}</dd><dt>模板失败规则</dt><dd>{{ presetRuleText(editingTask, 'failure') }}</dd><dt>完成方式</dt><dd>{{ editingTask.allow_manual_confirmation ? '人工确认可用' : '人工确认关闭' }}；{{ editingTask.allow_process_exit ? '正常退出可用' : '正常退出不作为成功' }}</dd></dl><small>证据：{{ editingTask.preset_evidence || presetFor(editingTask)?.evidence }}</small></section>
-            <fieldset><legend>完成信号（首个成功信号锁定）</legend><div class="signals"><label><input v-model="editingTask.allow_manual_confirmation" type="checkbox" :disabled="runtime.busy" @change="save">人工确认</label><label><input v-model="editingTask.allow_process_exit" type="checkbox" :disabled="runtime.busy" @change="save">正常退出</label></div><details class="custom-rules"><summary>添加自定义规则</summary><div class="signals"><label>自定义成功<input :value="editingTask.success_log || ''" placeholder="关键字或正则" :disabled="runtime.busy" @change="setText(editingTask, 'success_log', $event)"><select v-model="editingTask.success_log_mode" :disabled="runtime.busy" @change="save"><option value="keyword">关键字</option><option value="regex">正则</option></select></label><label>自定义失败<input :value="editingTask.failure_log || ''" placeholder="关键字或正则" :disabled="runtime.busy" @change="setText(editingTask, 'failure_log', $event)"><select v-model="editingTask.failure_log_mode" :disabled="runtime.busy" @change="save"><option value="keyword">关键字</option><option value="regex">正则</option></select></label></div></details></fieldset>
+          <section v-if="editingTask" class="editor-section editor-run-config">
+            <div class="section-heading"><div><h3>运行配置</h3></div><TaskStatus v-if="taskState(editingTask.id)" :state="taskState(editingTask.id)?.state || 'queued'" :detail="taskState(editingTask.id)?.error_summary"/></div>
+            <section class="form-section"><label>软件预设<select v-model="editingTask.preset_id" :disabled="runtime.busy" @change="selectPreset(editingTask)"><option :value="null">通用程序</option><option v-for="preset in presets" :key="preset.id" :value="preset.id">{{ preset.label }}</option></select></label><label class="path">程序完整路径<div><input :value="editingTask.executable" placeholder="请选择 .exe" :disabled="runtime.busy" @change="updateExecutable(editingTask, $event)"><button :disabled="runtime.busy" @click="choose(editingTask)">选择软件</button></div></label><p v-if="presetIssue(editingTask)" class="selection-warning">{{ presetIssue(editingTask) }}<span><button v-if="editingTask.preset_id" @click="choose(editingTask)">重新选择</button><button v-if="editingTask.preset_id && editingTask.executable && connection.restOnline.value" @click="retryPreset(editingTask)">应用预设规则</button><button v-if="editingTask.preset_id" @click="useGenericProgram(editingTask)">切换为通用程序并保存</button></span></p><div class="grid"><label>参数<input :value="editingTask.arguments.join(' ')" :disabled="runtime.busy" @change="setArgs(editingTask, $event)"></label><label>工作目录<input :value="editingTask.working_directory || ''" :disabled="runtime.busy" @change="setText(editingTask, 'working_directory', $event)"></label><label>日志文件<input :value="editingTask.log_path || ''" placeholder="仅本轮新增行" :disabled="runtime.busy" @change="setText(editingTask, 'log_path', $event)"></label><label>超时（秒）<input v-model.number="editingTask.timeout_seconds" type="number" min="1" :disabled="runtime.busy" @change="save"></label></div></section>
+          </section>
+
+          <section v-if="editingTask?.preset_id" class="editor-section preset-rule-section">
+            <div class="section-heading"><div><h3>预设自动规则</h3></div><small>以下内容由模板提供，只读展示。</small></div>
+            <section class="preset-rule-panel"><b>{{ presetLabel(editingTask) }} 模板规则</b><p>{{ presetFor(editingTask)?.note }}</p><dl><dt>日志文件</dt><dd>{{ editingTask.log_path || '匹配 EXE 后自动填写；该预设也可能仅人工确认' }}</dd><dt>模板成功规则</dt><dd>{{ presetRuleText(editingTask, 'success') }}</dd><dt>模板失败规则</dt><dd>{{ presetRuleText(editingTask, 'failure') }}</dd><dt>完成方式</dt><dd>{{ editingTask.allow_manual_confirmation ? '人工确认可用' : '人工确认关闭' }}；{{ editingTask.allow_process_exit ? '正常退出可用' : '正常退出不作为成功' }}</dd></dl><small>证据：{{ editingTask.preset_evidence || presetFor(editingTask)?.evidence }}</small></section>
+          </section>
+
+          <section v-if="editingTask" class="editor-section completion-section">
+            <div class="section-heading"><div><h3>完成信号</h3></div><small>首个成功信号锁定当前软件完成。</small></div>
+            <fieldset><legend>完成方式</legend><div class="signals"><label><input v-model="editingTask.allow_manual_confirmation" type="checkbox" :disabled="runtime.busy" @change="save">人工确认</label><label><input v-model="editingTask.allow_process_exit" type="checkbox" :disabled="runtime.busy" @change="save">正常退出</label></div><details class="custom-rules"><summary>添加自定义规则</summary><div class="signals"><label>自定义成功<input :value="editingTask.success_log || ''" placeholder="关键字或正则" :disabled="runtime.busy" @change="setText(editingTask, 'success_log', $event)"><select v-model="editingTask.success_log_mode" :disabled="runtime.busy" @change="save"><option value="keyword">关键字</option><option value="regex">正则</option></select></label><label>自定义失败<input :value="editingTask.failure_log || ''" placeholder="关键字或正则" :disabled="runtime.busy" @change="setText(editingTask, 'failure_log', $event)"><select v-model="editingTask.failure_log_mode" :disabled="runtime.busy" @change="save"><option value="keyword">关键字</option><option value="regex">正则</option></select></label></div></details></fieldset>
             <button v-if="runtime.activeTaskId === editingTask.id && editingTask.allow_manual_confirmation" class="confirm" :disabled="confirmationPending" @click="confirm(editingTask.id)">{{ confirmationPending ? '确认已接收' : '确认当前程序完成' }}</button>
           </section>
           <section class="editor-section danger-zone"><div class="section-heading"><div><span>危险操作</span><h3>删除软件脚本</h3></div><small>删除后无法恢复该软件配置。</small></div><button class="danger" :disabled="runtime.busy" @click="deleteScript(editingScript)">删除当前软件脚本</button></section>

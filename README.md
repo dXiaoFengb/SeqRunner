@@ -54,7 +54,7 @@
 
 - 项目名称 / 定位：顺序任务调度器；独立精简版本地 Windows 桌面程序。用户界面的每条“软件脚本”恰好对应一个软件；内部继续兼容后端 `queues/tasks` 数据键。计划只触发一个软件脚本；“运行全部脚本”只支持手动开始，并按首页卡片排序展开为同一受管轮次。旧多程序脚本会在安全加载时拆分，原组合定时槽会清空。
 - 技术栈：Python 3.13、FastAPI、Pydantic、psutil、Uvicorn `websockets` 协议实现、PyInstaller、Vue 3、TypeScript、Vite、Electron、electron-builder。
-- 目录结构（源 / 测试 / 产物 / 发布）：`backend/` 为本地服务、预设证据元数据与测试；`frontend/` 为 Vue 脚本管理、独立编辑页及连接控制模块；`electron/` 为安全主进程/preload；`scripts/` 为读取 `VERSION.md` 的本地打包入口；`data/` 为本地配置和日志（不纳入 Git）；`frontend-dist/`、`portable/`、`build/`、`release/` 及 `portable-validation-v*` 为本地构建或验证输出（不纳入 Git）；不进行发布。脚本首页为一行式脚本卡，只提供检索、创建、全量运行和脚本级操作；独立编辑页先选择程序，再只展示该程序的一份完整配置表单。
+- 目录结构（源 / 测试 / 产物 / 发布）：`backend/` 为本地服务、预设证据元数据与测试；`frontend/` 为 Vue 脚本管理、独立编辑页及连接控制模块；`electron/` 为安全主进程/preload；`scripts/` 为读取 `VERSION.md` 的本地打包入口；`data/` 为本地配置和日志（不纳入 Git）；`frontend-dist/`、`portable/`、`build/`、`release/` 及 `portable-validation-v*` 为本地构建或验证输出（不纳入 Git）；不进行发布。脚本首页为一行式软件卡，只提供检索、创建、全量运行和软件级操作；独立编辑页一次只配置当前软件，并按基本信息、运行配置、预设自动规则、完成信号和危险操作连续分区。字段自动保存保留，同时提供“保存更改”作为立即确认入口；首页状态按该软件的实时运行项显示，而非整轮状态。
 - 预设路径：选择预设时即显示本地证据表中的只读模板成功/失败规则；输入或选择匹配 EXE 后完整应用名称、参数、工作目录、日志、超时、完成方式与自动终态规则。用户规则在“添加自定义规则”中单独保存，重复模板规则会被拒绝。MAA、绝区零一条龙具有日志终态规则，MaaEnd、三月七小助手和 BetterGI 保持人工确认回退。应用不会在运行时访问外网或改写目标软件配置。
 - 失败可追溯：整轮终态仅刷新运行历史而不覆盖本地脚本草稿。存在失败项时，运行中心按脚本和程序列出错误摘要；“查看失败详情”会定位并展开相应历史记录，显示完成来源、退出码和日志摘要。
 - 构建命令：`npm run build`；`npm run package:backend` 生成隐藏控制台的后端；`npm run package:win` 生成 Windows portable EXE；`npm run package:validation` 读取 `VERSION.md` 的开发提交版本，将验证包、后端资源和下载缓存写入对应的 `portable-validation-vXYZ/` Git 忽略目录（均不代表发布）。
