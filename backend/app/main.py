@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -31,11 +32,18 @@ class PresetApplyIn(BaseModel):
     name: str = ""
 
 
+class AdbCheckIn(BaseModel):
+    executable: str
+    address: str
+
+
 def validate_single_software_config(config: AppConfig) -> None:
     task_ids = {task.id for task in config.tasks}
     problems: list[str] = []
     seen: set[str] = set()
     for script in config.queues:
+        if script.time_slots:
+            problems.append(f"软件脚本“{script.name}”不能设置定时；请在计划管理创建多软件计划")
         if len(script.task_ids) != 1:
             problems.append(f"软件脚本“{script.name}”必须且只能包含一个程序")
             continue
@@ -45,6 +53,37 @@ def validate_single_software_config(config: AppConfig) -> None:
         elif task_id in seen:
             problems.append(f"程序不能同时属于多个软件脚本：{task_id}")
         seen.add(task_id)
+    if problems:
+        raise ValueError("；".join(problems))
+
+
+def validate_schedule_plans(config: AppConfig) -> None:
+    """校验计划引用与启用时间槽，避免依赖前端提示维持调度不变量。"""
+    scripts = {script.id for script in config.queues}
+    startup_plans = [plan.name for plan in config.plans if plan.run_on_startup]
+    problems: list[str] = []
+    if len(startup_plans) > 1:
+        problems.append("仅允许一个计划设置为“启动时运行”：" + "、".join(startup_plans))
+    occupied: list[tuple[str, str, set[int]]] = []
+    for plan in config.plans:
+        if len(plan.script_ids) < 2:
+            problems.append(f"计划“{plan.name}”至少需要两个软件脚本")
+        if len(set(plan.script_ids)) != len(plan.script_ids):
+            problems.append(f"计划“{plan.name}”不能重复添加同一软件脚本")
+        missing = [script_id for script_id in plan.script_ids if script_id not in scripts]
+        if missing:
+            problems.append(f"计划“{plan.name}”引用了不存在的软件脚本")
+        for slot in plan.time_slots:
+            if not slot.enabled:
+                continue
+            days = set(slot.days)
+            for other_name, other_time, other_days in occupied:
+                if slot.time == other_time and days & other_days:
+                    overlap = "、".join("周" + "一二三四五六日"[day] for day in sorted(days & other_days))
+                    problems.append(
+                        f"计划“{plan.name}”与“{other_name}”在 {slot.time}（{overlap}）同时触发，不能同时保存"
+                    )
+            occupied.append((plan.name, slot.time, days))
     if problems:
         raise ValueError("；".join(problems))
 
@@ -68,6 +107,7 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
                 await scheduler.tick(__import__("datetime").datetime.now())
                 await asyncio.sleep(60)
 
+        await scheduler.run_startup_once()
         task = asyncio.create_task(timer_loop())
         try:
             yield
@@ -113,6 +153,7 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
             raise HTTPException(409, "软件脚本运行中，配置将于本轮结束后再修改")
         try:
             validate_single_software_config(config)
+            validate_schedule_plans(config)
             engine.config = config
             await engine.save_config()
         except ValueError as error:
@@ -127,6 +168,7 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
         candidate.queues.append(queue)
         try:
             validate_single_software_config(candidate)
+            validate_schedule_plans(candidate)
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
         engine.config = candidate
@@ -158,6 +200,27 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
             raise HTTPException(409, str(error)) from error
         except RunValidationError as error:
             raise HTTPException(422, {"message": "全部脚本尚未完成配置", "problems": error.problems}) from error
+
+    @app.post("/api/adb-check")
+    async def adb_check(payload: AdbCheckIn):
+        """只读取 ADB 连通状态，不改写模拟器、MAA 或设备配置。"""
+        if not payload.executable.strip() or not payload.address.strip():
+            raise HTTPException(422, "请先填写 ADB 程序和安卓模拟器连接地址")
+        try:
+            process = await asyncio.create_subprocess_exec(
+                payload.executable, "-s", payload.address, "get-state",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5)
+        except (OSError, TimeoutError) as error:
+            return {"ok": False, "message": f"连接检测失败：{error}", "checkedAt": datetime.now(UTC).isoformat()}
+        output = stdout.decode(errors="replace").strip()
+        detail = stderr.decode(errors="replace").strip() or output
+        return {
+            "ok": process.returncode == 0 and output == "device",
+            "message": "安卓模拟器已连接" if process.returncode == 0 and output == "device" else (detail or "设备未就绪"),
+            "checkedAt": datetime.now(UTC).isoformat(),
+        }
 
     @app.post("/api/stop")
     async def stop():

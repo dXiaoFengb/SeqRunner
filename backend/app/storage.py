@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
 from uuid import uuid4
@@ -27,9 +28,17 @@ class JsonStore:
         if not self.config_path.exists():
             return AppConfig()
         raw = json.loads(self.config_path.read_text(encoding="utf-8"))
-        migrated, notice = self._migrate_single_software_scripts(raw)
+        migrated, script_notice = self._migrate_single_software_scripts(raw)
+        # 旧引用损坏时，第一阶段特意保留原始配置供用户修复；此时也不能
+        # 再清空其定时槽或强行写成 v2。
+        if self.last_config_migration_notice and script_notice is None:
+            plan_notice = None
+        else:
+            migrated, plan_notice = self._migrate_to_plans(migrated)
+        notice = "；".join(item for item in (script_notice, plan_notice) if item) or None
         config = AppConfig.model_validate(migrated)
         if notice:
+            self._backup_config_before_migration(raw)
             self._save(self.config_path, config)
             self.last_config_migration_notice = notice
         return config
@@ -61,6 +70,14 @@ class JsonStore:
         except Exception:
             temporary.unlink(missing_ok=True)
             raise
+
+    def _backup_config_before_migration(self, raw: object) -> None:
+        """迁移会清空旧定时槽，先保留仅本机可用的恢复副本。"""
+        backups = self.data_directory / "backups"
+        backups.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        target = backups / f"config-before-v2-{stamp}.json"
+        target.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
 
     @staticmethod
     def _draft_task() -> dict[str, object]:
@@ -136,3 +153,33 @@ class JsonStore:
         if repaired_count:
             details.append(f"已为 {repaired_count} 个旧空脚本或孤立程序补建单软件脚本")
         return migrated, "；".join(details) + "。请分别检查软件配置和定时。"
+
+    @staticmethod
+    def _migrate_to_plans(raw: object) -> tuple[object, str | None]:
+        """v2 将时间槽从单软件脚本彻底移交给多软件计划管理。"""
+        if not isinstance(raw, dict):
+            return raw, None
+        if raw.get("schema_version") == 2:
+            return raw, None
+        queues = raw.get("queues")
+        if not isinstance(queues, list):
+            return raw, None
+        removed = 0
+        migrated_queues: list[object] = []
+        for queue in queues:
+            if not isinstance(queue, dict):
+                return raw, None
+            slots = queue.get("time_slots", [])
+            if isinstance(slots, list):
+                removed += len(slots)
+            migrated_queues.append({**queue, "time_slots": []})
+        migrated = {
+            **raw,
+            "schema_version": 2,
+            "queues": migrated_queues,
+            "plans": raw.get("plans") if isinstance(raw.get("plans"), list) else [],
+            "fired_slots": [],
+        }
+        if removed:
+            return migrated, f"已清空 {removed} 个旧单软件定时槽，请在计划管理重新创建多软件计划"
+        return migrated, "已升级到多软件计划管理；请在计划管理创建计划"

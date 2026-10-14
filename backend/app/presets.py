@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .models import LogRule, MatchMode, TaskDefinition
+from .models import LogRule, MAAAdapterConfig, MaaEndAdapterConfig, MatchMode, TaskDefinition
 
 
 def _rule(pattern: str) -> LogRule:
@@ -21,6 +21,7 @@ PRESETS: dict[str, dict] = {
         "timeout_seconds": 600,
         "evidence": "https://github.com/AUTO-MAS-Project/AUTO-MAS/blob/699de5af57b7955a19ed4585f1fe64f9430e1e29/app/task/MAA/AutoProxy.py（本地只读同 SHA，2026-10-12）",
         "note": "日志成功；成功标记前退出视为失败。",
+        "editor_capability": "maa_android_emulator",
     },
     "zzz_onedragon": {
         "label": "绝区零一条龙",
@@ -41,6 +42,7 @@ PRESETS: dict[str, dict] = {
         "timeout_seconds": 600,
         "evidence": "https://github.com/AUTO-MAS-Project/AUTO-MAS/blob/699de5af57b7955a19ed4585f1fe64f9430e1e29/app/task/MaaEnd/AutoProxy.py；https://github.com/MaaEnd/MaaEnd（官方文档访问 2026-10-12）",
         "note": "未找到安全的整项会话终态契约，需人工确认。",
+        "editor_capability": "maaend_windows_game",
     },
     "march7th": {
         "label": "三月七小助手",
@@ -74,6 +76,7 @@ def public_presets() -> list[dict]:
             "requiresLogRules": bool(data.get("success") or data.get("failure")),
             "successRules": [rule.model_dump(mode="json") for rule in data.get("success", [])],
             "failureRules": [rule.model_dump(mode="json") for rule in data.get("failure", [])],
+            "editorCapability": data.get("editor_capability", "generic"),
         }
         for key, data in PRESETS.items()
     ]
@@ -89,7 +92,7 @@ def apply_preset(preset_id: str, executable: str, *, task_id: str, name: str) ->
     if selected.name.casefold() not in allowed:
         raise ValueError("所选程序与预设不匹配，请切换为通用程序后再保存")
     log_path = str(selected.parent / preset["log"]) if preset.get("log") else None
-    return TaskDefinition(
+    task = TaskDefinition(
         id=task_id,
         name=name or preset["label"],
         executable=str(selected),
@@ -105,3 +108,8 @@ def apply_preset(preset_id: str, executable: str, *, task_id: str, name: str) ->
         failure_log_rules=list(preset.get("failure", [])),
         timeout_seconds=int(preset["timeout_seconds"]),
     )
+    if preset_id == "maa":
+        task.maa_adapter = MAAAdapterConfig(installation_directory=str(selected.parent))
+    if preset_id == "maaend":
+        task.maaend_adapter = MaaEndAdapterConfig(installation_directory=str(selected.parent))
+    return task

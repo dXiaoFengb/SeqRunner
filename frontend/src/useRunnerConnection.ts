@@ -15,6 +15,7 @@ declare global {
     desktopRunner?: {
       getConnection(): Promise<RunnerConnection | null>
       selectExecutable(presetId?: string | null): Promise<{ canceled: boolean; path?: string; matchesPreset?: boolean }>
+      selectDirectory?(): Promise<{ canceled: boolean; path?: string }>
       getBackendStatus?(): Promise<{ state: string; detail: string }>
       getBuildInfo?(): Promise<{ version: string }>
     }

@@ -32,9 +32,13 @@ def test_load_splits_legacy_multi_program_script_and_clears_slots(tmp_path):
 
     assert [script.task_ids for script in config.queues] == [["a"], ["b"]]
     assert all(not script.time_slots for script in config.queues)
+    assert config.schema_version == 2
+    assert config.plans == []
     assert "原组合定时已清空" in (store.last_config_migration_notice or "")
     persisted = json.loads((root / "config.json").read_text(encoding="utf-8"))
     assert len(persisted["queues"]) == 2
+    assert persisted["schema_version"] == 2
+    assert list((root / "backups").glob("config-before-v2-*.json"))
 
 
 def test_load_preserves_damaged_references_without_unsafe_migration(tmp_path):

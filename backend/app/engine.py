@@ -17,6 +17,7 @@ from .models import (
     QueueDefinition,
     RunRecord,
     RunState,
+    SchedulePlan,
     TaskDefinition,
 )
 from .presets import PRESETS
@@ -70,6 +71,7 @@ class RunnerEngine:
         self._stop_requested = asyncio.Event()
         self._manual_confirmed = asyncio.Event()
         self._owned_process: OwnedProcess | None = None
+        self._auxiliary_owned_processes: list[OwnedProcess] = []
         self._active_task_id: str | None = None
         self._manual_accepting_task_id: str | None = None
         self._cooldown_until: datetime | None = None
@@ -85,6 +87,9 @@ class RunnerEngine:
 
     def queue_by_id(self, queue_id: str) -> QueueDefinition:
         return next(queue for queue in self.config.queues if queue.id == queue_id)
+
+    def plan_by_id(self, plan_id: str) -> SchedulePlan:
+        return next(plan for plan in self.config.plans if plan.id == plan_id)
 
     async def start(self, queue_id: str, source: Literal["manual", "scheduled"]) -> RunRecord:
         if self.is_busy:
@@ -112,7 +117,57 @@ class RunnerEngine:
         """按配置中的脚本卡顺序展开为一条手动运行记录，不改写配置。"""
         if self.is_busy:
             raise RunBusyError("已有脚本正在运行，当前触发被跳过")
-        scripts = copy.deepcopy(self.config.queues)
+        selected, items, problems = self._collect_scripts(copy.deepcopy(self.config.queues))
+        if problems:
+            raise RunValidationError(problems)
+        if not selected:
+            raise RunValidationError(["没有可运行的脚本程序"])
+        record = RunRecord(
+            queue_id="__all__",
+            queue_name="全部脚本",
+            trigger_source="manual",
+            run_mode="all_scripts",
+            items=items,
+        )
+        self.current_run = record
+        self._stop_requested.clear()
+        self._manual_confirmed.clear()
+        self._runner_task = asyncio.create_task(self._run(record, selected))
+        await self._publish_state()
+        return record
+
+    async def start_plan(self, plan_id: str, source: Literal["scheduled", "startup"]) -> RunRecord:
+        """按计划中保存的软件顺序展开；始终复用唯一运行器。"""
+        if self.is_busy:
+            raise RunBusyError("已有计划正在运行，当前计划触发被跳过")
+        plan = copy.deepcopy(self.plan_by_id(plan_id))
+        if len(plan.script_ids) < 2:
+            raise RunValidationError([f"计划“{plan.name}”至少需要两个软件脚本"])
+        script_book = {script.id: script for script in copy.deepcopy(self.config.queues)}
+        missing = [script_id for script_id in plan.script_ids if script_id not in script_book]
+        if missing:
+            raise RunValidationError([f"计划“{plan.name}”引用的软件脚本不存在"])
+        selected, items, problems = self._collect_scripts([script_book[item] for item in plan.script_ids])
+        if problems:
+            raise RunValidationError(problems)
+        record = RunRecord(
+            queue_id=plan.id,
+            queue_name=plan.name,
+            trigger_source=source,
+            run_mode="plan",
+            plan_id=plan.id,
+            items=items,
+        )
+        self.current_run = record
+        self._stop_requested.clear()
+        self._manual_confirmed.clear()
+        self._runner_task = asyncio.create_task(self._run(record, selected))
+        await self._publish_state()
+        return record
+
+    def _collect_scripts(
+        self, scripts: list[QueueDefinition]
+    ) -> tuple[list[TaskDefinition], list[ItemRecord], list[str]]:
         task_book = {task.id: copy.deepcopy(task) for task in self.config.tasks}
         problems: list[str] = []
         selected: list[TaskDefinition] = []
@@ -135,23 +190,14 @@ class RunnerEngine:
                 continue
             selected.append(task)
             items.append(ItemRecord(task_id=task.id, task_name=task.name, script_id=script.id, script_name=script.name))
-        if problems:
-            raise RunValidationError(problems)
-        if not selected:
-            raise RunValidationError(["没有可运行的脚本程序"])
-        record = RunRecord(
-            queue_id="__all__",
-            queue_name="全部脚本",
-            trigger_source="manual",
-            run_mode="all_scripts",
-            items=items,
-        )
-        self.current_run = record
-        self._stop_requested.clear()
-        self._manual_confirmed.clear()
-        self._runner_task = asyncio.create_task(self._run(record, selected))
+        return selected, items, problems
+
+    async def record_schedule_skip(self, plan: SchedulePlan, due_at: datetime) -> None:
+        message = f"计划“{plan.name}”在 {due_at.strftime('%Y-%m-%d %H:%M')} 因上一计划尚未完成而跳过"
+        if self.current_run:
+            self.current_run.scheduler_skips.append(message)
+        await self.events.publish("schedule", {"planId": plan.id, "message": message})
         await self._publish_state()
-        return record
 
     @staticmethod
     def _preset_problem(task: TaskDefinition) -> str | None:
@@ -203,6 +249,7 @@ class RunnerEngine:
             self._active_task_id = None
             self._manual_accepting_task_id = None
             self._owned_process = None
+            self._auxiliary_owned_processes = []
             self.history.runs.insert(0, record)
             self.history.runs = self.history.runs[:200]
             self.store.save_history(self.history)
@@ -219,7 +266,7 @@ class RunnerEngine:
         await self._publish_state()
         executable = Path(task.executable)
         if not executable.exists():
-            await self._fail_then_cool(item, "目标程序不存在", has_next=has_next)
+            await self._fail_then_cool(item, "目标程序不存在", has_next=has_next, task=task)
             return
         watcher: LogWatcher | None = None
         if task.log_path:
@@ -236,8 +283,17 @@ class RunnerEngine:
                 # 必须先取得游标，后启动目标进程，避免历史成功行误判本轮。
                 await watcher.start_at_end()
             except (OSError, UnicodeError) as error:
-                await self._fail_then_cool(item, f"日志读取失败：{error}", has_next=has_next)
+                await self._fail_then_cool(item, f"日志读取失败：{error}", has_next=has_next, task=task)
                 return
+        if task.preset_id == "maa":
+            await self._maa_adb_preflight(item, task)
+        if task.preset_id == "maaend" and not await self._start_maaend_game(item, task):
+            if self._stop_requested.is_set():
+                item.state = ItemState.STOPPED
+                await self._cleanup_auxiliary(item, task)
+                return
+            await self._fail_then_cool(item, "游戏启动失败", has_next=has_next, task=task)
+            return
         try:
             item.state = ItemState.STARTING
             item.started_at = datetime.now(UTC)
@@ -251,7 +307,7 @@ class RunnerEngine:
             self._owned_process = await capture_owned_process(process.pid)
             await self._log(item, f"已启动受管进程 PID {process.pid}")
         except (OSError, RuntimeError, ValueError) as error:  # 启动错误是可记录的单项失败。
-            await self._fail_then_cool(item, f"启动失败：{error}", has_next=has_next)
+            await self._fail_then_cool(item, f"启动失败：{error}", has_next=has_next, task=task)
             return
 
         item.state = ItemState.WAITING_MANUAL if task.allow_manual_confirmation else ItemState.MONITORING
@@ -266,6 +322,7 @@ class RunnerEngine:
             item.state = ItemState.STOPPED
             await self._log(item, "收到全局停止请求，仅收尾当前受管进程")
             await self._cleanup_owned(item)
+            await self._cleanup_auxiliary(item, task)
             return
         if outcome == "success":
             self._manual_accepting_task_id = None
@@ -274,10 +331,55 @@ class RunnerEngine:
             await self._log(item, f"任务成功，来源：{detail}")
             await self._publish_state()
             await self._cleanup_owned(item)
+            await self._cleanup_auxiliary(item, task)
             await self._finish_after_cleanup(item, ItemState.SUCCEEDED, has_next=has_next)
             return
         item.exit_code = process.returncode
-        await self._fail_then_cool(item, str(detail), has_next=has_next)
+        await self._fail_then_cool(item, str(detail), has_next=has_next, task=task)
+
+    async def _maa_adb_preflight(self, item: ItemRecord, task: TaskDefinition) -> None:
+        adapter = task.maa_adapter
+        if not adapter or not adapter.adb_executable or not adapter.adb_address:
+            await self._log(item, "未配置安卓模拟器 ADB 预检，继续由 MAA GUI 自行连接")
+            return
+        try:
+            process = await asyncio.create_subprocess_exec(
+                adapter.adb_executable, "-s", adapter.adb_address, "get-state",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                creationflags=getattr(__import__("subprocess"), "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5)
+            if process.returncode == 0 and stdout.decode(errors="replace").strip() == "device":
+                await self._log(item, f"安卓模拟器 ADB 预检通过：{adapter.adb_address}")
+            else:
+                detail = stderr.decode(errors="replace").strip() or stdout.decode(errors="replace").strip() or "设备未就绪"
+                await self._log(item, f"安卓模拟器 ADB 预检未通过（{detail}），仍继续启动 MAA GUI")
+        except (OSError, TimeoutError) as error:
+            await self._log(item, f"安卓模拟器 ADB 预检失败（{error}），仍继续启动 MAA GUI")
+
+    async def _start_maaend_game(self, item: ItemRecord, task: TaskDefinition) -> bool:
+        adapter = task.maaend_adapter
+        if not adapter or not adapter.game_executable:
+            return True
+        target = Path(adapter.game_executable)
+        if not target.exists():
+            await self._log(item, "MaaEnd 游戏路径不存在")
+            return False
+        try:
+            game = await asyncio.create_subprocess_exec(
+                str(target), *adapter.game_arguments, cwd=str(target.parent),
+                creationflags=getattr(__import__("subprocess"), "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+            )
+            self._auxiliary_owned_processes.append(await capture_owned_process(game.pid))
+            await self._log(item, f"已启动受管 Windows 游戏 PID {game.pid}，等待 {adapter.game_wait_seconds} 秒")
+            try:
+                await asyncio.wait_for(self._stop_requested.wait(), timeout=adapter.game_wait_seconds)
+                return False
+            except TimeoutError:
+                return True
+        except (OSError, RuntimeError, ValueError) as error:
+            await self._log(item, f"MaaEnd 游戏启动失败：{error}")
+            return False
 
     async def _wait_for_outcome(
         self,
@@ -344,12 +446,32 @@ class RunnerEngine:
             await force_stop_process_tree(owned, self.close_grace_seconds)
         self._owned_process = None
 
-    async def _fail_then_cool(self, item: ItemRecord, message: str, *, has_next: bool) -> None:
+    async def _cleanup_auxiliary(self, item: ItemRecord, task: TaskDefinition) -> None:
+        adapter = task.maaend_adapter
+        owned = self._auxiliary_owned_processes
+        self._auxiliary_owned_processes = []
+        if not owned or not adapter or not adapter.close_game_on_finish:
+            return
+        item.state = ItemState.CLOSING
+        await self._log(item, "请求本轮启动的 Windows 游戏正常关闭")
+        await self._publish_state()
+        for process in owned:
+            await request_graceful_close(process)
+        deadline = asyncio.get_running_loop().time() + self.close_grace_seconds
+        for process in owned:
+            while await process_tree_alive(process) and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.05)
+            if await process_tree_alive(process):
+                item.state = ItemState.FORCE_CLOSING
+                await force_stop_process_tree(process, self.close_grace_seconds)
+
+    async def _fail_then_cool(self, item: ItemRecord, message: str, *, has_next: bool, task: TaskDefinition) -> None:
         item.state = ItemState.FAILED
         item.error_summary = message
         await self._log(item, f"任务失败：{message}")
         await self._publish_state()
         await self._cleanup_owned(item)
+        await self._cleanup_auxiliary(item, task)
         await self._finish_after_cleanup(item, ItemState.FAILED, has_next=has_next)
 
     async def _finish_after_cleanup(

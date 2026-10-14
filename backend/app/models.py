@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class MatchMode(str, Enum):
@@ -50,6 +50,27 @@ class TimeSlot(BaseModel):
     time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
+class MAAAdapterConfig(BaseModel):
+    """本应用自己的 MAA GUI 启动前检查；绝不写入 MAA 配置。"""
+
+    installation_directory: str | None = None
+    adb_executable: str | None = None
+    adb_address: str | None = None
+    last_check_at: datetime | None = None
+    last_check_ok: bool | None = None
+    last_check_message: str | None = None
+
+
+class MaaEndAdapterConfig(BaseModel):
+    """仅编排本轮创建的 Windows 游戏进程与 MaaEnd 启动顺序。"""
+
+    installation_directory: str | None = None
+    game_executable: str | None = None
+    game_arguments: list[str] = Field(default_factory=list)
+    game_wait_seconds: int = Field(default=60, ge=0, le=3600)
+    close_game_on_finish: bool = True
+
+
 class TaskDefinition(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     name: str = Field(min_length=1, max_length=120)
@@ -69,6 +90,8 @@ class TaskDefinition(BaseModel):
     success_log_rules: list[LogRule] = Field(default_factory=list)
     failure_log_rules: list[LogRule] = Field(default_factory=list)
     timeout_seconds: int = Field(default=600, ge=1, le=86_400)
+    maa_adapter: MAAAdapterConfig | None = None
+    maaend_adapter: MaaEndAdapterConfig | None = None
 
     def has_success_log(self) -> bool:
         return bool(self.log_path and (self.success_log or self.success_log_rules))
@@ -86,10 +109,23 @@ class QueueDefinition(BaseModel):
     time_slots: list[TimeSlot] = Field(default_factory=list)
 
 
+class SchedulePlan(BaseModel):
+    """面向用户的多软件计划；脚本本身仍保存在 queues/tasks。"""
+
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    name: str = Field(min_length=1, max_length=120)
+    script_ids: list[str] = Field(default_factory=list)
+    time_slots: list[TimeSlot] = Field(default_factory=list)
+    run_on_startup: bool = False
+
+
 class AppConfig(BaseModel):
-    schema_version: Literal[SCHEMA_VERSION] = SCHEMA_VERSION
+    # 损坏的旧配置必须可被读取并以诊断方式阻止运行，不能因为版本字段
+    # 直接把用户留在无法打开应用的状态。所有正常保存的新配置均为 v2。
+    schema_version: Literal[1, SCHEMA_VERSION] = SCHEMA_VERSION
     queues: list[QueueDefinition] = Field(default_factory=list)
     tasks: list[TaskDefinition] = Field(default_factory=list)
+    plans: list[SchedulePlan] = Field(default_factory=list)
     fired_slots: list[str] = Field(default_factory=list)
 
 
@@ -112,16 +148,18 @@ class RunRecord(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     queue_id: str
     queue_name: str
-    trigger_source: Literal["manual", "scheduled"]
+    trigger_source: Literal["manual", "scheduled", "startup"]
     # 单脚本是既有行为；all_scripts 只由手动“运行全部脚本”创建。
-    run_mode: Literal["script", "all_scripts"] = "script"
+    run_mode: Literal["script", "all_scripts", "plan"] = "script"
+    plan_id: str | None = None
     state: RunState = RunState.RUNNING
     started_at: datetime = Field(default_factory=datetime.now)
     ended_at: datetime | None = None
     items: list[ItemRecord] = Field(default_factory=list)
     message: str | None = None
+    scheduler_skips: list[str] = Field(default_factory=list)
 
 
 class HistoryDocument(BaseModel):
-    schema_version: Literal[SCHEMA_VERSION] = SCHEMA_VERSION
+    schema_version: Literal[1, SCHEMA_VERSION] = SCHEMA_VERSION
     runs: list[RunRecord] = Field(default_factory=list)

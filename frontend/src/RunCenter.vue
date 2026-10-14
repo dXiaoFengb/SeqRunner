@@ -25,11 +25,22 @@ const stateText = computed(() => {
   if (center.value?.currentState === 'waiting_manual') return '等待人工确认当前程序完成'
   return center.value?.currentState || props.runtime.run.state
 })
+const statusKind = computed(() => {
+  if (!props.runtime.run) return 'idle'
+  if (props.runtime.run.state === 'completed') return failures.value.length ? 'failed' : 'completed'
+  if (props.runtime.run.state === 'stopped') return 'stopped'
+  return center.value?.currentState || 'running'
+})
+const statusLabel = computed(() => ({
+  idle: '空闲', validating: '校验中', starting: '启动中', monitoring: '运行中', waiting_manual: '等待确认',
+  closing: '正在收尾', force_closing: '正在收尾', cooling_down: '冷却中', completed: '已完成', failed: '存在失败', stopped: '已停止',
+}[statusKind.value] || '运行中'))
+const skips = computed(() => props.runtime.run?.scheduler_skips || [])
 </script>
 
 <template>
-  <section v-if="visible" class="run-center" :class="{ 'has-failures': failures.length }" aria-live="polite">
-    <div class="run-center-title"><span class="live-dot" :class="{ stopped: !runtime.busy }"></span><b>运行中心</b><small>{{ runtime.run?.run_mode === 'all_scripts' ? '全部脚本' : runtime.run?.queue_name }}</small></div>
+  <section v-if="visible" class="run-center" :class="[{ 'has-failures': failures.length }, 'state-' + statusKind]" aria-live="polite">
+    <div class="run-center-title"><span class="run-state-badge">{{ statusLabel }}</span><div><b>运行中心</b><small>{{ runtime.run?.run_mode === 'plan' ? `计划：${runtime.run?.queue_name}` : runtime.run?.run_mode === 'all_scripts' ? '全部脚本' : runtime.run?.queue_name }}</small></div></div>
     <div class="run-center-progress"><b>{{ progress }}/{{ center?.totalPrograms || runtime.run?.items.length || 0 }}</b><span>{{ currentScript }}</span><strong>{{ currentTask }}</strong></div>
     <div class="run-center-state"><span>{{ stateText }}</span><b v-if="countdown > 0" class="countdown">{{ countdown }} 秒</b></div>
     <button v-if="runtime.activeTaskId && center?.currentState === 'waiting_manual'" class="confirm" :disabled="confirmationPending" @click="emit('confirm', runtime.activeTaskId)">{{ confirmationPending ? '确认已接收' : '确认当前程序完成' }}</button>
@@ -38,5 +49,6 @@ const stateText = computed(() => {
       <ul><li v-for="item in failures" :key="item.task_id"><span>{{ item.script_name ? `${item.script_name} / ` : '' }}{{ item.task_name }}</span><small>{{ itemReason(item) }}</small></li></ul>
       <button @click="runtime.run && emit('showFailures', runtime.run.id)">查看失败详情</button>
     </div>
+    <div v-if="skips.length" class="run-center-skips" role="status"><b>计划跳过提醒</b><span v-for="skip in skips" :key="skip">{{ skip }}</span></div>
   </section>
 </template>
