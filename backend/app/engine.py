@@ -158,8 +158,8 @@ class RunnerEngine:
             raise RunBusyError("已有计划正在运行，当前计划触发被跳过")
         await self.cancel_pending_completion_action("新的运行已开始")
         plan = copy.deepcopy(self.plan_by_id(plan_id))
-        if len(plan.items) < 2:
-            raise RunValidationError([f"计划“{plan.name}”至少需要两个软件脚本"])
+        if len(plan.items) < 2 or len({item.script_id for item in plan.items}) < 2:
+            raise RunValidationError([f"计划“{plan.name}”至少需要两个不同的软件脚本"])
         script_book = {script.id: script for script in copy.deepcopy(self.config.queues)}
         missing = [item.script_id for item in plan.items if item.script_id not in script_book]
         if missing:

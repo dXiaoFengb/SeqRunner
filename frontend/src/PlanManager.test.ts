@@ -23,15 +23,40 @@ test('shows a centered empty state without a bordered configuration reminder', (
   expect(wrapper.find('.queue-selector').exists()).toBe(false)
 })
 
-test('uses a queue selector, four scheduling settings and adds task table after timing exists', async () => {
+test('uses a compact queue selector, four scheduling settings and keeps the title rename in the card header', async () => {
   const data = config(true)
   const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
   expect(wrapper.text()).toContain('计划选择')
   expect(wrapper.text()).toContain('循环队列（下一版本提供）')
   expect(wrapper.findAll('.queue-settings-grid > label')).toHaveLength(5)
-  expect(wrapper.findAll('h3').some((heading) => heading.text() === '任务列表')).toBe(false)
+  expect(wrapper.find('.queue-selector-items button').text()).toBe('早班队列')
+  expect(wrapper.find('.queue-title .rename-button').exists()).toBe(true)
+  expect(wrapper.find('.queue-name').exists()).toBe(false)
+})
+
+test('renames a plan from the header pencil without a second name field', async () => {
+  const data = config(true)
+  const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
+  await wrapper.get('.rename-button').trigger('click')
+  const input = wrapper.get('input[aria-label="计划名称"]')
+  await input.setValue('晚班队列')
+  await input.trigger('keydown.enter')
+  expect(data.plans[0].name).toBe('晚班队列')
+  expect(wrapper.emitted('save')).toHaveLength(1)
+})
+
+test('creates an empty draft and only shows an empty task list after the first time slot', async () => {
+  const data = config()
+  const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: null, busy: false } })
+  await wrapper.get('button.primary').trigger('click')
+  const plan = data.plans[0]
+  expect(plan.items).toEqual([])
+  await wrapper.setProps({ selectedPlanId: plan.id })
   await wrapper.findAll('button').find((button) => button.text().includes('添加定时'))!.trigger('click')
   expect(wrapper.text()).toContain('任务列表')
+  expect(wrapper.text()).toContain('任务列表为空，请手动添加至少两个不同的软件脚本。')
   expect(wrapper.find('.day-picker').exists()).toBe(true)
   expect(wrapper.find('.time-picker').text()).toContain('时')
+  expect(wrapper.text()).not.toContain('上移')
+  expect(wrapper.text()).not.toContain('下移')
 })

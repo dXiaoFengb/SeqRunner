@@ -1,5 +1,6 @@
 import { mount } from '@vue/test-utils'
-import { expect, test } from 'vitest'
+import { nextTick } from 'vue'
+import { expect, test, vi } from 'vitest'
 import RunCenter from './RunCenter.vue'
 import type { Runtime } from './types'
 
@@ -17,6 +18,7 @@ test('shows a visible cooldown and reports accepted manual confirmation', async 
   expect(wrapper.text()).toContain('9 秒')
   expect(wrapper.text()).toContain('确认已接收')
   expect(wrapper.text()).toContain('正在请求程序正常关闭')
+  expect(wrapper.find('.run-center').classes()).toContain('is-sticky')
 })
 
 test('emits confirmation only while the active program is waiting', async () => {
@@ -38,6 +40,7 @@ test('reports completed runs with a failed final program without a cooldown', ()
   const wrapper = mount(RunCenter, { props: { runtime: finished, countdown: 0, confirmationPending: false } })
   expect(wrapper.text()).toContain('整轮执行完成，存在失败项')
   expect(wrapper.text()).not.toContain('秒后启动')
+  expect(wrapper.find('.run-center').classes()).not.toContain('is-sticky')
 })
 
 test('shows the failed program and opens its history detail from the completed run center', async () => {
@@ -63,6 +66,27 @@ test('shows and cancels a pending completion action countdown', async () => {
   finished.completionAction = { runId: 'run-1', planId: 'plan-1', planName: '早班', action: 'shutdown', status: 'countdown', remainingSeconds: 47 }
   const wrapper = mount(RunCenter, { props: { runtime: finished, countdown: 0, confirmationPending: false } })
   expect(wrapper.text()).toContain('将在 47 秒后关机')
+  expect(wrapper.find('.run-center').classes()).toContain('is-sticky')
   await wrapper.findAll('button').find((button) => button.text() === '取消完成后操作')!.trigger('click')
   expect(wrapper.emitted('cancelCompletionAction')).toHaveLength(1)
+})
+
+test('compacts an active run after its observation point and expands details on demand', async () => {
+  let callback: ((entries: Array<{ isIntersecting: boolean }>) => void) | undefined
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(next: (entries: Array<{ isIntersecting: boolean }>) => void) { callback = next }
+    observe() {}
+    disconnect() {}
+  })
+  const wrapper = mount(RunCenter, { props: { runtime, countdown: 0, confirmationPending: false } })
+  callback?.([{ isIntersecting: false }])
+  await nextTick()
+  expect(wrapper.find('.run-center').classes()).toContain('is-compact')
+  const expand = wrapper.get('.run-center-expand')
+  expect(expand.attributes('aria-expanded')).toBe('false')
+  await expand.trigger('click')
+  expect(expand.attributes('aria-expanded')).toBe('true')
+  expect(wrapper.find('.run-center').classes()).not.toContain('is-compact')
+  wrapper.unmount()
+  vi.unstubAllGlobals()
 })

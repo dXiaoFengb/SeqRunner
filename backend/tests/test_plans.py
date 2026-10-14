@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.engine import RunnerEngine
+from app.engine import RunnerEngine, RunValidationError
 from app.events import EventHub
 from app.main import validate_schedule_plans
 from app.models import (
@@ -57,6 +57,18 @@ def test_plan_validation_rejects_overlap_and_multiple_startup() -> None:
         validate_schedule_plans(AppConfig(queues=[one, two, three], plans=[first, second]))
     assert "仅允许一个" in str(error.value)
     assert "同时触发" in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_incomplete_plan_is_a_saveable_draft_but_cannot_start(tmp_path: Path) -> None:
+    draft = SchedulePlan(name="待配置草稿")
+    validate_schedule_plans(AppConfig(plans=[draft]))
+    store = JsonStore(tmp_path / "data")
+    store.save_config(AppConfig(plans=[draft]))
+    engine = RunnerEngine(store, EventHub())
+
+    with pytest.raises(RunValidationError, match="至少需要两个不同的软件脚本"):
+        await engine.start_plan(draft.id, "manual")
 
 
 @pytest.mark.asyncio

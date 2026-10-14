@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -49,3 +50,26 @@ async def test_busy_scheduler_marks_slot_without_queueing(tmp_path: Path) -> Non
     await scheduler.tick(datetime(2026, 10, 12, 9, 0, tzinfo=UTC))
 
     assert len(engine.config.fired_slots) == 1
+
+
+@pytest.mark.asyncio
+async def test_incomplete_due_plan_is_safely_skipped_and_diagnosed(tmp_path: Path) -> None:
+    plan = SchedulePlan(name="未完成计划", time_slots=[TimeSlot(time="09:00", days=[0])])
+    store = JsonStore(tmp_path / "data")
+    store.save_config(AppConfig(plans=[plan]))
+    events = EventHub()
+    engine = RunnerEngine(store, events)
+    scheduler = QueueScheduler(engine)
+    subscription = events.subscribe()
+    next_event = asyncio.create_task(subscription.__anext__())
+    await asyncio.sleep(0)
+
+    await scheduler.tick(datetime(2026, 10, 12, 9, 0, tzinfo=UTC))
+
+    assert len(engine.config.fired_slots) == 1
+    assert not engine.is_busy
+    event = await asyncio.wait_for(next_event, timeout=1)
+    assert event["type"] == "schedule"
+    assert "定时计划未执行" in event["data"]["message"]
+    assert "两个不同的软件脚本" in event["data"]["message"]
+    await subscription.aclose()

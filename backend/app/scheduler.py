@@ -65,6 +65,8 @@ class QueueScheduler:
                 await self.engine.start_plan(plan.id, "scheduled", current)
             except RunBusyError:
                 await self.engine.record_schedule_skip(plan, current)
+            except (RunValidationError, StopIteration) as error:
+                await self.engine.events.publish("schedule", {"planId": plan.id, "message": f"定时计划未执行：{error}"})
         if changed:
             self.engine.config.fired_slots = sorted(fired)[-1000:]
             await self.engine.save_config()
