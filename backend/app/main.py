@@ -67,8 +67,7 @@ def validate_schedule_plans(config: AppConfig) -> None:
     occupied: list[tuple[str, str, set[int]]] = []
     for plan in config.plans:
         script_ids = [item.script_id for item in plan.items]
-        # 计划页允许先保存空任务或单任务草稿，再由用户补全定时和任务。
-        # 真正启动时 RunnerEngine.start_plan 会保持至少两个软件的运行不变量。
+        # 计划页允许先保存空任务草稿；有一个有效任务即可作为单软件计划执行。
         if len(set(script_ids)) != len(script_ids):
             problems.append(f"计划“{plan.name}”不能重复添加同一软件脚本")
         missing = [script_id for script_id in script_ids if script_id not in scripts]

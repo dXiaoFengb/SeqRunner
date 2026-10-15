@@ -28,6 +28,8 @@ const HEARTBEAT_TIMEOUT_MS = 45_000
 const FALLBACK_POLL_MS = 5_000
 const MAX_RETRY_MS = 10_000
 
+class HttpResponseError extends Error {}
+
 export function useRunnerConnection(refresh: () => Promise<void>, onEvent: (event: { type: string; data: any }) => void) {
   const restOnline = ref(false)
   const realtimeState = ref<RealtimeState>('offline')
@@ -151,10 +153,10 @@ export function useRunnerConnection(refresh: () => Promise<void>, onEvent: (even
     if (!restOnline.value || !apiBase) throw new Error('本地后端未连接')
     try {
       const response = await fetch(`${apiBase}${path}`, options)
-      if (!response.ok) throw new Error(await response.text())
+      if (!response.ok) throw new HttpResponseError(await response.text())
       return response.json()
     } catch (error) {
-      markRestOffline(error)
+      if (!(error instanceof HttpResponseError)) markRestOffline(error)
       throw error
     }
   }

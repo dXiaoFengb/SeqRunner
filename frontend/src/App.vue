@@ -48,7 +48,17 @@ function presetLabel(task: Task | null) { return task ? (presetFor(task)?.label 
 function presetSummary(script: Queue) { return presetLabel(scriptTask(script)) }
 function matchesPreset(task: Task, executable = task.executable) { const preset = presetFor(task); return !task.preset_id || !!preset?.executables.some((name) => name.toLocaleLowerCase() === fileName(executable)) }
 function presetRuleText(task: Task, type: 'success' | 'failure') { const storedRules = type === 'success' ? task.success_log_rules : task.failure_log_rules; const presetRules = type === 'success' ? presetFor(task)?.successRules : presetFor(task)?.failureRules; const rules = storedRules.length ? storedRules : (presetRules || []); return rules.map((rule) => `${rule.mode === 'regex' ? '正则' : '关键字'}：${rule.pattern}`).join('；') || '无（由人工确认完成）' }
-function report(title: string, error: unknown) { notice.value = `${title}：${error instanceof Error ? error.message : String(error)}` }
+function friendlyError(error: unknown) {
+  const raw = error instanceof Error ? error.message : String(error)
+  try {
+    const payload = JSON.parse(raw) as { detail?: unknown }
+    const detail = payload.detail
+    if (Array.isArray(detail) && detail.some((item) => Array.isArray((item as { loc?: unknown }).loc) && ((item as { loc: unknown[] }).loc.includes('days')))) return '请至少选择一个运行日后再保存。'
+    if (typeof detail === 'string') return detail
+  } catch { /* 保留可读的普通后端错误 */ }
+  return raw.includes('days') || raw.includes('min_length') ? '请至少选择一个运行日后再保存。' : raw
+}
+function report(title: string, error: unknown) { notice.value = `${title}：${friendlyError(error)}` }
 function taskProblem(task: Task): string | null { if (!task.executable.trim()) return '未选择程序路径'; if (task.preset_id && !matchesPreset(task)) return '预设路径不匹配'; if (task.preset_id && !task.preset_evidence) return '预设规则尚未应用'; return null }
 function scriptProblems(script: Queue) { const task = scriptTask(script); return !task ? [`软件脚本“${script.name}”缺少程序`] : taskProblem(task) ? [`软件脚本“${script.name}”：${taskProblem(task)}`] : [] }
 function scriptBlocked(script: Queue) { return scriptProblems(script).length > 0 }

@@ -158,8 +158,27 @@ class RunnerEngine:
             raise RunBusyError("已有计划正在运行，当前计划触发被跳过")
         await self.cancel_pending_completion_action("新的运行已开始")
         plan = copy.deepcopy(self.plan_by_id(plan_id))
-        if len(plan.items) < 2 or len({item.script_id for item in plan.items}) < 2:
-            raise RunValidationError([f"计划“{plan.name}”至少需要两个不同的软件脚本"])
+        if not plan.items:
+            record = RunRecord(
+                queue_id=plan.id,
+                queue_name=plan.name,
+                trigger_source=source,
+                run_mode="plan",
+                plan_id=plan.id,
+                items=[],
+                completion_action=plan.completion_action,
+            )
+            record.state = RunState.COMPLETED
+            record.ended_at = datetime.now(UTC)
+            record.message = "计划尚未添加软件脚本，已跳过本次执行"
+            self.history.runs.insert(0, record)
+            self.history.runs = self.history.runs[:200]
+            self.store.save_history(self.history)
+            self.current_run = record
+            await self._publish_state()
+            return record
+        if len({item.script_id for item in plan.items}) != len(plan.items):
+            raise RunValidationError([f"计划“{plan.name}”不能重复添加同一软件脚本"])
         script_book = {script.id: script for script in copy.deepcopy(self.config.queues)}
         missing = [item.script_id for item in plan.items if item.script_id not in script_book]
         if missing:

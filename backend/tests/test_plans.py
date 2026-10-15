@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.engine import RunnerEngine, RunValidationError
+from app.engine import RunnerEngine
 from app.events import EventHub
 from app.main import validate_schedule_plans
 from app.models import (
@@ -49,6 +49,24 @@ async def test_plan_runs_two_scripts_in_saved_order(tmp_path: Path) -> None:
     assert [item.script_name for item in engine.history.runs[0].items] == ["一", "二"]
 
 
+@pytest.mark.asyncio
+async def test_plan_runs_a_single_saved_script(tmp_path: Path) -> None:
+    output = tmp_path / "single.txt"
+    target = task("唯一", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ok')")
+    target.arguments.append(str(output))
+    script = QueueDefinition(name="单项", task_ids=[target.id])
+    plan = SchedulePlan(name="单软件计划", items=[PlanTask(script_id=script.id)])
+    store = JsonStore(tmp_path / "data")
+    store.save_config(AppConfig(queues=[script], tasks=[target], plans=[plan]))
+    engine = RunnerEngine(store, EventHub(), cooldown_seconds=0.01, close_grace_seconds=0.05)
+
+    record = await engine.start_plan(plan.id, "scheduled")
+    await engine.wait_until_idle()
+
+    assert output.read_text(encoding="utf-8") == "ok"
+    assert [item.script_name for item in record.items] == ["单项"]
+
+
 def test_plan_validation_rejects_overlap_and_multiple_startup() -> None:
     one, two, three = QueueDefinition(name="一", task_ids=["a"]), QueueDefinition(name="二", task_ids=["b"]), QueueDefinition(name="三", task_ids=["c"])
     first = SchedulePlan(name="计划甲", items=[PlanTask(script_id=one.id), PlanTask(script_id=two.id)], startup_mode=StartupMode.ALWAYS, time_slots=[TimeSlot(time="09:00", days=[0, 1])])
@@ -60,15 +78,18 @@ def test_plan_validation_rejects_overlap_and_multiple_startup() -> None:
 
 
 @pytest.mark.asyncio
-async def test_incomplete_plan_is_a_saveable_draft_but_cannot_start(tmp_path: Path) -> None:
+async def test_empty_plan_is_a_saveable_draft_and_records_a_safe_skip(tmp_path: Path) -> None:
     draft = SchedulePlan(name="待配置草稿")
     validate_schedule_plans(AppConfig(plans=[draft]))
     store = JsonStore(tmp_path / "data")
     store.save_config(AppConfig(plans=[draft]))
     engine = RunnerEngine(store, EventHub())
 
-    with pytest.raises(RunValidationError, match="至少需要两个不同的软件脚本"):
-        await engine.start_plan(draft.id, "manual")
+    record = await engine.start_plan(draft.id, "manual")
+
+    assert record.state.value == "completed"
+    assert record.message == "计划尚未添加软件脚本，已跳过本次执行"
+    assert engine.history.runs[0].id == record.id
 
 
 @pytest.mark.asyncio

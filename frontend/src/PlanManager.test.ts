@@ -54,9 +54,40 @@ test('creates an empty draft and only shows an empty task list after the first t
   await wrapper.setProps({ selectedPlanId: plan.id })
   await wrapper.findAll('button').find((button) => button.text().includes('添加定时'))!.trigger('click')
   expect(wrapper.text()).toContain('任务列表')
-  expect(wrapper.text()).toContain('任务列表为空，请手动添加至少两个不同的软件脚本。')
+  expect(wrapper.text()).toContain('尚未选择软件脚本')
+  expect(wrapper.text()).toContain('选择已编辑并保存的软件脚本。')
   expect(wrapper.find('.day-picker').exists()).toBe(true)
   expect(wrapper.find('.time-picker').text()).toContain('时')
   expect(wrapper.text()).not.toContain('上移')
   expect(wrapper.text()).not.toContain('下移')
+})
+
+test('adds an unselected row before persisting a chosen script', async () => {
+  const data = config(true)
+  data.plans[0].time_slots.push({ id: 'slot', enabled: true, days: [0], time: '09:00' })
+  data.plans[0].items = []
+  const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
+
+  await wrapper.get('button.task-adder').trigger('click')
+  expect(wrapper.text()).toContain('未选择脚本')
+  expect(data.plans[0].items).toEqual([])
+  await wrapper.get('select[aria-label="选择软件脚本"]').setValue('one')
+
+  expect(data.plans[0].items).toHaveLength(1)
+  expect(data.plans[0].items[0].script_id).toBe('one')
+  expect(wrapper.emitted('save')).toHaveLength(1)
+})
+
+test('keeps the last selected task day and uses a whole-row drag source', async () => {
+  const data = config(true)
+  data.plans[0].items[0].days = [0]
+  data.plans[0].time_slots.push({ id: 'slot', enabled: true, days: [0], time: '09:00' })
+  const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
+  const row = wrapper.find('article.task-row')
+
+  expect(row.attributes('draggable')).toBe('true')
+  await row.find('input[type="checkbox"]').setValue(false)
+
+  expect(data.plans[0].items[0].days).toEqual([0])
+  expect(wrapper.text()).toContain('请至少选择一个运行日。')
 })
