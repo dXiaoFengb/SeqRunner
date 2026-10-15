@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from .engine import RunBusyError, RunnerEngine, RunValidationError
-from .models import StartupMode
+from .models import SchedulePlan, StartupMode
 
 
 class QueueScheduler:
@@ -41,30 +41,35 @@ class QueueScheduler:
         window_start = current - timedelta(minutes=10)
         fired = set(self.engine.config.fired_slots)
         changed = False
-        for plan in self.engine.config.plans:
+        candidates: list[tuple[datetime, int, SchedulePlan]] = []
+        for plan_index, plan in enumerate(self.engine.config.plans):
             if not plan.scheduled_enabled:
                 continue
-            due_keys: list[str] = []
+            due_keys: list[tuple[datetime, str]] = []
             for slot in plan.time_slots:
                 if not slot.enabled:
                     continue
                 for minute in self._minutes_between(window_start, current):
                     if minute.weekday() not in slot.days or minute.strftime("%H:%M") != slot.time:
                         continue
-                    due_keys.append(f"{plan.id}:{slot.id}:{minute.isoformat()}")
-            new_keys = [key for key in due_keys if key not in fired]
+                    due_keys.append((minute, f"{plan.id}:{slot.id}:{minute.isoformat()}"))
+            new_keys = [(minute, key) for minute, key in due_keys if key not in fired]
             if not new_keys:
                 continue
             # 一个队列同一检查只启动一次；其余同刻槽位一起标记。
-            fired.update(new_keys)
+            fired.update(key for _, key in new_keys)
             changed = True
+            candidates.append((min(minute for minute, _ in new_keys), plan_index, plan))
+
+        # 计划卡顺序只影响界面；恢复窗口内的定时项始终按实际预定时刻处理。
+        for due_at, _, plan in sorted(candidates, key=lambda candidate: (candidate[0], candidate[1])):
             if self.engine.is_busy:
-                await self.engine.record_schedule_skip(plan, current)
+                await self.engine.record_schedule_skip(plan, due_at)
                 continue
             try:
-                await self.engine.start_plan(plan.id, "scheduled", current)
+                await self.engine.start_plan(plan.id, "scheduled", due_at)
             except RunBusyError:
-                await self.engine.record_schedule_skip(plan, current)
+                await self.engine.record_schedule_skip(plan, due_at)
             except (RunValidationError, StopIteration) as error:
                 await self.engine.events.publish("schedule", {"planId": plan.id, "message": f"定时计划未执行：{error}"})
         if changed:

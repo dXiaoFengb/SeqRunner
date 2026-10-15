@@ -36,7 +36,8 @@ test('keeps script cards free from timing controls and makes plans the timing en
   await wrapper.findAll('button').find((button) => button.text() === '计划')!.trigger('click')
   expect(wrapper.text()).toContain('计划队列')
   await wrapper.findAll('button').find((button) => button.text().includes('新建计划'))!.trigger('click')
-  expect(wrapper.text()).toContain('计划选择')
+  expect(wrapper.text()).not.toContain('计划选择')
+  expect(wrapper.find('.plan-card-rail').exists()).toBe(true)
   expect(wrapper.text()).toContain('定时列表')
 })
 

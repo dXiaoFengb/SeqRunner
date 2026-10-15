@@ -52,6 +52,31 @@ async def test_busy_scheduler_marks_slot_without_queueing(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_scheduler_uses_due_time_not_plan_display_order(tmp_path: Path) -> None:
+    late_plan = SchedulePlan(name="显示在前", items=[PlanTask(script_id="one")], time_slots=[TimeSlot(time="09:05", days=[0])])
+    early_plan = SchedulePlan(name="显示在后", items=[PlanTask(script_id="two")], time_slots=[TimeSlot(time="09:00", days=[0])])
+    store = JsonStore(tmp_path / "data")
+    store.save_config(AppConfig(plans=[late_plan, early_plan]))
+    engine = RunnerEngine(store, EventHub(), cooldown_seconds=0.01)
+    scheduler = QueueScheduler(engine)
+    started: list[tuple[str, datetime]] = []
+
+    async def capture(plan_id: str, source: str, due_at: datetime | None = None) -> None:
+        assert source == "scheduled"
+        assert due_at is not None
+        started.append((plan_id, due_at))
+
+    engine.start_plan = capture  # type: ignore[method-assign]
+    await scheduler.tick(datetime(2026, 10, 12, 9, 6, tzinfo=UTC))
+
+    assert started == [
+        (early_plan.id, datetime(2026, 10, 12, 9, 0, tzinfo=UTC)),
+        (late_plan.id, datetime(2026, 10, 12, 9, 5, tzinfo=UTC)),
+    ]
+    assert len(engine.config.fired_slots) == 2
+
+
+@pytest.mark.asyncio
 async def test_empty_due_plan_creates_a_safe_skip_record(tmp_path: Path) -> None:
     plan = SchedulePlan(name="未完成计划", time_slots=[TimeSlot(time="09:00", days=[0])])
     store = JsonStore(tmp_path / "data")
