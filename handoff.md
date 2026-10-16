@@ -4,34 +4,28 @@
 
 ## 交接信息
 
-- 交接时间：2026-10-16T11:28:00+08:00
+- 交接时间：2026-10-16T12:09:00+08:00
 - 执行者 / 会话标识：Codex
-- 对应任务：见 `TASK.md`「v0.5.5 计划概览行级操作与 AUTO-MAS 风格规范」。
+- 对应任务：见 `TASK.md`「v0.5.7 纯视觉风格统一」。
 
 ## 最近实际改动
 
-- `PlanManager` 的概览改为纵向独立计划卡：每行左侧唯一拖拽柄和序号，中部计划摘要，右侧仅绑定该行的“编辑计划 / 删除计划”；移除了横向新建卡、全局选中态及全局操作栏。
-- 页头“＋ 新建计划”在空列表和已有计划时均可用，创建空草稿后直接进入独立编辑页。行级编辑会设定对应计划为当前编辑对象；删除只移除所在行计划。计划 JSON、迁移和调度逻辑没有改动。
-- 新增 `docs/ui-style-guidance.md`，沉淀 AUTO-MAS 的深色运维控制台风格和后续界面整改提示词；现有五项队列字段问号说明继续保留。
-
-## 本会话补充验证（未改动业务代码）
-
-- 使用受控假引擎验证周一的跨计划共享脚本场景：计划一在 09:00 依次包含两个脚本，计划二在 12:59 仅包含其中一个相同脚本。配置校验通过，两个计划均会在各自预定时刻交给单一执行器；跨计划复用同一脚本不是冲突条件。
-- 同一夹具验证边界：若计划一到计划二的预定时刻仍处于运行状态，计划二会安全跳过并留痕，不会并行执行或自动排队等待。不同计划的保存期冲突仍只由“同一星期、同一时间”决定。
+- 仅修改 `frontend/src/styles.css`：统一了深蓝灰画布、分层面板、边框、青蓝主操作、低饱和危险操作、焦点与禁用态；侧栏、页头、脚本卡、运行中心、独立编辑页及公共控件均保持既有 DOM、文案、事件和功能不变。
+- 没有修改任何 Vue 模板或脚本、后端、Electron、配置 JSON、测试、AUTO-MAS 参考资产、真实业务软件或系统配置。
 
 ## 验证与证据
 
-- 回归：正常 Windows 权限会话中后端 pytest **49 passed, 1 warning**、`ruff check backend`、Vue typecheck、Vitest **6 文件 / 25 项**、生产构建与开发 Electron 健康检查均通过。受限沙箱仍会对 esbuild 子进程返回环境性 `spawn EPERM`，已用同一命令在正常权限会话复核。未启动真实业务软件、ADB、游戏或系统完成后操作。
-- 构建与健康：`corepack npm run package:validation` 生成 `portable-validation-v055\\electron\\顺序任务调度器-v0.5.5-portable.exe`。EXE 大小 **323,017,049** 字节，SHA-256 `1727D88FED46D4B5CA46F1777869048D2FF3594134DFAE4675466B0115A2958D`；以 `RUNNER_HEALTH_CHECK=1` 隐藏启动后以退出码 **0** 结束。目录已由 `.gitignore` 核验为忽略。首次 Electron 下载只留下 v0.5.5 忽略缓存分片，随后仅复制既有 v0.5.4 的同版本 ZIP 到新的 v0.5.5 缓存后完成打包；既有验证包和 EXE 未被改动。
-- 交接留痕构建：`corepack npm run package:validation` 生成 `portable-validation-v056\\electron\\顺序任务调度器-v0.5.6-portable.exe`。EXE 大小 **323,016,667** 字节，SHA-256 `A6D6BA1FD52BEB29FDCAC72349DD4598DA37A28C2F6FEF811158B946CAA3EF1D`；目录已确认 Git 忽略，并以 `RUNNER_HEALTH_CHECK=1` 隐藏启动后以退出码 **0** 结束。v0.5.6 仅记录交接和受控调度验证，未改变业务代码；既有验证包和 EXE 未被改动。
+- `git diff --check`、Vue typecheck、普通 Windows 权限会话的 Vitest **6 文件 / 25 项**、生产构建与开发 Electron 隐藏健康检查均通过。受限沙箱对 Vitest 的 esbuild 子进程报 `spawn EPERM`，已在同一命令的普通 Windows 权限会话复核。未启动真实业务软件、ADB、游戏或系统完成后操作。
+- 开发提交版本已按修订号推进至 `v0.5.7`。`corepack npm run package:validation` 已生成新的 Git 忽略验证包 `portable-validation-v057\\electron\\顺序任务调度器-v0.5.7-portable.exe`，大小 **323,019,292** 字节，SHA-256 为 `40D1FBB2C85BB247788DF3FF5152570BF280AD69F61DB360527BEC4A117AAD81`；`git check-ignore` 已确认目录受 `/portable-validation-v*/` 规则保护，`RUNNER_HEALTH_CHECK=1` 隐藏健康检查退出码为 **0**。既有 v0.5.5/v0.5.6 验证包未被修改。
+- 初次封装因 NSIS 下载 EOF 未形成 portable EXE；经用户明确允许，仅向新的 v0.5.7 忽略缓存复制已有 v0.5.6 的完整 NSIS 缓存，抽样核心文件 SHA-256 一致后重试成功。没有改写旧验证包、发布包或业务代码。
 
 ## 本次交接周期内的高风险操作
 
-- 无。portable 健康检查仅隐藏启动本轮刚生成的 EXE，实际以退出码 0 自动结束；未触发真实系统操作。
+- 无。已按长期授权对最终候选 EXE 执行隐藏健康检查，未触发真实业务软件、系统操作或外部写入。
 
 > 本节只记录本次交接周期内已发生的对象、结果和当次确认来源；下一次交接更新时会被覆盖，不构成后续会话的授权。长期预先授权只看 `CONSTRAINTS.md`，发布事实只看 `VERSION.md`；需要长期留存时，按 `CONSTRAINTS.md` 已选方式另行完成。
 
 ## 下一步
 
-1. 用户可使用最新的 `portable-validation-v056\\electron\\顺序任务调度器-v0.5.6-portable.exe` 按 `docs/manual-acceptance.md` 完成 Windows 可视与交互验收，重点确认页头新建入口、计划行级编辑/删除、拖拽排序、窄窗口操作区和五个字段问号说明。真实业务软件与真实系统操作仍不执行。
-2. 下一会话开始新功能前，先读取 `TASK.md`、本文件和 `docs/ui-style-guidance.md`；当前 v0.5.5 功能范围仍处于“待验收”，本地开发提交版本已推进为 v0.5.6（仅交接和验证留痕），未产生新的已确认功能需求。若继续扩展计划调度，保持单一执行器语义：不拒绝跨计划重复脚本，但忙碌时后到计划安全跳过。
+1. 执行 scoped Git 暂存与本地中文提交；不推送或发布。
+2. 用户随后按 `docs/manual-acceptance.md` 进行 Windows 桌面视觉验收，重点确认深色主题一致性、焦点/禁用态、输入与浮层、窄窗口无横向溢出和原有脚本操作行为。
