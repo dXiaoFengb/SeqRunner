@@ -18,31 +18,34 @@ function config(withPlan = false): Config {
 }
 
 async function openEditor(wrapper: ReturnType<typeof mount>) {
-  await wrapper.get('.plan-overview-actions .primary').trigger('click')
+  await wrapper.get('.plan-card-actions .primary').trigger('click')
 }
 
 test('shows the centered no-plan state and only the header creation entry', () => {
   const wrapper = mount(PlanManager, { props: { config: config(), selectedPlanId: null, busy: false } })
   expect(wrapper.text()).toContain('暂无计划')
   expect(wrapper.text()).toContain('还没有创建任何计划')
-  expect(wrapper.find('.plan-card-rail').exists()).toBe(false)
+  expect(wrapper.find('.plan-overview').exists()).toBe(false)
   expect(wrapper.find('.queue-detail').exists()).toBe(false)
   expect(wrapper.get('button.primary').text()).toContain('新建计划')
 })
 
-test('uses a separate overview with plan cards, a new-plan card, and right-side actions', () => {
+test('uses independent plan rows with operations bound to their own plan', () => {
   const data = config(true)
   data.plans.push(plan('plan-two', '晚班队列'))
   const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
 
-  expect(wrapper.findAll('.plan-card:not(.plan-card-add)')).toHaveLength(2)
-  expect(wrapper.get('.plan-card-add').text()).toContain('新建计划')
-  expect(wrapper.get('.plan-overview-actions').text()).toContain('编辑计划')
-  expect(wrapper.get('.plan-overview-actions').text()).toContain('删除计划')
+  expect(wrapper.findAll('.plan-card')).toHaveLength(2)
+  expect(wrapper.find('.plan-card-add').exists()).toBe(false)
+  expect(wrapper.find('.plan-overview-actions').exists()).toBe(false)
+  expect(wrapper.findAll('.plan-card-actions')).toHaveLength(2)
+  expect(wrapper.findAll('button[aria-label^="编辑计划："]')).toHaveLength(2)
+  expect(wrapper.findAll('button[aria-label^="删除计划："]')).toHaveLength(2)
+  expect(wrapper.get('.queue-page-head .primary').text()).toContain('新建计划')
   expect(wrapper.find('.queue-detail').exists()).toBe(false)
 })
 
-test('switches and keyboard-sorts plan cards without changing their own schedules', async () => {
+test('keyboard-sorts plan rows without changing their own schedules', async () => {
   const data = config(true)
   data.plans[0].time_slots.push({ id: 'morning', enabled: true, days: [0], time: '09:00' })
   const second = plan('plan-two', '晚班队列')
@@ -50,8 +53,6 @@ test('switches and keyboard-sorts plan cards without changing their own schedule
   data.plans.push(second)
   const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
 
-  await wrapper.findAll('.plan-card-select')[1].trigger('click')
-  expect(wrapper.emitted('update:selectedPlanId')?.at(-1)).toEqual(['plan-two'])
   await wrapper.findAll('.plan-card-handle')[0].trigger('keydown', { key: 'ArrowDown', altKey: true })
 
   expect(data.plans.map((item) => item.id)).toEqual(['plan-two', 'plan'])
@@ -60,11 +61,11 @@ test('switches and keyboard-sorts plan cards without changing their own schedule
   expect(wrapper.emitted('save')).toHaveLength(1)
 })
 
-test('creates a draft from the new-plan card and immediately opens the editor', async () => {
+test('creates a draft from the header and immediately opens the editor', async () => {
   const data = config(true)
   const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
 
-  await wrapper.get('.plan-card-add').trigger('click')
+  await wrapper.get('.queue-page-head .primary').trigger('click')
   expect(data.plans).toHaveLength(2)
   expect(data.plans[1].items).toEqual([])
   expect(wrapper.find('.queue-detail').exists()).toBe(true)
@@ -82,6 +83,33 @@ test('keeps edit-only controls out of the overview and returns to the card list'
   expect(wrapper.text()).not.toContain('删除计划')
   await wrapper.get('.back-button').trigger('click')
   expect(wrapper.find('.plan-overview').exists()).toBe(true)
+})
+
+test('edits and deletes the matching plan row without a global selected action bar', async () => {
+  const data = config(true)
+  data.plans.push(plan('plan-two', '晚班队列'))
+  const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
+
+  await wrapper.get('button[aria-label="删除计划：晚班队列"]').trigger('click')
+  expect(data.plans.map((item) => item.id)).toEqual(['plan'])
+  expect(wrapper.find('.plan-overview-actions').exists()).toBe(false)
+  expect(wrapper.emitted('save')).toHaveLength(1)
+})
+
+test('opens the exact plan named by a row action and returns to empty state after the last deletion', async () => {
+  const data = config(true)
+  data.plans.push(plan('plan-two', '晚班队列'))
+  const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
+
+  await wrapper.get('button[aria-label="编辑计划：晚班队列"]').trigger('click')
+  expect(wrapper.emitted('update:selectedPlanId')?.at(-1)).toEqual(['plan-two'])
+  await wrapper.setProps({ selectedPlanId: 'plan-two' })
+  expect(wrapper.get('.queue-title h3').text()).toBe('晚班队列')
+  await wrapper.get('.back-button').trigger('click')
+  await wrapper.get('button[aria-label="删除计划：晚班队列"]').trigger('click')
+  await wrapper.get('button[aria-label="删除计划：早班队列"]').trigger('click')
+  expect(wrapper.text()).toContain('暂无计划')
+  expect(wrapper.find('.plan-overview').exists()).toBe(false)
 })
 
 test('renames in the editor and exposes all five accessible field help tips', async () => {

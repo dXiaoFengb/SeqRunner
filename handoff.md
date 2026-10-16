@@ -4,21 +4,20 @@
 
 ## 交接信息
 
-- 交接时间：2026-10-16T11:02:49+08:00
+- 交接时间：2026-10-16T11:15:00+08:00
 - 执行者 / 会话标识：Codex
-- 对应任务：见 `TASK.md`「v0.5.4 计划概览与编辑拆分、设置归位及字段说明」。
+- 对应任务：见 `TASK.md`「v0.5.5 计划概览行级操作与 AUTO-MAS 风格规范」。
 
 ## 最近实际改动
 
-- 修正 `App.vue` 的互斥页面分支：计划页只渲染 `PlanManager`，应用信息与连接诊断只在“设置”页显示，不再泄漏到计划页末尾。
-- `PlanManager` 现分为计划概览和独立编辑页。概览中计划卡与“新建计划”卡同列，右侧仅保留选中计划的“编辑计划 / 删除计划”；新建空草稿后直接进入编辑页，编辑页可返回概览并保留原位重命名、定时表和任务表。
-- 新增可复用 `HelpTooltip`：队列类型、启动时运行、定时运行、完成后操作和延时执行都有深色中文问号说明，支持悬停、键盘聚焦、点击、外部点击关闭与 Esc；不修改计划 JSON、迁移或调度行为。
+- `PlanManager` 的概览改为纵向独立计划卡：每行左侧唯一拖拽柄和序号，中部计划摘要，右侧仅绑定该行的“编辑计划 / 删除计划”；移除了横向新建卡、全局选中态及全局操作栏。
+- 页头“＋ 新建计划”在空列表和已有计划时均可用，创建空草稿后直接进入独立编辑页。行级编辑会设定对应计划为当前编辑对象；删除只移除所在行计划。计划 JSON、迁移和调度逻辑没有改动。
+- 新增 `docs/ui-style-guidance.md`，沉淀 AUTO-MAS 的深色运维控制台风格和后续界面整改提示词；现有五项队列字段问号说明继续保留。
 
 ## 验证与证据
 
-- 回归：正常 Windows 权限会话中后端 pytest **49 passed, 1 warning**、`ruff check backend`、Vue typecheck、Vitest **6 文件 / 23 项**、生产构建与开发 Electron 隐藏健康检查均通过。受限沙箱仍会对 pytest 临时目录、esbuild 子进程和 Electron 单实例锁返回环境性 `WinError 5 / spawn EPERM`，已用同一命令在正常权限会话复核。未启动真实业务软件、ADB、游戏或系统完成后操作。
-- 构建与健康：`corepack npm run package:validation` 生成 `portable-validation-v054\\electron\\顺序任务调度器-v0.5.4-portable.exe`。EXE 大小 **323,019,447** 字节，SHA-256 `5B79F90804EA95A4284973BAF966182D2F3A61B705F3EA53B3F5B46BB1B0576A`；以 `RUNNER_HEALTH_CHECK=1` 隐藏启动后以退出码 **0** 结束。目录已由 `.gitignore` 核验为忽略。首次 Electron 下载只留下 v0.5.4 忽略缓存分片，随后仅复制既有 v0.5.3 的同版本 ZIP 到新的 v0.5.4 缓存后完成打包；既有验证包和 EXE 未被改动。
-- Git：开发提交版本已推进为 `v0.5.4`；待本轮明确文件完成缓存差异核对后，按自动提交策略创建本地中文提交，不推送、不发布。
+- 回归：正常 Windows 权限会话中后端 pytest **49 passed, 1 warning**、`ruff check backend`、Vue typecheck、Vitest **6 文件 / 25 项**、生产构建与开发 Electron 健康检查均通过。受限沙箱仍会对 esbuild 子进程返回环境性 `spawn EPERM`，已用同一命令在正常权限会话复核。未启动真实业务软件、ADB、游戏或系统完成后操作。
+- 构建与健康：`corepack npm run package:validation` 生成 `portable-validation-v055\\electron\\顺序任务调度器-v0.5.5-portable.exe`。EXE 大小 **323,017,049** 字节，SHA-256 `1727D88FED46D4B5CA46F1777869048D2FF3594134DFAE4675466B0115A2958D`；以 `RUNNER_HEALTH_CHECK=1` 隐藏启动后以退出码 **0** 结束。目录已由 `.gitignore` 核验为忽略。首次 Electron 下载只留下 v0.5.5 忽略缓存分片，随后仅复制既有 v0.5.4 的同版本 ZIP 到新的 v0.5.5 缓存后完成打包；既有验证包和 EXE 未被改动。
 
 ## 本次交接周期内的高风险操作
 
@@ -28,4 +27,4 @@
 
 ## 下一步
 
-1. 创建本轮本地提交后，由用户使用 `portable-validation-v054\\electron\\顺序任务调度器-v0.5.4-portable.exe` 按 `docs/manual-acceptance.md` 完成 Windows 可视与交互验收，重点确认设置不再出现在计划页、计划概览与编辑页互斥、新建卡直接进入编辑页、计划卡排序、五个字段问号说明及窄窗口布局。真实业务软件与真实系统操作仍不执行。
+1. 用户使用 `portable-validation-v055\\electron\\顺序任务调度器-v0.5.5-portable.exe` 按 `docs/manual-acceptance.md` 完成 Windows 可视与交互验收，重点确认页头新建入口、计划行级编辑/删除、拖拽排序、窄窗口操作区和五个字段问号说明。真实业务软件与真实系统操作仍不执行。
