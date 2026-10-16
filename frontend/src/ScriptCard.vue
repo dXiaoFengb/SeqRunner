@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref } from 'vue'
+import { Copy, GripVertical, MoreHorizontal, Pencil, Play, Trash2 } from '@lucide/vue'
 import type { Queue, Task } from './types'
 
 type Execution = { kind: 'idle' | 'queued' | 'running' | 'waiting_manual' | 'closing' | 'cooling_down' | 'succeeded' | 'failed' | 'stopped'; label: string; detail?: string }
@@ -52,7 +53,7 @@ onBeforeUnmount(() => closeMenu())
 <template>
   <article class="script-card" :class="[execution?.kind, { running: execution?.kind === 'running' || execution?.kind === 'waiting_manual' || execution?.kind === 'closing' || execution?.kind === 'cooling_down' }]" :draggable="!locked" @dragstart="emit('dragstart', $event)" @dragover.prevent @drop="emit('drop', $event)">
     <div class="script-summary">
-      <button class="grab" type="button" title="拖拽调整脚本顺序" :disabled="locked" aria-label="拖拽调整脚本顺序">⠿</button>
+      <button class="grab" type="button" title="拖拽调整脚本顺序" :disabled="locked" aria-label="拖拽调整脚本顺序"><GripVertical aria-hidden="true" /></button>
       <span class="script-emblem" aria-hidden="true">{{ presetSummary === '通用程序' ? '通' : presetSummary.slice(0, 1) }}</span>
       <div class="script-title">
         <b>{{ task?.name || '新程序' }}</b>
@@ -63,17 +64,17 @@ onBeforeUnmount(() => closeMenu())
       <span v-else-if="blocked" class="script-incomplete">待完成配置</span>
       <span v-else class="script-ready">可运行</span>
       <div class="card-actions">
-        <button :disabled="locked" @click="emit('edit')">编辑脚本</button>
-        <button class="run-button" :disabled="locked || blocked || !task" @click="emit('run')">运行</button>
-        <button ref="trigger" class="more-trigger" :aria-expanded="moreOpen" aria-haspopup="menu" :disabled="locked" @click="toggleMenu" @keydown.esc="closeMenu(true)">更多</button>
+        <button :disabled="locked" @click="emit('edit')"><Pencil aria-hidden="true" />编辑脚本</button>
+        <button class="run-button" :disabled="locked || blocked || !task" @click="emit('run')"><Play aria-hidden="true" />运行</button>
+        <button ref="trigger" class="more-trigger" :aria-expanded="moreOpen" aria-haspopup="menu" :disabled="locked" @click="toggleMenu" @keydown.esc="closeMenu(true)"><MoreHorizontal aria-hidden="true" />更多</button>
       </div>
     </div>
     <Teleport to="body">
       <div v-if="moreOpen" ref="menu" class="action-menu" role="menu" :style="menuStyle" @keydown="onMenuKeydown">
         <button role="menuitem" :disabled="locked" @click="runAndClose(() => emit('move', -1))">上移</button>
         <button role="menuitem" :disabled="locked" @click="runAndClose(() => emit('move', 1))">下移</button>
-        <button role="menuitem" :disabled="locked" @click="runAndClose(() => emit('duplicate'))">复制脚本</button>
-        <button role="menuitem" class="textdanger" :disabled="locked" @click="runAndClose(() => emit('remove'))">删除脚本</button>
+        <button role="menuitem" :disabled="locked" @click="runAndClose(() => emit('duplicate'))"><Copy aria-hidden="true" />复制脚本</button>
+        <button role="menuitem" class="textdanger" :disabled="locked" @click="runAndClose(() => emit('remove'))"><Trash2 aria-hidden="true" />删除脚本</button>
       </div>
     </Teleport>
   </article>

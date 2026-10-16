@@ -15,7 +15,7 @@ if (validation) {
     appId: 'local.sequential-task-runner',
     productName: '顺序任务调度器',
     directories: { output: `${validationDirectory}/electron` },
-    files: ['frontend-dist/**', 'electron/**', 'package.json', 'VERSION.md'],
+    files: ['frontend-dist/**', 'electron/**', 'package.json', 'VERSION.md', 'THIRD_PARTY_NOTICES.md'],
     extraResources: [{ from: `${validationDirectory}/backend/sequential-runner-backend.exe`, to: 'backend/sequential-runner-backend.exe' }],
     // 验证包优先保证在受限 CI/桌面会话中可稳定生成；正式发布配置仍保留默认压缩策略。
     compression: 'store',

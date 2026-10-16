@@ -32,6 +32,9 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 test('keeps settings out of the plan page and makes plans the only timing entry', async () => {
   installBackend(config(true)); const wrapper = runner(); await flushPromises()
+  expect(wrapper.find('button[aria-label="脚本"] svg').exists()).toBe(true)
+  expect(wrapper.get('button[aria-label="计划"]').text()).toBe('计划')
+  expect(wrapper.get('button[aria-label="设置"]').text()).toBe('设置')
   expect(wrapper.text()).not.toContain('添加定时槽')
   await wrapper.findAll('button').find((button) => button.text() === '计划')!.trigger('click')
   expect(wrapper.text()).toContain('计划队列')
