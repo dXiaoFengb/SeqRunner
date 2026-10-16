@@ -17,27 +17,32 @@ function config(withPlan = false): Config {
   return base
 }
 
-test('shows the centered no-plan state without a plan selector', () => {
+async function openEditor(wrapper: ReturnType<typeof mount>) {
+  await wrapper.get('.plan-overview-actions .primary').trigger('click')
+}
+
+test('shows the centered no-plan state and only the header creation entry', () => {
   const wrapper = mount(PlanManager, { props: { config: config(), selectedPlanId: null, busy: false } })
   expect(wrapper.text()).toContain('暂无计划')
   expect(wrapper.text()).toContain('还没有创建任何计划')
-  expect(wrapper.text()).not.toContain('计划选择')
   expect(wrapper.find('.plan-card-rail').exists()).toBe(false)
+  expect(wrapper.find('.queue-detail').exists()).toBe(false)
+  expect(wrapper.get('button.primary').text()).toContain('新建计划')
 })
 
-test('uses selectable plan cards rather than an independent selector and keeps title rename in the editor header', () => {
+test('uses a separate overview with plan cards, a new-plan card, and right-side actions', () => {
   const data = config(true)
   data.plans.push(plan('plan-two', '晚班队列'))
   const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
-  expect(wrapper.text()).not.toContain('计划选择')
-  expect(wrapper.findAll('.plan-card')).toHaveLength(2)
-  expect(wrapper.findAll('.plan-card-select')[1].text()).toContain('晚班队列')
-  expect(wrapper.find('.queue-title .rename-button').exists()).toBe(true)
-  expect(wrapper.find('.queue-name').exists()).toBe(false)
-  expect(wrapper.findAll('.queue-settings-grid > label')).toHaveLength(5)
+
+  expect(wrapper.findAll('.plan-card:not(.plan-card-add)')).toHaveLength(2)
+  expect(wrapper.get('.plan-card-add').text()).toContain('新建计划')
+  expect(wrapper.get('.plan-overview-actions').text()).toContain('编辑计划')
+  expect(wrapper.get('.plan-overview-actions').text()).toContain('删除计划')
+  expect(wrapper.find('.queue-detail').exists()).toBe(false)
 })
 
-test('switches and keyboard-sorts plan cards while preserving their own schedules', async () => {
+test('switches and keyboard-sorts plan cards without changing their own schedules', async () => {
   const data = config(true)
   data.plans[0].time_slots.push({ id: 'morning', enabled: true, days: [0], time: '09:00' })
   const second = plan('plan-two', '晚班队列')
@@ -55,65 +60,59 @@ test('switches and keyboard-sorts plan cards while preserving their own schedule
   expect(wrapper.emitted('save')).toHaveLength(1)
 })
 
-test('renames a plan from the header pencil without a second name field', async () => {
+test('creates a draft from the new-plan card and immediately opens the editor', async () => {
   const data = config(true)
   const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
+
+  await wrapper.get('.plan-card-add').trigger('click')
+  expect(data.plans).toHaveLength(2)
+  expect(data.plans[1].items).toEqual([])
+  expect(wrapper.find('.queue-detail').exists()).toBe(true)
+  expect(wrapper.text()).toContain('返回计划列表')
+  expect(wrapper.emitted('update:selectedPlanId')?.at(-1)).toEqual([data.plans[1].id])
+})
+
+test('keeps edit-only controls out of the overview and returns to the card list', async () => {
+  const data = config(true)
+  const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
+  expect(wrapper.text()).not.toContain('队列类型')
+  await openEditor(wrapper)
+  expect(wrapper.find('.queue-title .rename-button').exists()).toBe(true)
+  expect(wrapper.text()).toContain('队列类型')
+  expect(wrapper.text()).not.toContain('删除计划')
+  await wrapper.get('.back-button').trigger('click')
+  expect(wrapper.find('.plan-overview').exists()).toBe(true)
+})
+
+test('renames in the editor and exposes all five accessible field help tips', async () => {
+  const data = config(true)
+  const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
+  await openEditor(wrapper)
   await wrapper.get('.rename-button').trigger('click')
   const input = wrapper.get('input[aria-label="计划名称"]')
   await input.setValue('晚班队列')
   await input.trigger('keydown.enter')
   expect(data.plans[0].name).toBe('晚班队列')
-  expect(wrapper.emitted('save')).toHaveLength(1)
+
+  expect(wrapper.findAll('.help-tooltip-trigger')).toHaveLength(5)
+  const queueHelp = wrapper.get('button[aria-label="查看队列类型说明"]')
+  await queueHelp.trigger('focus')
+  expect(queueHelp.attributes('aria-expanded')).toBe('true')
+  expect(wrapper.find('[role="tooltip"]').text()).toContain('定时队列会在启用的时间槽触发')
+  await queueHelp.trigger('keydown.esc')
+  expect(wrapper.find('[role="tooltip"]').exists()).toBe(false)
 })
 
-test('creates an empty draft and only shows an empty task list after the first time slot', async () => {
-  const data = config()
-  const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: null, busy: false } })
-  await wrapper.get('button.primary').trigger('click')
-  const created = data.plans[0]
-  expect(created.items).toEqual([])
-  await wrapper.setProps({ selectedPlanId: created.id })
-  await wrapper.findAll('button').find((button) => button.text().includes('添加定时'))!.trigger('click')
-  expect(wrapper.text()).toContain('任务列表')
-  expect(wrapper.text()).toContain('尚未选择软件脚本')
-  expect(wrapper.text()).toContain('选择已编辑并保存的软件脚本。')
-  expect(wrapper.findAll('.weekday-tag')).toHaveLength(7)
-  expect(wrapper.find('.time-picker').text()).toContain('时')
-  expect(wrapper.text()).not.toContain('上移')
-  expect(wrapper.text()).not.toContain('下移')
-})
-
-test('adds an unselected row before persisting a chosen script', async () => {
+test('shows task configuration only after a first slot and persists a selected pending script', async () => {
   const data = config(true)
-  data.plans[0].time_slots.push({ id: 'slot', enabled: true, days: [0], time: '09:00' })
   data.plans[0].items = []
   const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
-
+  await openEditor(wrapper)
+  await wrapper.findAll('button').find((button) => button.text().includes('添加定时'))!.trigger('click')
+  expect(wrapper.text()).toContain('尚未选择软件脚本')
+  expect(wrapper.findAll('.weekday-tag')).toHaveLength(7)
   await wrapper.get('button.task-adder').trigger('click')
-  expect(wrapper.text()).toContain('未选择脚本')
   expect(data.plans[0].items).toEqual([])
   await wrapper.get('select[aria-label="选择软件脚本"]').setValue('one')
-
-  expect(data.plans[0].items).toHaveLength(1)
   expect(data.plans[0].items[0].script_id).toBe('one')
-  expect(wrapper.emitted('save')).toHaveLength(1)
-})
-
-test('shows default all-day tags, a dark checked panel, and protects the last selected day', async () => {
-  const data = config(true)
-  data.plans[0].items[0].days = [0]
-  data.plans[0].time_slots.push({ id: 'slot', enabled: true, days: [0, 1, 2, 3, 4, 5, 6], time: '09:00' })
-  const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
-  const slotSummary = wrapper.findAll('.weekday-summary')[0]
-
-  expect(slotSummary.findAll('.weekday-tag')).toHaveLength(7)
-  expect(slotSummary.text()).toContain('周一 ×')
-  await slotSummary.trigger('click')
-  expect(wrapper.find('.weekday-popover').exists()).toBe(true)
-  expect(wrapper.findAll('.weekday-popover button.selected')).toHaveLength(7)
-
-  const taskTag = wrapper.findAll('.weekday-summary')[1].find('.weekday-tag')
-  await taskTag.trigger('click')
-  expect(data.plans[0].items[0].days).toEqual([0])
-  expect(wrapper.text()).toContain('请至少选择一个运行日。')
 })

@@ -30,15 +30,18 @@ function installBackend(source = config(), runtime: Runtime = { busy: false, act
 function runner() { window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }), selectDirectory: async () => ({ canceled: true }) }; return mount(App) }
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
-test('keeps script cards free from timing controls and makes plans the timing entry', async () => {
+test('keeps settings out of the plan page and makes plans the only timing entry', async () => {
   installBackend(config(true)); const wrapper = runner(); await flushPromises()
   expect(wrapper.text()).not.toContain('添加定时槽')
   await wrapper.findAll('button').find((button) => button.text() === '计划')!.trigger('click')
   expect(wrapper.text()).toContain('计划队列')
+  expect(wrapper.text()).not.toContain('连接与设置')
   await wrapper.findAll('button').find((button) => button.text().includes('新建计划'))!.trigger('click')
-  expect(wrapper.text()).not.toContain('计划选择')
-  expect(wrapper.find('.plan-card-rail').exists()).toBe(true)
+  expect(wrapper.text()).toContain('编辑计划')
   expect(wrapper.text()).toContain('定时列表')
+  await wrapper.findAll('button').find((button) => button.text() === '设置')!.trigger('click')
+  expect(wrapper.text()).toContain('连接与设置')
+  expect(wrapper.text()).toContain('连接诊断')
 })
 
 test('shows only Android emulator connection controls for an MAA script', async () => {
