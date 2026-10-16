@@ -144,3 +144,22 @@ test('shows task configuration only after a first slot and persists a selected p
   await wrapper.get('select[aria-label="选择软件脚本"]').setValue('one')
   expect(data.plans[0].items[0].script_id).toBe('one')
 })
+
+test('uses an accessible enabled or closed selector for each scheduled slot', async () => {
+  const data = config(true)
+  data.plans[0].time_slots.push({ id: 'morning', enabled: true, days: [0], time: '09:00' })
+  const wrapper = mount(PlanManager, { props: { config: data, selectedPlanId: 'plan', busy: false } })
+  await openEditor(wrapper)
+
+  const status = wrapper.get('select[aria-label="定时状态"]')
+  expect(status.text()).toContain('启用')
+  expect(status.text()).toContain('关闭')
+  await status.setValue('closed')
+  expect(data.plans[0].time_slots[0].enabled).toBe(false)
+  expect(wrapper.emitted('save')).toHaveLength(1)
+  await status.setValue('enabled')
+  expect(data.plans[0].time_slots[0].enabled).toBe(true)
+  expect(wrapper.emitted('save')).toHaveLength(2)
+  await wrapper.setProps({ busy: true })
+  expect(wrapper.get('select[aria-label="定时状态"]').attributes('disabled')).toBeDefined()
+})
