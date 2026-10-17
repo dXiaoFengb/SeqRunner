@@ -1,0 +1,9 @@
+{
+  "name": "sequential-runner-ui-acceptance",
+  "version": "1.0.0",
+  "private": true,
+  "description": "隔离桌面验收工具",
+  "devDependencies": {
+    "@playwright/cli": "0.1.22"
+  }
+}
