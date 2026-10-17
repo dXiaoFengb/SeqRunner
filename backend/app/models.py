@@ -171,6 +171,8 @@ class ItemRecord(BaseModel):
     exit_code: int | None = None
     error_summary: str | None = None
     log_summary: list[str] = Field(default_factory=list)
+    detail_log_id: str | None = None
+    detail_log_status: str | None = None
 
 
 class RunRecord(BaseModel):

@@ -66,3 +66,39 @@ test('localizes known record labels without changing unknown values', async () =
   const wrapper = setup([record]); await wrapper.setProps({ expanded: new Set(['样例']) })
   expect(wrapper.text()).toContain('定时触发 · 已完成'); expect(wrapper.text()).toContain('成功：人工确认'); expect(wrapper.text()).toContain('任务成功，来源：人工确认'); expect(wrapper.text()).toContain('外部 manual')
 })
+
+test('sorts records by start time within the same day', () => {
+  const wrapper = setup([run('早', '2026-01-01T08:00:00'), run('晚', '2026-01-01T18:00:00')])
+  const records = wrapper.findAll('.run-record')
+  expect(records[0].text()).toContain('晚'); expect(records[0].text()).toContain('18:00:00')
+  expect(records[1].text()).toContain('早'); expect(records[1].text()).toContain('08:00:00')
+})
+
+test('keeps equal start times stable and groups across days', () => {
+  const wrapper = setup([run('前一天', '2025-12-31T23:59:59'), run('相同一', '2026-01-01T08:00:00'), run('相同二', '2026-01-01T08:00:00')])
+  const records = wrapper.findAll('.run-record')
+  expect(records.map(record => record.text())).toEqual([expect.stringContaining('相同一'), expect.stringContaining('相同二'), expect.stringContaining('前一天')])
+})
+
+test('previews and cancels cleanup, then confirms without deleting records', async () => {
+  const request = vi.fn(async (path: string) => path.endsWith('/preview') ? { count: 2, ids: ['a', 'b'] } : { count: 2 })
+  const wrapper = setup(); await wrapper.setProps({ request })
+  await wrapper.get('[aria-label="清理明细截止日期"]').setValue('2025-12-31')
+  await wrapper.findAll('button').find(b => b.text() === '清理详细日志')!.trigger('click')
+  expect(wrapper.get('[role="alertdialog"]').text()).toContain('2 条')
+  await wrapper.findAll('button').find(b => b.text() === '取消')!.trigger('click')
+  expect(request).toHaveBeenCalledTimes(1)
+  await wrapper.findAll('button').find(b => b.text() === '清理详细日志')!.trigger('click')
+  await wrapper.findAll('button').find(b => b.text() === '确认清理')!.trigger('click')
+  expect(wrapper.text()).toContain('已清理 2 条详细日志'); expect(wrapper.emitted('refresh')).toHaveLength(1)
+})
+
+test('loads detailed log pages in order', async () => {
+  const request = vi.fn(async (path: string) => path.endsWith('offset=0') ? { entries: [{ captured_at: '2026-01-01T01:00:00Z', text: '第一条' }], next_offset: 10 } : { entries: [{ captured_at: '2026-01-01T01:01:00Z', text: '第二条' }], next_offset: null })
+  const record = { ...run('样例', '2026-01-01T12:00:00'), items: [{ task_id: 't', task_name: '程序', state: 'succeeded', detail_log_id: 'detail' }] }
+  const wrapper = setup([record]); await wrapper.setProps({ request, expanded: new Set(['样例']) })
+  await wrapper.findAll('button').find(b => b.text() === '查看详细日志')!.trigger('click')
+  expect(wrapper.get('[role="dialog"]').text()).toContain('第一条')
+  await wrapper.findAll('button').find(b => b.text() === '加载更多')!.trigger('click')
+  expect(wrapper.get('[role="dialog"]').text()).toContain('第二条')
+})

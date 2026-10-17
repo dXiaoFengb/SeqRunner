@@ -356,3 +356,10 @@ dd { margin: 0; }
 .has-reserved-run > .content-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-bottom: 52px; scrollbar-gutter: stable; }
 .has-reserved-run > .run-center.is-sticky { position: relative; top: auto; z-index: 1; margin-top: 14px; }
 @media (max-width: 1080px) { .side-live-log { min-height: 70px; }.side-live-header { font-size: 11px; }.side-live-list { padding: 4px; }.side-live-list ol { padding-left: 16px; } }
+
+/* 与深色界面一致的滚动条，保留原生交互。 */
+* { scrollbar-color: #596877 #171c22; scrollbar-width: thin; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: #171c22; }
+*::-webkit-scrollbar-thumb { background: #596877; border: 2px solid #171c22; border-radius: 8px; }
+*::-webkit-scrollbar-thumb:hover { background: #7e9ab0; }

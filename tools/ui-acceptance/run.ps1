@@ -31,9 +31,12 @@ if ($Scenario -eq 'log') {
   $today = (Get-Date).Date
   $runs = @(
     @{ id='today'; queue_id='fixture-1'; queue_name='今日验收记录'; trigger_source='manual'; state='completed'; started_at=$today.AddHours(12).ToString('s'); items=@(); scheduler_skips=@('验收计划跳过') },
-    @{ id='old'; queue_id='fixture-2'; queue_name='旧验收记录'; trigger_source='manual'; state='completed'; started_at=$today.AddDays(-40).AddHours(12).ToString('s'); items=@(@{task_id='task';task_name='验收任务';state='failed';error_summary='受控失败';log_summary=@('受控摘要')}) }
+    @{ id='old'; queue_id='fixture-2'; queue_name='旧验收记录'; trigger_source='manual'; state='completed'; started_at=$today.AddDays(-40).AddHours(12).ToString('s'); ended_at=$today.AddDays(-40).AddHours(13).ToString('s'); items=@(@{task_id='task';task_name='验收任务';state='failed';error_summary='受控失败';log_summary=@('受控摘要');detail_log_id='f6e372af-0e2c-4fd7-9434-f229c3a1643f';detail_log_status='已采集'}) }
   )
   @{ schema_version=3; runs=$runs } | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $dataPath 'history.json')
+  $details = Join-Path $dataPath 'detail_logs'
+  New-Item -ItemType Directory -Path $details | Out-Null
+  '{"captured_at":"2026-01-01T00:00:00+00:00","text":"受控详细内容"}' | Set-Content -Encoding utf8NoBOM (Join-Path $details 'f6e372af-0e2c-4fd7-9434-f229c3a1643f.jsonl')
 }
 $session = "runner-$runId"
 $process = $null; $attached = $false; $success = $false

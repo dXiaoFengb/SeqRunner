@@ -152,7 +152,7 @@ onBeforeUnmount(() => { if (countdownTimer) window.clearInterval(countdownTimer)
         <section class="editor-section danger-zone"><div class="section-heading"><div><h3>危险操作</h3></div><small>删除后无法恢复当前软件配置。</small></div><button class="danger" :disabled="runtime.busy" @click="deleteScript(editingScript)">删除当前软件脚本</button></section>
       </section></section>
       <PlanManager v-else-if="page === 'schedule'" :config="config" :selected-plan-id="selectedPlanId" :busy="runtime.busy" @update:selected-plan-id="selectedPlanId = $event" @save="save" />
-      <LogPage v-else-if="page === 'history'" :history="history" :selected-id="selectedHistoryRunId" :expanded="expandedHistory" @toggle="toggleHistory" />
+      <LogPage v-else-if="page === 'history'" :history="history" :request="connection.request" :selected-id="selectedHistoryRunId" :expanded="expandedHistory" @toggle="toggleHistory" @refresh="refreshHistory()" />
       <section v-else class="page settings-page"><h2>连接与设置</h2><section class="settings-section"><div class="settings-section-heading"><h3>应用信息</h3></div><dl><dt>开发版本</dt><dd>{{ appVersion }}</dd><dt>数据目录</dt><dd>开发模式根目录 data\；便携版 EXE 同级 data\。</dd><dt>隐私边界</dt><dd>只保存本项目软件脚本、计划、历史和日志；不改写目标软件数据。</dd></dl></section><section class="settings-section"><div class="settings-section-heading"><h3>连接诊断</h3></div><dl><dt>API 状态</dt><dd>{{ connection.restOnline.value ? '在线：保存与运行可用' : '离线：等待后端恢复' }}</dd><dt>实时状态</dt><dd>{{ connection.realtimeLabel.value }}</dd></dl><button @click="refreshDiagnostics">刷新主进程诊断</button><details class="connection-diagnostics"><summary>查看主进程诊断详情</summary><code>{{ diagnosticText }}</code></details></section></section>
       </div>
     </section></main>

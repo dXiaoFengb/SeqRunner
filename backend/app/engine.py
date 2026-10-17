@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 from .completion_actions import CompletionActionDispatcher
+from .detail_logs import DetailCapture, DetailLogs
 from .events import EventHub
 from .logwatch import LogSignal, LogWatcher
 from .models import (
@@ -73,6 +74,7 @@ class RunnerEngine:
         self.config = store.load_config()
         self.migration_notice = store.last_config_migration_notice
         self.history = store.load_history()
+        self.detail_logs = DetailLogs(store.data_directory)
         self.current_run: RunRecord | None = None
         self._runner_task: asyncio.Task[None] | None = None
         self._stop_requested = asyncio.Event()
@@ -172,8 +174,7 @@ class RunnerEngine:
             record.ended_at = datetime.now(UTC)
             record.message = "计划尚未添加软件脚本，已跳过本次执行"
             self.history.runs.insert(0, record)
-            self.history.runs = self.history.runs[:200]
-            self.store.save_history(self.history)
+            self._save_new_history()
             self.current_run = record
             await self._publish_state()
             return record
@@ -202,8 +203,7 @@ class RunnerEngine:
             record.ended_at = datetime.now(UTC)
             record.message = "当天没有匹配“运行周几”的软件任务"
             self.history.runs.insert(0, record)
-            self.history.runs = self.history.runs[:200]
-            self.store.save_history(self.history)
+            self._save_new_history()
             self.current_run = record
             await self._publish_state()
             return record
@@ -302,12 +302,17 @@ class RunnerEngine:
             self._owned_process = None
             self._auxiliary_owned_processes = []
             self.history.runs.insert(0, record)
-            self.history.runs = self.history.runs[:200]
-            self.store.save_history(self.history)
+            self._save_new_history()
             await self._publish_state()
             plan = self._plan_by_run_id.pop(record.id, None)
             if plan and self._run_succeeded(record):
                 self._schedule_completion_action(record, plan)
+
+    def _save_new_history(self) -> None:
+        removed = self.history.runs[200:]
+        self.history.runs = self.history.runs[:200]
+        self.store.save_history(self.history)
+        self.detail_logs.delete_runs(removed)
 
     @staticmethod
     def _run_succeeded(record: RunRecord) -> bool:
@@ -378,6 +383,30 @@ class RunnerEngine:
                 raise _CompletionCancelled()
 
     async def _run_item(
+        self, record: RunRecord, item: ItemRecord, task: TaskDefinition, *, has_next: bool
+    ) -> None:
+        if not task.log_path:
+            item.detail_log_status = "未配置日志路径"
+            await self._run_item_inner(record, item, task, has_next=has_next)
+            return
+        capture = None
+        try:
+            capture = DetailCapture(self.detail_logs, task.log_path, item)
+            capture.start()
+        except Exception as error:
+            item.detail_log_status = f"详细日志采集失败：{error}"
+            self._logger.exception("详细日志采集启动失败")
+        try:
+            await self._run_item_inner(record, item, task, has_next=has_next)
+        finally:
+            if capture:
+                try:
+                    await capture.finish()
+                except Exception as error:
+                    item.detail_log_status = f"详细日志采集失败：{error}"
+                    self._logger.exception("详细日志采集收尾失败")
+
+    async def _run_item_inner(
         self, record: RunRecord, item: ItemRecord, task: TaskDefinition, *, has_next: bool
     ) -> None:
         item.state = ItemState.VALIDATING

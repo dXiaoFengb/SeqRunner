@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -16,6 +16,11 @@ from .models import AppConfig, QueueDefinition, StartupMode, TaskDefinition
 from .presets import apply_preset, public_presets
 from .scheduler import QueueScheduler
 from .storage import JsonStore
+
+
+class DetailCleanupIn(BaseModel):
+    cutoff: date
+    ids: list[str] | None = None
 
 
 class QueueStartIn(BaseModel):
@@ -109,14 +114,29 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
                 await scheduler.tick(__import__("datetime").datetime.now())
                 await asyncio.sleep(60)
 
+        async def archive_loop() -> None:
+            while True:
+                try:
+                    before = [(item, item.detail_log_status) for run in engine.history.runs for item in run.items]
+                    errors = await asyncio.to_thread(engine.detail_logs.archive, engine.history)
+                    for error in errors:
+                        logger.warning("%s", error)
+                    if any(item.detail_log_status != status for item, status in before):
+                        engine.store.save_history(engine.history)
+                except Exception:  # 日志维护失败不能影响调度。
+                    logger.exception("详细日志维护失败")
+                await asyncio.sleep(3600)
+
         await scheduler.run_startup_once()
         task = asyncio.create_task(timer_loop())
+        archive_task = asyncio.create_task(archive_loop())
         try:
             yield
         finally:
             await engine.stop()
             await engine.wait_until_idle()
             task.cancel()
+            archive_task.cancel()
 
     app = FastAPI(title="顺序任务调度器", lifespan=lifespan)
     app.state.engine = engine
@@ -245,6 +265,39 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
     @app.get("/api/history")
     async def history():
         return engine.history
+
+    @app.get("/api/history/{run_id}/details/{detail_id}")
+    async def history_detail(run_id: str, detail_id: str, offset: int = 0):
+        record = next((run for run in engine.history.runs if run.id == run_id), None)
+        if not record or not any(item.detail_log_id == detail_id for item in record.items):
+            raise HTTPException(404, "详细日志不存在")
+        try:
+            return await asyncio.to_thread(engine.detail_logs.page, detail_id, offset)
+        except (OSError, ValueError) as error:
+            raise HTTPException(404, str(error)) from error
+
+    @app.post("/api/history/detail-cleanup/preview")
+    async def preview_detail_cleanup(payload: DetailCleanupIn):
+        items = engine.detail_logs.matching(engine.history, payload.cutoff)
+        return {"count": len(items), "cutoff": payload.cutoff.isoformat(), "ids": [item.detail_log_id for item in items]}
+
+    @app.post("/api/history/detail-cleanup")
+    async def cleanup_details(payload: DetailCleanupIn):
+        items = engine.detail_logs.matching(engine.history, payload.cutoff)
+        if payload.ids is None or set(payload.ids) != {item.detail_log_id for item in items}:
+            raise HTTPException(409, "清理范围已变化，请重新预览")
+        removed = 0
+        for item in items:
+            try:
+                await asyncio.to_thread(engine.detail_logs.delete, item.detail_log_id)
+                item.detail_log_id = None
+                item.detail_log_status = "详细日志已清理"
+                removed += 1
+            except (OSError, ValueError) as error:
+                engine.store.save_history(engine.history)
+                raise HTTPException(500, f"已清理 {removed} 条，后续清理失败：{error}") from error
+        engine.store.save_history(engine.history)
+        return {"count": removed}
 
     @app.get("/api/runtime")
     async def runtime():
