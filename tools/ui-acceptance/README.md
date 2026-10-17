@@ -11,7 +11,7 @@ corepack npm ci --prefix tools/ui-acceptance --ignore-scripts --no-audit --no-fu
 pwsh -NoProfile -File tools/ui-acceptance/run.ps1 -Executable 'portable-validation-v0512/electron/顺序任务调度器-v0.5.12-portable.exe'
 ```
 
-第二条命令请换为本轮独立验证包的实际路径。脚本只接受本工作区 `portable-validation-v*/electron/` 下以 `-portable.exe` 结尾的文件，并核对副本哈希；不接受业务程序。执行结果打印 `Evidence=...`；该目录的 `source.txt` 记录源与哈希，`result.txt` 记录运行结果，`final.png` 与 `viewport-*.png` 用于复核。测试故意制造一次冲突，控制台会出现对应的 HTTP 422，这不代表其他请求失败。
+第二条命令请换为本轮独立验证包的实际路径。日志页面可加 `-Scenario log`，使用独立虚拟历史记录验证日期筛选、分组、失败详情和重置；默认仍运行计划场景。脚本只接受本工作区 `portable-validation-v*/electron/` 下以 `-portable.exe` 结尾的文件，并核对副本哈希；不接受业务程序。执行结果打印 `Evidence=...`；该目录的 `source.txt` 记录源与哈希，`result.txt` 记录运行结果，`final.png` 与 `viewport-*.png` 用于复核。测试故意制造一次冲突，控制台会出现对应的 HTTP 422，这不代表其他请求失败。
 
 ## 与人工验收表的关系
 

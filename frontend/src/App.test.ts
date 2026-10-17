@@ -75,7 +75,7 @@ test('keeps a completed failure visible and opens history detail', async () => {
   const wrapper = runner(); await flushPromises()
   expect(wrapper.text()).toContain('失败项')
   await wrapper.findAll('button').find((button) => button.text() === '查看失败详情')!.trigger('click')
-  expect(wrapper.text()).toContain('运行历史')
+  expect(wrapper.find('[aria-label="日志"]').exists()).toBe(true)
 })
 
 test('retries the latest draft after an older save fails and clears only save errors', async () => {

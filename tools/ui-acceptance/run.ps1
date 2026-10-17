@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Executable)
+param([Parameter(Mandatory=$true)][string]$Executable, [ValidateSet('plan','log')][string]$Scenario = 'plan')
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $source = (Resolve-Path -LiteralPath $Executable).Path
@@ -24,7 +24,17 @@ $env:TEMP = Join-Path $runPath 'temp'; $env:TMP = $env:TEMP
 $env:NO_PROXY = '127.0.0.1,localhost'; $env:no_proxy = '127.0.0.1,localhost'; $env:RUNNER_HEALTH_CHECK = '0'
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $listener.Start(); $port = $listener.LocalEndpoint.Port; $listener.Stop()
 $cli = Join-Path $PSScriptRoot 'node_modules/@playwright/cli/playwright-cli.js'
-$scenario = Join-Path $PSScriptRoot 'plan-scenario.js'
+$scenarioPath = Join-Path $PSScriptRoot "$Scenario-scenario.js"
+if ($Scenario -eq 'log') {
+  $dataPath = Join-Path $runPath 'data'
+  New-Item -ItemType Directory -Path $dataPath | Out-Null
+  $today = (Get-Date).Date
+  $runs = @(
+    @{ id='today'; queue_id='fixture-1'; queue_name='今日验收记录'; trigger_source='manual'; state='completed'; started_at=$today.AddHours(12).ToString('s'); items=@(); scheduler_skips=@('验收计划跳过') },
+    @{ id='old'; queue_id='fixture-2'; queue_name='旧验收记录'; trigger_source='manual'; state='completed'; started_at=$today.AddDays(-40).AddHours(12).ToString('s'); items=@(@{task_id='task';task_name='验收任务';state='failed';error_summary='受控失败';log_summary=@('受控摘要')}) }
+  )
+  @{ schema_version=3; runs=$runs } | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $dataPath 'history.json')
+}
 $session = "runner-$runId"
 $process = $null; $attached = $false; $success = $false
 Push-Location $runPath
@@ -41,7 +51,7 @@ try {
   if ($attach -notmatch 'attached to') { throw "自动化连接失败：$attach" }
   $attached = $true
   & node $cli "-s=$session" snapshot | Out-File -Encoding utf8 'initial-snapshot.txt'
-  $result = & node $cli "-s=$session" run-code "--filename=$scenario" 2>&1 | Out-String
+  $result = & node $cli "-s=$session" run-code "--filename=$scenarioPath" 2>&1 | Out-String
   $result | Out-File -Encoding utf8 'result.txt'
   & node $cli "-s=$session" screenshot --filename=final.png | Out-File -Encoding utf8 'screenshot.txt'
   if ($result -notmatch '(?s)### Result\s+"PASS:') { throw "验收未通过，详情见 $runPath/result.txt`n$result" }
