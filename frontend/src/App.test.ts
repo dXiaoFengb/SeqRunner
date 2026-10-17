@@ -127,3 +127,19 @@ test('conflict stays visible until a corrected draft is accepted', async () => {
   expect(wrapper.text()).toContain('本地后端已就绪')
   wrapper.unmount()
 })
+
+test('keeps the latest 40 realtime messages visible across pages', async () => {
+  installBackend()
+  let socket: any
+  class TestSocket { static CONNECTING = 0; static OPEN = 1; readyState = 0; onmessage: any; onopen: any; onclose: any; onerror: any; constructor() { socket = this } close() {} send() {} }
+  vi.stubGlobal('WebSocket', TestSocket)
+  const wrapper = runner(); await flushPromises()
+  for (let i = 1; i <= 41; i++) socket.onmessage({ data: JSON.stringify({ type: 'log', data: { message: `消息 ${i}` } }) })
+  await flushPromises()
+  expect(wrapper.findAll('.side-live-list li')).toHaveLength(40)
+  expect(wrapper.get('.side-live-list').text()).not.toContain('消息 1消息')
+  expect(wrapper.findAll('.side-live-list li')[0].text()).toBe('消息 2')
+  await wrapper.get('button[aria-label="计划"]').trigger('click')
+  expect(wrapper.get('.side-live-list').text()).toContain('消息 41')
+  wrapper.unmount()
+})

@@ -1,6 +1,5 @@
 import { mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
-import { expect, test, vi } from 'vitest'
+import { expect, test } from 'vitest'
 import RunCenter from './RunCenter.vue'
 import type { Runtime } from './types'
 
@@ -71,22 +70,15 @@ test('shows and cancels a pending completion action countdown', async () => {
   expect(wrapper.emitted('cancelCompletionAction')).toHaveLength(1)
 })
 
-test('compacts an active run after its observation point and expands details on demand', async () => {
-  let callback: ((entries: Array<{ isIntersecting: boolean }>) => void) | undefined
-  vi.stubGlobal('IntersectionObserver', class {
-    constructor(next: (entries: Array<{ isIntersecting: boolean }>) => void) { callback = next }
-    observe() {}
-    disconnect() {}
-  })
-  const wrapper = mount(RunCenter, { props: { runtime, countdown: 0, confirmationPending: false } })
-  callback?.([{ isIntersecting: false }])
-  await nextTick()
+test('compacts after content scroll even when a run appears after mount', async () => {
+  const empty = { ...structuredClone(runtime), busy: false, run: null, runCenter: null }
+  const wrapper = mount(RunCenter, { props: { runtime: empty, countdown: 0, confirmationPending: false, scrolled: false } })
+  await wrapper.setProps({ runtime, scrolled: true })
   expect(wrapper.find('.run-center').classes()).toContain('is-compact')
   const expand = wrapper.get('.run-center-expand')
-  expect(expand.attributes('aria-expanded')).toBe('false')
   await expand.trigger('click')
   expect(expand.attributes('aria-expanded')).toBe('true')
   expect(wrapper.find('.run-center').classes()).not.toContain('is-compact')
-  wrapper.unmount()
-  vi.unstubAllGlobals()
+  await wrapper.setProps({ runtime: empty })
+  expect(wrapper.find('.run-center').exists()).toBe(false)
 })

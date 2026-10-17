@@ -7,7 +7,7 @@ type TestRun = { id: string; queue_name: string; trigger_source: string; state: 
 
 const run = (id: string, started_at: string): TestRun => ({ id, queue_name: id, trigger_source: 'manual', state: 'completed', started_at, items: [], scheduler_skips: [] })
 const fixture = [run('新年', '2026-01-01T12:00:00'), run('边界', '2025-12-26T12:00:00'), run('旧记录', '2025-12-25T12:00:00')]
-const setup = (history: TestRun[] = fixture, selectedId: string | null = null) => mount(LogPage, { props: { history, selectedId, logs: ['实时信息'], expanded: new Set<string>() } })
+const setup = (history: TestRun[] = fixture, selectedId: string | null = null) => mount(LogPage, { props: { history, selectedId, expanded: new Set<string>() } })
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date(2026, 0, 1, 12)) })
 afterEach(() => { vi.useRealTimers() })
 
@@ -15,7 +15,7 @@ test('defaults to inclusive week, groups by local day and keeps live logs separa
   const wrapper = setup()
   expect((wrapper.get('[aria-label="开始日期"]').element as HTMLInputElement).value).toBe('2025-12-26')
   expect(wrapper.text()).toContain('新年'); expect(wrapper.text()).toContain('边界'); expect(wrapper.text()).not.toContain('旧记录')
-  expect(wrapper.findAll('.log-group')).toHaveLength(2); expect(wrapper.text()).toContain('实时信息')
+  expect(wrapper.findAll('.log-group')).toHaveLength(2)
 })
 
 test('presets, search, invalid range and reset retain applied results correctly', async () => {
@@ -23,7 +23,7 @@ test('presets, search, invalid range and reset retain applied results correctly'
   await wrapper.findAll('.quick-ranges button').find(b => b.text() === '昨天')!.trigger('click')
   expect((wrapper.get('[aria-label="开始日期"]').element as HTMLInputElement).value).toBe('2025-12-31')
   await wrapper.findAll('.filter-actions button')[0].trigger('click')
-  expect(wrapper.text()).toContain('没有符合条件的日志'); expect(wrapper.text()).toContain('实时信息')
+  expect(wrapper.text()).toContain('没有符合条件的日志')
   await wrapper.get('[aria-label="开始日期"]').setValue('2026-02-01'); await wrapper.get('[aria-label="结束日期"]').setValue('2026-01-01')
   await wrapper.findAll('.filter-actions button')[0].trigger('click')
   expect(wrapper.text()).toContain('开始日期不能晚于结束日期'); expect(wrapper.text()).toContain('没有符合条件的日志')
@@ -59,4 +59,10 @@ test('custom range includes both end dates and groups multiple runs on one day',
   expect(wrapper.findAll('.log-group')).toHaveLength(2)
   expect(wrapper.findAll('.log-group')[0].findAll('.run-record')).toHaveLength(2)
   expect(wrapper.text()).toContain('下界'); expect(wrapper.text()).not.toContain('界外')
+})
+
+test('localizes known record labels without changing unknown values', async () => {
+  const record = { ...run('样例', '2026-01-01T12:00:00'), trigger_source: 'scheduled', items: [{ task_id: 't', task_name: 'MAA', state: 'succeeded', completion_source: 'manual', log_summary: ['任务成功，来源：CompletionSource.MANUAL', '外部 manual'] }] }
+  const wrapper = setup([record]); await wrapper.setProps({ expanded: new Set(['样例']) })
+  expect(wrapper.text()).toContain('定时触发 · 已完成'); expect(wrapper.text()).toContain('成功：人工确认'); expect(wrapper.text()).toContain('任务成功，来源：人工确认'); expect(wrapper.text()).toContain('外部 manual')
 })

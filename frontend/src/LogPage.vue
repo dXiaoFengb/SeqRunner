@@ -2,11 +2,12 @@
 import { computed, ref, watch } from 'vue'
 import { CalendarDays, FolderOpen, RotateCcw, Search } from '@lucide/vue'
 import type { RunItem } from './types'
+import { triggerLabel, stateLabel, sourceLabel, logLabel } from './logLabels'
 
 type HistoryRun = { id: string; queue_name: string; run_mode?: string; trigger_source: string; state: string; started_at: string; items: RunItem[]; scheduler_skips?: string[] }
 type Preset = 'today' | 'yesterday' | 'week' | 'month' | 'twoMonths' | 'threeMonths' | 'halfYear'
 type Range = { start: string; end: string }
-const props = defineProps<{ history: HistoryRun[]; logs: string[]; selectedId: string | null; expanded: Set<string> }>()
+const props = defineProps<{ history: HistoryRun[]; selectedId: string | null; expanded: Set<string> }>()
 const emit = defineEmits<{ toggle: [string] }>()
 const presets: { key: Preset; label: string }[] = [{ key: 'today', label: '今天' }, { key: 'yesterday', label: '昨天' }, { key: 'week', label: '最近一周' }, { key: 'month', label: '最近一个月' }, { key: 'twoMonths', label: '最近两个月' }, { key: 'threeMonths', label: '最近三个月' }, { key: 'halfYear', label: '最近半年' }]
 function dateKey(date: Date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` }
@@ -39,7 +40,7 @@ watch(() => [props.selectedId, props.history] as const, ([id]) => {
   const day = recordDate(run)
   if (day && (day < applied.value.start || day > applied.value.end)) { start.value = day; end.value = day; applied.value = { start: day, end: day }; selected.value = null; error.value = '' }
 }, { immediate: true })
-function itemOutcome(item: RunItem) { const reason = item.error_summary || (item.exit_code !== null && item.exit_code !== undefined ? `退出码 ${item.exit_code}` : item.completion_source || '未提供摘要'); return item.state === 'failed' ? `失败：${reason}` : item.state === 'succeeded' ? `成功：${item.completion_source || '已完成'}` : item.state }
+function itemOutcome(item: RunItem) { const reason = item.error_summary || (item.exit_code !== null && item.exit_code !== undefined ? `退出码 ${item.exit_code}` : item.completion_source || '未提供摘要'); return item.state === 'failed' ? `失败：${reason}` : item.state === 'succeeded' ? `成功：${sourceLabel(item.completion_source || '已完成')}` : stateLabel(item.state) }
 function runHasFailures(run: HistoryRun) { return run.items.some((item) => item.state === 'failed') }
 </script>
 
@@ -57,8 +58,7 @@ function runHasFailures(run: HistoryRun) { return run.items.some((item) => item.
       <p v-if="error" class="filter-error" role="alert">{{ error }}</p>
     </div>
     <div v-if="!groups.length" class="log-empty"><FolderOpen aria-hidden="true" /><strong>{{ history.length ? '没有符合条件的日志' : '暂无运行记录' }}</strong><span>{{ history.length ? '请调整日期范围后重新搜索。' : '运行完成后，记录会显示在这里。' }}</span></div>
-    <section v-for="group in groups" :key="group.date" class="log-group"><h2><CalendarDays aria-hidden="true" />{{ group.date }}</h2><article v-for="run in group.runs" :key="run.id" class="run-record" :class="{ selected: selectedId === run.id, failed: runHasFailures(run) }"><div class="run-record-head"><div><b>{{ run.run_mode === 'plan' ? `计划：${run.queue_name}` : run.run_mode === 'all_scripts' ? '全部软件脚本' : run.queue_name }}</b><small>{{ run.trigger_source }} · {{ run.state }}</small></div><button @click="emit('toggle', run.id)">{{ expanded.has(run.id) ? '收起详情' : runHasFailures(run) ? '查看失败详情' : '查看详情' }}</button></div><ul v-if="expanded.has(run.id)"><li v-for="item in run.items" :key="item.task_id" :class="{ 'history-item-failed': item.state === 'failed' }"><b>{{ item.script_name ? item.script_name + ' / ' : '' }}{{ item.task_name }}</b><span>{{ itemOutcome(item) }}</span><small v-if="item.log_summary?.length">日志：{{ item.log_summary.join('；') }}</small></li></ul><p v-if="run.scheduler_skips?.length" class="schedule-skips"><b>计划跳过</b><span v-for="skip in run.scheduler_skips" :key="skip">{{ skip }}</span></p></article></section>
-    <section class="live-log"><h2>本轮日志摘要</h2><p v-if="!logs.length">暂无实时日志。</p><ol v-else class="logs"><li v-for="(line, index) in logs" :key="index">{{ line }}</li></ol></section>
+    <section v-for="group in groups" :key="group.date" class="log-group"><h2><CalendarDays aria-hidden="true" />{{ group.date }}</h2><article v-for="run in group.runs" :key="run.id" class="run-record" :class="{ selected: selectedId === run.id, failed: runHasFailures(run) }"><div class="run-record-head"><div><b>{{ run.run_mode === 'plan' ? `计划：${run.queue_name}` : run.run_mode === 'all_scripts' ? '全部软件脚本' : run.queue_name }}</b><small>{{ triggerLabel(run.trigger_source) }} · {{ stateLabel(run.state) }}</small></div><button @click="emit('toggle', run.id)">{{ expanded.has(run.id) ? '收起详情' : runHasFailures(run) ? '查看失败详情' : '查看详情' }}</button></div><ul v-if="expanded.has(run.id)"><li v-for="item in run.items" :key="item.task_id" :class="{ 'history-item-failed': item.state === 'failed' }"><b>{{ item.script_name ? item.script_name + ' / ' : '' }}{{ item.task_name }}</b><span>{{ itemOutcome(item) }}</span><small v-if="item.log_summary?.length">日志：{{ item.log_summary.map(logLabel).join('；') }}</small></li></ul><p v-if="run.scheduler_skips?.length" class="schedule-skips"><b>计划跳过</b><span v-for="skip in run.scheduler_skips" :key="skip">{{ skip }}</span></p></article></section>
   </section>
 </template>
 

@@ -42,7 +42,7 @@ svg { width: 1.05em; height: 1.05em; flex: 0 0 auto; stroke-width: 1.8; }
 .side nav button:hover:not(.active) { border-color: #414348; background: #25272b; color: #f0f1f3; }
 .side nav button.active { color: #eef6ff; background: #14243a; border-color: #28598a; box-shadow: inset 3px 0 0 var(--teal), inset 0 1px rgba(255, 255, 255, .04); }
 .side nav button.active svg { color: var(--teal); }
-.side p { margin: auto 6px 0; padding-top: 18px; border-top: 1px solid #323438; color: #9298a0; font-size: 12px; line-height: 1.65; }
+.side p { margin: 12px 6px 0; padding-top: 18px; border-top: 1px solid #323438; color: #9298a0; font-size: 12px; line-height: 1.65; }
 
 .content { min-width: 0; width: calc(100% - var(--nav-width)); margin-left: var(--nav-width); padding: 30px 36px 52px; max-width: 1540px; }
 .content > header { display: flex; justify-content: space-between; gap: 22px; align-items: end; border-bottom: 1px solid var(--line); padding-bottom: 18px; }
@@ -345,3 +345,14 @@ dd { margin: 0; }
   .plan-script-list li { grid-template-columns: 26px 1fr; }
   .plan-script-list li small, .plan-script-list li > div { grid-column: 2; justify-content: flex-start; }
 }
+
+.side-live-log { display: flex; flex-direction: column; min-height: 100px; height: min(35vh, 300px); margin-top: auto; padding-top: 15px; color: #c8d7e2; }
+.side-live-header { display: flex; justify-content: space-between; align-items: center; gap: 4px; font-size: 13px; }
+.side-live-header button { padding: 3px 5px; font-size: 11px; white-space: nowrap; }
+.side-live-list { flex: 1; min-height: 0; overflow: auto; margin-top: 8px; padding: 8px; border: 1px solid #303b45; border-radius: 5px; background: #0a1722; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.side-live-list ol { margin: 0; padding-left: 20px; }.side-live-list li + li { margin-top: 4px; }.side-live-empty { color: #8c9da9; }
+.content.has-reserved-run { height: 100vh; display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+.has-reserved-run > header, .has-reserved-run > .run-center { flex: 0 0 auto; }
+.has-reserved-run > .content-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-bottom: 52px; scrollbar-gutter: stable; }
+.has-reserved-run > .run-center.is-sticky { position: relative; top: auto; z-index: 1; margin-top: 14px; }
+@media (max-width: 1080px) { .side-live-log { min-height: 70px; }.side-live-header { font-size: 11px; }.side-live-list { padding: 4px; }.side-live-list ol { padding-left: 16px; } }

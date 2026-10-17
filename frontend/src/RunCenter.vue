@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { CheckCircle2, CircleAlert, ListChecks, XCircle } from '@lucide/vue'
 import type { RunItem, Runtime } from './types'
 
-const props = defineProps<{ runtime: Runtime; countdown: number; confirmationPending: boolean }>()
+const props = defineProps<{ runtime: Runtime; countdown: number; confirmationPending: boolean; scrolled?: boolean }>()
 const emit = defineEmits<{ confirm: [taskId: string]; showFailures: [runId: string]; cancelCompletionAction: [] }>()
 
 const center = computed(() => props.runtime.runCenter)
@@ -49,25 +49,13 @@ const completionText = computed(() => {
 })
 
 const shouldStick = computed(() => Boolean(props.runtime.busy || ['delaying', 'countdown', 'executing'].includes(completion.value?.status || '')))
-const sentinel = ref<HTMLElement | null>(null)
-const pinned = ref(false)
 const expanded = ref(false)
-const compact = computed(() => shouldStick.value && pinned.value && !expanded.value)
-let observer: IntersectionObserver | undefined
-
-watch(shouldStick, (active) => {
-  if (!active) { pinned.value = false; expanded.value = false }
-})
-onMounted(() => {
-  if (!('IntersectionObserver' in window) || !sentinel.value) return
-  observer = new IntersectionObserver(([entry]) => { pinned.value = shouldStick.value && !entry.isIntersecting }, { threshold: 0 })
-  observer.observe(sentinel.value)
-})
-onBeforeUnmount(() => observer?.disconnect())
+const pinned = computed(() => shouldStick.value && Boolean(props.scrolled))
+const compact = computed(() => pinned.value && !expanded.value)
+watch(shouldStick, (active) => { if (!active) expanded.value = false })
 </script>
 
 <template>
-  <div v-if="visible" ref="sentinel" class="run-center-sentinel" aria-hidden="true"></div>
   <section v-if="visible" class="run-center" :class="[{ 'has-failures': failures.length, 'is-sticky': shouldStick, 'is-pinned': pinned && shouldStick, 'is-compact': compact }, 'state-' + statusKind]" aria-live="polite">
     <div class="run-center-primary">
       <div class="run-center-title"><span class="run-state-badge"><CheckCircle2 v-if="statusKind === 'completed'" aria-hidden="true" /><CircleAlert v-else-if="statusKind === 'failed'" aria-hidden="true" />{{ statusLabel }}</span><div><b><ListChecks aria-hidden="true" />运行中心</b><small>{{ runtime.run?.run_mode === 'plan' ? `计划：${runtime.run?.queue_name}` : runtime.run?.run_mode === 'all_scripts' ? '全部脚本' : runtime.run?.queue_name }}</small></div></div>
