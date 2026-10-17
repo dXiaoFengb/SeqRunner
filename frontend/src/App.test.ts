@@ -77,3 +77,53 @@ test('keeps a completed failure visible and opens history detail', async () => {
   await wrapper.findAll('button').find((button) => button.text() === '查看失败详情')!.trigger('click')
   expect(wrapper.text()).toContain('运行历史')
 })
+
+test('retries the latest draft after an older save fails and clears only save errors', async () => {
+  const source = config()
+  source.plans = [{ id: 'p1', name: '计划', items: [], time_slots: [{ id: 'slot', enabled: true, days: [0], time: '09:00' }], startup_mode: 'never', scheduled_enabled: true, completion_action: 'none', completion_delay_minutes: 0, script_ids: [], run_on_startup: false }]
+  const fetchMock = installBackend(source)
+  const original = fetchMock.getMockImplementation()!
+  let rejectFirst!: (value: Awaited<ReturnType<typeof original>>) => void
+  let puts = 0
+  fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+    if (String(url).endsWith('/config') && options?.method === 'PUT') {
+      puts++
+      if (puts === 1) return await new Promise((resolve) => { rejectFirst = resolve }) as Awaited<ReturnType<typeof original>>
+    }
+    return original(url, options)
+  })
+  const wrapper = runner(); await flushPromises()
+  await wrapper.get('button[aria-label="计划"]').trigger('click')
+  await wrapper.get('button[aria-label="编辑计划：计划"]').trigger('click')
+  const hour = wrapper.get('[aria-label="小时"]')
+  await hour.trigger('keydown', { key: 'ArrowDown' }); await hour.trigger('keydown', { key: 'ArrowDown' }); await hour.trigger('keydown', { key: 'Enter' })
+  const minute = wrapper.get('[aria-label="分钟"]')
+  await minute.trigger('keydown', { key: 'ArrowDown' }); await minute.trigger('keydown', { key: 'ArrowDown' }); await minute.trigger('keydown', { key: 'Enter' })
+  rejectFirst({ ok: false, json: async () => ({}), text: async () => JSON.stringify({ detail: '时间冲突' }) })
+  await flushPromises()
+  expect(puts).toBe(2)
+  expect(wrapper.text()).not.toContain('保存失败，草稿将保留')
+  expect(wrapper.text()).toContain('本地后端已就绪')
+  const last = fetchMock.mock.calls.filter((call) => call[1]?.method === 'PUT').at(-1)![1]!
+  expect(JSON.parse(String(last.body)).plans[0].time_slots[0].time).toBe('10:01')
+  wrapper.unmount()
+})
+
+test('conflict stays visible until a corrected draft is accepted', async () => {
+  const source = config()
+  source.plans = [{ id: 'p1', name: '计划', items: [], time_slots: [{ id: 'slot', enabled: true, days: [0], time: '09:00' }], startup_mode: 'never', scheduled_enabled: true, completion_action: 'none', completion_delay_minutes: 0, script_ids: [], run_on_startup: false }]
+  const fetchMock = installBackend(source); const original = fetchMock.getMockImplementation()!; let puts = 0
+  fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+    if (String(url).endsWith('/config') && options?.method === 'PUT' && ++puts < 3) return { ok: false, text: async () => JSON.stringify({ detail: '时间冲突' }) } as Awaited<ReturnType<typeof original>>
+    return original(url, options)
+  })
+  const wrapper = runner(); await flushPromises(); await wrapper.get('button[aria-label="计划"]').trigger('click'); await wrapper.get('button[aria-label="编辑计划：计划"]').trigger('click')
+  const hour = wrapper.get('[aria-label="小时"]')
+  for (let i = 0; i < 3; i++) {
+    await hour.trigger('keydown', { key: 'ArrowDown' }); await hour.trigger('keydown', { key: 'ArrowDown' }); await hour.trigger('keydown', { key: 'Enter' }); await flushPromises()
+    if (i < 2) expect(wrapper.text()).toContain('时间冲突')
+  }
+  expect(wrapper.text()).not.toContain('时间冲突')
+  expect(wrapper.text()).toContain('本地后端已就绪')
+  wrapper.unmount()
+})
