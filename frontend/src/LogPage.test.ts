@@ -80,6 +80,18 @@ test('keeps equal start times stable and groups across days', () => {
   expect(records.map(record => record.text())).toEqual([expect.stringContaining('相同一'), expect.stringContaining('相同二'), expect.stringContaining('前一天')])
 })
 
+test('groups ISO weeks across years and months without merging runs, and resets', async () => {
+  const wrapper = setup([run('周日', '2025-12-28T23:59:00'), run('跨年一', '2025-12-29T10:00:00'), run('跨年二', '2026-01-01T10:00:00')])
+  await wrapper.get('[aria-label="合并模式"]').setValue('week')
+  expect(wrapper.findAll('.log-group').map(group => group.get('h2').text())).toEqual(['2026-W01', '2025-W52'])
+  expect(wrapper.findAll('.log-group')[0].findAll('.run-record')).toHaveLength(2)
+  expect(wrapper.text()).toContain('2025-12-29 10:00:00')
+  await wrapper.get('[aria-label="合并模式"]').setValue('month')
+  expect(wrapper.findAll('.log-group').map(group => group.get('h2').text())).toEqual(['2026-01', '2025-12'])
+  await wrapper.findAll('.filter-actions button')[1].trigger('click')
+  expect((wrapper.get('[aria-label="合并模式"]').element as HTMLSelectElement).value).toBe('day')
+})
+
 test('previews and cancels cleanup, then confirms without deleting records', async () => {
   const request = vi.fn(async (path: string) => path.endsWith('/preview') ? { count: 2, ids: ['a', 'b'] } : { count: 2 })
   const wrapper = setup(); await wrapper.setProps({ request })
@@ -101,4 +113,7 @@ test('loads detailed log pages in order', async () => {
   expect(wrapper.get('[role="dialog"]').text()).toContain('第一条')
   await wrapper.findAll('button').find(b => b.text() === '加载更多')!.trigger('click')
   expect(wrapper.get('[role="dialog"]').text()).toContain('第二条')
+  await wrapper.findAll('button').find(b => b.text() === '查看原始日志')!.trigger('click')
+  expect(wrapper.get('[role="dialog"]').text()).not.toContain('未识别的日志')
+  expect(wrapper.get('[role="dialog"]').text()).toContain('第一条')
 })

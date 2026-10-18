@@ -7,3 +7,8 @@ export const sourceLabel = (value: string) => sources[value] || value
 export function logLabel(line: string) {
   return line.replace(/^任务成功，来源：CompletionSource\.(MANUAL|PROCESS_EXIT|SUCCESS_LOG)$/, (_, name: string) => `任务成功，来源：${sourceLabel(name.toLowerCase())}`)
 }
+
+export function liveLogLabel(line: string, taskName?: string) {
+  if (/^已启动受管进程 PID \d+$/.test(line)) return `已启动受管程序 ${taskName || '当前程序'}`
+  return logLabel(line)
+}

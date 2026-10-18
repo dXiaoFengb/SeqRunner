@@ -36,7 +36,7 @@ if ($Scenario -eq 'log') {
   @{ schema_version=3; runs=$runs } | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $dataPath 'history.json')
   $details = Join-Path $dataPath 'detail_logs'
   New-Item -ItemType Directory -Path $details | Out-Null
-  '{"captured_at":"2026-01-01T00:00:00+00:00","text":"受控详细内容"}' | Set-Content -Encoding utf8NoBOM (Join-Path $details 'f6e372af-0e2c-4fd7-9434-f229c3a1643f.jsonl')
+  '{"captured_at":"2026-01-01T00:00:00+00:00","text":"[2026-01-01 12:00:00.000][INF][Bootstrapper] <2> MaaAssistantArknights GUI started\n受控详细内容"}' | Set-Content -Encoding utf8NoBOM (Join-Path $details 'f6e372af-0e2c-4fd7-9434-f229c3a1643f.jsonl')
 }
 $session = "runner-$runId"
 $process = $null; $attached = $false; $success = $false
