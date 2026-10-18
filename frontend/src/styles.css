@@ -346,7 +346,7 @@ dd { margin: 0; }
   .plan-script-list li small, .plan-script-list li > div { grid-column: 2; justify-content: flex-start; }
 }
 
-.side-live-log { display: flex; flex-direction: column; min-height: 100px; height: min(35vh, 300px); margin-top: auto; padding-top: 15px; color: #c8d7e2; }
+.side-live-log { display: flex; flex-direction: column; min-height: 100px; height: min(48vh, 400px); margin-top: auto; padding-top: 15px; color: #c8d7e2; }
 .side-live-header { display: flex; justify-content: space-between; align-items: center; gap: 4px; font-size: 13px; }
 .side-live-header button { padding: 3px 5px; font-size: 11px; white-space: nowrap; }
 .side-live-list { flex: 1; min-height: 0; overflow: auto; margin-top: 8px; padding: 8px; border: 1px solid #303b45; border-radius: 5px; background: #0a1722; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }

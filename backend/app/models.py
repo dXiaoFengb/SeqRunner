@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 SCHEMA_VERSION = 3
 
@@ -88,6 +88,25 @@ class MaaEndAdapterConfig(BaseModel):
     close_game_on_finish: bool = True
 
 
+class UiLogRegion(BaseModel):
+    """用户确认的客户区像素范围；使用前仍必须核对窗口身份和尺寸。"""
+
+    executable: str = Field(min_length=1)
+    window_class: str = Field(min_length=1)
+    client_width: int = Field(gt=0)
+    client_height: int = Field(gt=0)
+    x: int = Field(ge=0)
+    y: int = Field(ge=0)
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> UiLogRegion:
+        if self.x + self.width > self.client_width or self.y + self.height > self.client_height:
+            raise ValueError("界面日志区域必须位于窗口客户区内")
+        return self
+
+
 class TaskDefinition(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     name: str = Field(min_length=1, max_length=120)
@@ -98,6 +117,7 @@ class TaskDefinition(BaseModel):
     allow_manual_confirmation: bool = False
     allow_process_exit: bool = True
     log_path: str | None = None
+    ui_log_region: UiLogRegion | None = None
     success_log: str | None = None
     success_log_mode: MatchMode = MatchMode.KEYWORD
     failure_log: str | None = None
@@ -173,6 +193,8 @@ class ItemRecord(BaseModel):
     log_summary: list[str] = Field(default_factory=list)
     detail_log_id: str | None = None
     detail_log_status: str | None = None
+    ui_log_id: str | None = None
+    ui_log_status: str | None = None
 
 
 class RunRecord(BaseModel):

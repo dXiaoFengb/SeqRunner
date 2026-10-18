@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -12,10 +13,13 @@ from pydantic import BaseModel
 
 from .engine import ConfirmRejectedError, RunBusyError, RunnerEngine, RunValidationError
 from .events import EventHub
-from .models import AppConfig, QueueDefinition, StartupMode, TaskDefinition
+from .maa_region_capture import read_maa_region, run_helper
+from .models import AppConfig, QueueDefinition, StartupMode, TaskDefinition, UiLogRegion
 from .presets import apply_preset, public_presets
+from .processes import OwnedProcess
 from .scheduler import QueueScheduler
 from .storage import JsonStore
+from .ui_log_region import list_windows_for_executable
 
 
 class DetailCleanupIn(BaseModel):
@@ -40,6 +44,16 @@ class PresetApplyIn(BaseModel):
 class AdbCheckIn(BaseModel):
     executable: str
     address: str
+
+
+class WindowListIn(BaseModel):
+    executable: str
+
+
+class RegionWindowIn(BaseModel):
+    pid: int
+    created_at: float
+    region: UiLogRegion
 
 
 def validate_single_software_config(config: AppConfig) -> None:
@@ -158,6 +172,38 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
     async def presets():
         return public_presets()
 
+    @app.post("/api/ui-log/windows")
+    async def ui_log_windows(payload: WindowListIn):
+        if engine.is_busy:
+            raise HTTPException(409, "运行期间不能更改日志区域")
+        try:
+            return [asdict(window) for window in await asyncio.to_thread(list_windows_for_executable, payload.executable)]
+        except RuntimeError as error:
+            raise HTTPException(422, str(error)) from error
+
+    @app.post("/api/ui-log/select")
+    async def ui_log_select(payload: RegionWindowIn):
+        if engine.is_busy:
+            raise HTTPException(409, "运行期间不能更改日志区域")
+        try:
+            selection = await run_helper("select", OwnedProcess(payload.pid, payload.created_at), payload.region)
+            if selection.get("canceled"):
+                return {"canceled": True}
+            region = payload.region.model_copy(update=selection)
+            region = UiLogRegion.model_validate(region.model_dump())
+            return {"canceled": False, "region": region}
+        except (RuntimeError, ValueError, TypeError, TimeoutError) as error:
+            raise HTTPException(422, str(error)) from error
+
+    @app.post("/api/ui-log/preview")
+    async def ui_log_preview(payload: RegionWindowIn):
+        if engine.is_busy:
+            raise HTTPException(409, "运行期间不能预览日志区域")
+        try:
+            return {"text": await read_maa_region(OwnedProcess(payload.pid, payload.created_at), payload.region)}
+        except (RuntimeError, ValueError, TypeError, TimeoutError) as error:
+            raise HTTPException(422, str(error)) from error
+
     @app.post("/api/presets/{preset_id}/apply", response_model=TaskDefinition)
     async def preset_apply(preset_id: str, payload: PresetApplyIn):
         try:
@@ -269,7 +315,7 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
     @app.get("/api/history/{run_id}/details/{detail_id}")
     async def history_detail(run_id: str, detail_id: str, offset: int = 0):
         record = next((run for run in engine.history.runs if run.id == run_id), None)
-        if not record or not any(item.detail_log_id == detail_id for item in record.items):
+        if not record or not any(detail_id in (item.detail_log_id, item.ui_log_id) for item in record.items):
             raise HTTPException(404, "详细日志不存在")
         try:
             return await asyncio.to_thread(engine.detail_logs.page, detail_id, offset)
@@ -279,19 +325,22 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
     @app.post("/api/history/detail-cleanup/preview")
     async def preview_detail_cleanup(payload: DetailCleanupIn):
         items = engine.detail_logs.matching(engine.history, payload.cutoff)
-        return {"count": len(items), "cutoff": payload.cutoff.isoformat(), "ids": [item.detail_log_id for item in items]}
+        return {"count": len(items), "cutoff": payload.cutoff.isoformat(), "ids": [item.detail_log_id or item.ui_log_id for item in items]}
 
     @app.post("/api/history/detail-cleanup")
     async def cleanup_details(payload: DetailCleanupIn):
         items = engine.detail_logs.matching(engine.history, payload.cutoff)
-        if payload.ids is None or set(payload.ids) != {item.detail_log_id for item in items}:
+        if payload.ids is None or set(payload.ids) != {item.detail_log_id or item.ui_log_id for item in items}:
             raise HTTPException(409, "清理范围已变化，请重新预览")
         removed = 0
         for item in items:
             try:
-                await asyncio.to_thread(engine.detail_logs.delete, item.detail_log_id)
-                item.detail_log_id = None
-                item.detail_log_status = "详细日志已清理"
+                for id_field, status_field in (("detail_log_id", "detail_log_status"), ("ui_log_id", "ui_log_status")):
+                    identifier = getattr(item, id_field)
+                    if identifier:
+                        await asyncio.to_thread(engine.detail_logs.delete, identifier)
+                        setattr(item, id_field, None)
+                        setattr(item, status_field, "详细日志已清理")
                 removed += 1
             except (OSError, ValueError) as error:
                 engine.store.save_history(engine.history)

@@ -28,15 +28,17 @@ $scenarioPath = Join-Path $PSScriptRoot "$Scenario-scenario.js"
 if ($Scenario -eq 'log') {
   $dataPath = Join-Path $runPath 'data'
   New-Item -ItemType Directory -Path $dataPath | Out-Null
+  @{ schema_version=3; queues=@(@{id='fixture-script';name='受控 MAA';task_ids=@('fixture-maa');time_slots=@()}); tasks=@(@{id='fixture-maa';name='受控 MAA';executable='C:\fixture\MAA.exe';preset_id='maa';preset_evidence='受控夹具';success_log_rules=@(@{mode='keyword';pattern='成功'});failure_log_rules=@(@{mode='keyword';pattern='失败'});maa_adapter=@{installation_directory='C:\fixture'} }); plans=@(); fired_slots=@(); startup_fired_dates=@{} } | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $dataPath 'config.json')
   $today = (Get-Date).Date
   $runs = @(
     @{ id='today'; queue_id='fixture-1'; queue_name='今日验收记录'; trigger_source='manual'; state='completed'; started_at=$today.AddHours(12).ToString('s'); items=@(); scheduler_skips=@('验收计划跳过') },
-    @{ id='old'; queue_id='fixture-2'; queue_name='旧验收记录'; trigger_source='manual'; state='completed'; started_at=$today.AddDays(-40).AddHours(12).ToString('s'); ended_at=$today.AddDays(-40).AddHours(13).ToString('s'); items=@(@{task_id='task';task_name='验收任务';state='failed';error_summary='受控失败';log_summary=@('受控摘要');detail_log_id='f6e372af-0e2c-4fd7-9434-f229c3a1643f';detail_log_status='已采集'}) }
+    @{ id='old'; queue_id='fixture-2'; queue_name='旧验收记录'; trigger_source='manual'; state='completed'; started_at=$today.AddDays(-40).AddHours(12).ToString('s'); ended_at=$today.AddDays(-40).AddHours(13).ToString('s'); items=@(@{task_id='task';task_name='验收任务';state='failed';error_summary='受控失败';log_summary=@('受控摘要');detail_log_id='f6e372af-0e2c-4fd7-9434-f229c3a1643f';detail_log_status='已采集';ui_log_id='69220a50-b013-4b4c-8109-850c9c62daca';ui_log_status='已采集界面日志'}) }
   )
   @{ schema_version=3; runs=$runs } | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $dataPath 'history.json')
   $details = Join-Path $dataPath 'detail_logs'
   New-Item -ItemType Directory -Path $details | Out-Null
   '{"captured_at":"2026-01-01T00:00:00+00:00","text":"[2026-01-01 12:00:00.000][INF][Bootstrapper] <2> MaaAssistantArknights GUI started\n受控详细内容"}' | Set-Content -Encoding utf8NoBOM (Join-Path $details 'f6e372af-0e2c-4fd7-9434-f229c3a1643f.jsonl')
+  '{"captured_at":"2026-01-01T00:00:00+00:00","text":"受控界面日志"}' | Set-Content -Encoding utf8NoBOM (Join-Path $details '69220a50-b013-4b4c-8109-850c9c62daca.jsonl')
 }
 $session = "runner-$runId"
 $process = $null; $attached = $false; $success = $false

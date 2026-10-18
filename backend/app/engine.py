@@ -12,6 +12,7 @@ from .completion_actions import CompletionActionDispatcher
 from .detail_logs import DetailCapture, DetailLogs
 from .events import EventHub
 from .logwatch import LogSignal, LogWatcher
+from .maa_region_capture import read_maa_region
 from .models import (
     CompletionAction,
     CompletionSource,
@@ -32,6 +33,7 @@ from .processes import (
     request_graceful_close,
 )
 from .storage import JsonStore
+from .ui_logs import WindowLogCapture, ocr_appended
 
 
 class RunBusyError(RuntimeError):
@@ -463,8 +465,37 @@ class RunnerEngine:
 
         item.state = ItemState.WAITING_MANUAL if task.allow_manual_confirmation else ItemState.MONITORING
         self._manual_accepting_task_id = task.id if task.allow_manual_confirmation else None
+        ui_capture = None
+        if self._owned_process and (task.preset_id == "march7th" or (task.preset_id == "maa" and task.ui_log_region)):
+            async def emit_ui_log(text: str) -> None:
+                await self._publish_state()
+                await self.events.publish("script_log", {"runId": record.id, "taskId": task.id, "text": text})
+
+            if task.preset_id == "maa" and task.ui_log_region:
+                async def read_maa(process: OwnedProcess) -> str:
+                    return await read_maa_region(process, task.ui_log_region)
+
+                ui_capture = WindowLogCapture(self.detail_logs, item, self._owned_process, emit_ui_log,
+                                              reader=read_maa, notify=self._publish_state,
+                                              source="画面识别（可能有错字或遗漏）", matcher=ocr_appended)
+            else:
+                ui_capture = WindowLogCapture(self.detail_logs, item, self._owned_process, emit_ui_log,
+                                              notify=self._publish_state)
+            ui_capture.start()
+        elif task.preset_id == "maa":
+            item.ui_log_status = "尚未设置 MAA 界面日志区域，请在脚本编辑页框选"
+        else:
+            item.ui_log_status = "当前预设暂无可靠的界面日志来源"
         await self._publish_state()
-        outcome, detail, log_detail = await self._wait_for_outcome(process, task, watcher)
+        try:
+            outcome, detail, log_detail = await self._wait_for_outcome(process, task, watcher)
+        finally:
+            if ui_capture:
+                try:
+                    await ui_capture.finish()
+                except Exception as error:
+                    item.ui_log_status = f"界面日志采集失败：{error}"
+                    self._logger.exception("界面日志采集收尾失败")
         item.ended_at = datetime.now(UTC)
         if log_detail:
             item.log_summary.append(log_detail)

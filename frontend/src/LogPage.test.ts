@@ -110,10 +110,47 @@ test('loads detailed log pages in order', async () => {
   const record = { ...run('样例', '2026-01-01T12:00:00'), items: [{ task_id: 't', task_name: '程序', state: 'succeeded', detail_log_id: 'detail' }] }
   const wrapper = setup([record]); await wrapper.setProps({ request, expanded: new Set(['样例']) })
   await wrapper.findAll('button').find(b => b.text() === '查看详细日志')!.trigger('click')
+  expect(wrapper.get('[role="dialog"]').text()).toContain('暂无法可靠获取该脚本的界面日志')
+  expect(wrapper.get('[role="dialog"]').text()).not.toContain('第一条')
+  await wrapper.findAll('button').find(b => b.text() === '查看原始日志')!.trigger('click')
   expect(wrapper.get('[role="dialog"]').text()).toContain('第一条')
   await wrapper.findAll('button').find(b => b.text() === '加载更多')!.trigger('click')
   expect(wrapper.get('[role="dialog"]').text()).toContain('第二条')
+  await wrapper.findAll('button').find(b => b.text() === '返回脚本界面日志')!.trigger('click')
+  expect(wrapper.get('[role="dialog"]').text()).not.toContain('第一条')
   await wrapper.findAll('button').find(b => b.text() === '查看原始日志')!.trigger('click')
   expect(wrapper.get('[role="dialog"]').text()).not.toContain('未识别的日志')
   expect(wrapper.get('[role="dialog"]').text()).toContain('第一条')
+})
+
+test('old records show why interface and raw logs are unavailable', async () => {
+  const request = vi.fn()
+  const record = { ...run('旧记录', '2026-01-01T12:00:00'), items: [{ task_id: 't', task_name: '程序', state: 'succeeded', detail_log_status: '未配置日志路径' }] }
+  const wrapper = setup([record]); await wrapper.setProps({ request, expanded: new Set(['旧记录']) })
+  await wrapper.findAll('button').find(b => b.text() === '查看详细日志')!.trigger('click')
+  expect(wrapper.get('[role="dialog"]').text()).toContain('暂无法可靠获取该脚本的界面日志')
+  await wrapper.findAll('button').find(b => b.text() === '查看原始日志')!.trigger('click')
+  expect(wrapper.get('[role="dialog"]').text()).toContain('未配置日志路径')
+  expect(request).not.toHaveBeenCalled()
+})
+
+test('shows captured interface logs separately from raw logs', async () => {
+  const request = vi.fn(async (path: string) => ({ entries: [{ captured_at: '2026-01-01T01:00:00Z', text: path.includes('/ui?') ? '界面消息' : '原始消息' }], next_offset: null }))
+  const record = { ...run('样例', '2026-01-01T12:00:00'), items: [{ task_id: 't', task_name: '程序', state: 'succeeded', detail_log_id: 'raw', ui_log_id: 'ui', ui_log_status: '已采集界面日志' }] }
+  const wrapper = setup([record]); await wrapper.setProps({ request, expanded: new Set(['样例']) })
+  await wrapper.findAll('button').find(b => b.text() === '查看详细日志')!.trigger('click')
+  expect(wrapper.get('[role="dialog"]').text()).toContain('界面消息')
+  await wrapper.findAll('button').find(b => b.text() === '查看原始日志')!.trigger('click')
+  expect(wrapper.get('[role="dialog"]').text()).toContain('原始消息')
+  expect(wrapper.get('[role="dialog"]').text()).not.toContain('界面消息')
+})
+
+test('shows a compact task name and distinguishes interface and raw log status', async () => {
+  const record = { ...run('样例', '2026-01-01T12:00:00'), items: [{ task_id: 't', task_name: 'MAA', script_name: 'MAA', state: 'succeeded', ui_log_status: '未设置区域', detail_log_status: '已采集' }] }
+  const wrapper = setup([record]); await wrapper.setProps({ expanded: new Set(['样例']) })
+  const item = wrapper.get('.run-record li')
+  expect(item.get('b').text()).toBe('MAA')
+  expect(item.text()).toContain('界面日志：未设置区域')
+  expect(item.text()).toContain('原始日志：已采集')
+  expect(item.get('button').text()).toBe('查看详细日志')
 })

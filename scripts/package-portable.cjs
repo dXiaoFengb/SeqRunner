@@ -6,10 +6,12 @@ const root = resolve(__dirname, '..');
 const match = readFileSync(resolve(root, 'VERSION.md'), 'utf8').match(/^\s*- 开发提交版本：\s*v(\d+\.\d+\.\d+)\s*$/m);
 if (!match) throw new Error('VERSION.md 中未找到格式正确的开发提交版本。');
 const validation = process.argv.includes('--validation');
-const validationDirectory = `portable-validation-v${match[1].replace(/\./g, '')}`;
+const suffix = process.env.RUNNER_VALIDATION_SUFFIX || match[1].replace(/\./g, '');
+if (!/^\d+$/.test(suffix) || !suffix.startsWith(match[1].replace(/\./g, ''))) throw new Error('验证包目录标识必须以当前版本数字开头。');
+const validationDirectory = `portable-validation-v${suffix}`;
 const args = ['npm', 'exec', '--allow-git=all', '--yes', '--package=electron-builder@26.0.12', '--', 'electron-builder', '--win', 'portable', '--publish', 'never', `--config.extraMetadata.version=${match[1]}`];
 if (validation) {
-  const generatedConfig = resolve(root, 'build', `electron-builder-validation-${match[1].replace(/\./g, '')}.json`);
+  const generatedConfig = resolve(root, 'build', `electron-builder-validation-${suffix}.json`);
   mkdirSync(dirname(generatedConfig), { recursive: true });
   writeFileSync(generatedConfig, `${JSON.stringify({
     appId: 'local.sequential-task-runner',

@@ -5,6 +5,7 @@ from PyInstaller.utils.hooks import collect_submodules
 analysis = Analysis(
     ["runner_backend.py"],
     pathex=["."],
+    datas=[("app/maa_window_helper.ps1", "app")],
     hiddenimports=[
         "uvicorn.logging",
         "uvicorn.loops.auto",

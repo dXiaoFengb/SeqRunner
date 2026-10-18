@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { CalendarDays, FolderOpen, RotateCcw, Search } from '@lucide/vue'
 import type { RunItem } from './types'
 import { triggerLabel, stateLabel, sourceLabel, logLabel } from './logLabels'
-import { friendlyDetailEntries, type DetailEntry } from './detailLogLabels'
+import type { DetailEntry } from './detailLogLabels'
 
 type HistoryRun = { id: string; queue_name: string; run_mode?: string; trigger_source: string; state: string; started_at: string; items: RunItem[]; scheduler_skips?: string[] }
 type Preset = 'today' | 'yesterday' | 'week' | 'month' | 'twoMonths' | 'threeMonths' | 'halfYear'
@@ -52,25 +52,36 @@ watch(() => [props.selectedId, props.history] as const, ([id]) => {
   if (day && (day < applied.value.start || day > applied.value.end)) { start.value = day; end.value = day; applied.value = { start: day, end: day }; selected.value = null; error.value = '' }
 }, { immediate: true })
 function itemOutcome(item: RunItem) { const reason = item.error_summary || (item.exit_code !== null && item.exit_code !== undefined ? `退出码 ${item.exit_code}` : item.completion_source || '未提供摘要'); return item.state === 'failed' ? `失败：${reason}` : item.state === 'succeeded' ? `成功：${sourceLabel(item.completion_source || '已完成')}` : stateLabel(item.state) }
+function itemName(item: RunItem) { return item.script_name && item.script_name !== item.task_name ? `${item.script_name} / ${item.task_name}` : item.task_name }
+function uiLogStatus(item: RunItem) { return item.ui_log_status || (item.ui_log_id ? '已采集' : '暂无界面日志') }
+function rawLogStatus(item: RunItem) { return item.detail_log_status || (item.detail_log_id ? '已采集' : '暂无原始日志') }
 function runTime(run: HistoryRun) { const value = new Date(run.started_at); return Number.isNaN(value.getTime()) ? '时间未知' : value.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) }
-const detail = ref<{ runId: string; id: string; title: string; entries: DetailEntry[]; next: number | null; error: string; loading: boolean } | null>(null)
+const detail = ref<{ runId: string; id: string | null; rawId: string | null; uiId: string | null; rawStatus: string; uiStatus: string; title: string; entries: DetailEntry[]; next: number | null; error: string; loading: boolean } | null>(null)
 const rawDetail = ref(false)
-const displayedDetail = computed(() => !detail.value ? [] : rawDetail.value ? detail.value.entries : friendlyDetailEntries(detail.value.entries))
+const displayedDetail = computed(() => detail.value?.entries || [])
 async function loadDetail(run: HistoryRun, item: RunItem) {
-  if (!item.detail_log_id || !props.request) return
   rawDetail.value = false
-  detail.value = { runId: run.id, id: item.detail_log_id, title: item.task_name, entries: [], next: 0, error: '', loading: false }
+  detail.value = { runId: run.id, id: item.ui_log_id || null, uiId: item.ui_log_id || null, rawId: item.detail_log_id || null, rawStatus: item.detail_log_status || '暂无原始日志', uiStatus: item.ui_log_status || '暂无法可靠获取该脚本的界面日志', title: item.task_name, entries: [], next: item.ui_log_id ? 0 : null, error: item.ui_log_id ? '' : (item.ui_log_status || '暂无法可靠获取该脚本的界面日志'), loading: false }
+  await moreDetail()
+}
+async function toggleRawDetail() {
+  if (!detail.value) return
+  rawDetail.value = !rawDetail.value
+  const current = detail.value
+  current.id = rawDetail.value ? current.rawId : current.uiId
+  current.entries = []; current.next = current.id ? 0 : null; current.error = current.id ? '' : (rawDetail.value ? current.rawStatus : current.uiStatus); current.loading = false
   await moreDetail()
 }
 async function moreDetail() {
   const current = detail.value
-  if (!current || current.next === null || !props.request || current.loading) return
+  if (!current || !current.id || current.next === null || !props.request || current.loading) return
   current.loading = true
+  const requestedId = current.id
   try {
     const data = await props.request(`/api/history/${encodeURIComponent(current.runId)}/details/${encodeURIComponent(current.id)}?offset=${current.next}`) as { entries: DetailEntry[]; next_offset: number | null }
-    current.entries.push(...data.entries); current.next = data.next_offset
-  } catch (error) { current.error = `无法读取详细日志：${error instanceof Error ? error.message : String(error)}`; current.next = null }
-  finally { current.loading = false }
+    if (detail.value === current && current.id === requestedId) { current.entries.push(...data.entries); current.next = data.next_offset }
+  } catch (error) { if (detail.value === current && current.id === requestedId) { current.error = `无法读取详细日志：${error instanceof Error ? error.message : String(error)}`; current.next = null } }
+  finally { if (detail.value === current && current.id === requestedId) current.loading = false }
 }
 const cleanupDate = ref(''), cleanupCount = ref<number | null>(null), cleanupError = ref('')
 const cleanupIds = ref<string[]>([])
@@ -105,8 +116,8 @@ function runHasFailures(run: HistoryRun) { return run.items.some((item) => item.
       <div v-if="cleanupCount !== null" class="cleanup-confirm" role="alertdialog" aria-label="确认清理详细日志"><p>确定清理 {{ cleanupDate }} 当天及之前的 {{ cleanupCount }} 条详细日志？运行记录与原始软件日志会保留。</p><button class="danger" @click="confirmCleanup">确认清理</button><button @click="cleanupCount = null">取消</button></div>
     </div>
     <div v-if="!groups.length" class="log-empty"><FolderOpen aria-hidden="true" /><strong>{{ history.length ? '没有符合条件的日志' : '暂无运行记录' }}</strong><span>{{ history.length ? '请调整日期范围后重新搜索。' : '运行完成后，记录会显示在这里。' }}</span></div>
-    <section v-for="group in groups" :key="group.date" class="log-group"><h2><CalendarDays aria-hidden="true" />{{ group.date }}</h2><article v-for="run in group.runs" :key="run.id" class="run-record" :class="{ selected: selectedId === run.id, failed: runHasFailures(run) }"><div class="run-record-head"><div><b>{{ run.run_mode === 'plan' ? `计划：${run.queue_name}` : run.run_mode === 'all_scripts' ? '全部软件脚本' : run.queue_name }}</b><small>{{ groupMode === 'day' ? '' : recordDate(run) + ' ' }}{{ runTime(run) }} · {{ triggerLabel(run.trigger_source) }} · {{ stateLabel(run.state) }}</small></div><button @click="emit('toggle', run.id)">{{ expanded.has(run.id) ? '收起详情' : runHasFailures(run) ? '查看失败详情' : '查看详情' }}</button></div><ul v-if="expanded.has(run.id)"><li v-for="item in run.items" :key="item.task_id" :class="{ 'history-item-failed': item.state === 'failed' }"><b>{{ item.script_name ? item.script_name + ' / ' : '' }}{{ item.task_name }}</b><span>{{ itemOutcome(item) }}</span><small v-if="item.log_summary?.length">日志：{{ item.log_summary.map(logLabel).join('；') }}</small><button v-if="item.detail_log_id" type="button" @click="loadDetail(run, item)">查看详细日志</button><small v-else>{{ item.detail_log_status || '暂无详细日志' }}</small><small v-if="item.detail_log_id && item.detail_log_status">{{ item.detail_log_status }}</small></li></ul><p v-if="run.scheduler_skips?.length" class="schedule-skips"><b>计划跳过</b><span v-for="skip in run.scheduler_skips" :key="skip">{{ skip }}</span></p></article></section>
-    <div v-if="detail" class="detail-overlay" @click.self="detail = null"><section class="detail-dialog" role="dialog" aria-modal="true" aria-label="详细日志"><header><h2>{{ detail.title }} · 详细日志</h2><div><button type="button" @click="rawDetail = !rawDetail">{{ rawDetail ? '返回通俗日志' : '查看原始日志' }}</button> <button @click="detail = null">关闭</button></div></header><p>{{ rawDetail ? '显示采集时间；日志原文中的时间保持不变。' : '显示采集时间；识别出的日志时间另行标注，未识别内容保留原文。' }}</p><div class="detail-content"><p v-if="detail.error" role="alert">{{ detail.error }}</p><p v-else-if="!detail.entries.length && !detail.loading">暂无详细日志。</p><div v-for="(entry, index) in displayedDetail" :key="index"><time>{{ new Date(entry.captured_at).toLocaleString('zh-CN', { hour12: false }) }}</time><pre>{{ entry.text }}</pre></div></div><button v-if="detail.next !== null" :disabled="detail.loading" @click="moreDetail">{{ detail.loading ? '正在读取' : '加载更多' }}</button></section></div>
+    <section v-for="group in groups" :key="group.date" class="log-group"><h2><CalendarDays aria-hidden="true" />{{ group.date }}</h2><article v-for="run in group.runs" :key="run.id" class="run-record" :class="{ selected: selectedId === run.id, failed: runHasFailures(run) }"><div class="run-record-head"><div><b>{{ run.run_mode === 'plan' ? `计划：${run.queue_name}` : run.run_mode === 'all_scripts' ? '全部软件脚本' : run.queue_name }}</b><small>{{ groupMode === 'day' ? '' : recordDate(run) + ' ' }}{{ runTime(run) }} · {{ triggerLabel(run.trigger_source) }} · {{ stateLabel(run.state) }}</small></div><button @click="emit('toggle', run.id)">{{ expanded.has(run.id) ? '收起详情' : runHasFailures(run) ? '查看失败详情' : '查看详情' }}</button></div><ul v-if="expanded.has(run.id)"><li v-for="item in run.items" :key="item.task_id" :class="{ 'history-item-failed': item.state === 'failed' }"><div class="history-item-info"><b>{{ itemName(item) }}</b><span>{{ itemOutcome(item) }}</span><small v-if="item.log_summary?.length">日志：{{ item.log_summary.map(logLabel).join('；') }}</small><small>界面日志：{{ uiLogStatus(item) }}</small><small>原始日志：{{ rawLogStatus(item) }}</small></div><button type="button" @click="loadDetail(run, item)">查看详细日志</button></li></ul><p v-if="run.scheduler_skips?.length" class="schedule-skips"><b>计划跳过</b><span v-for="skip in run.scheduler_skips" :key="skip">{{ skip }}</span></p></article></section>
+    <div v-if="detail" class="detail-overlay" @click.self="detail = null"><section class="detail-dialog" role="dialog" aria-modal="true" aria-label="详细日志"><header><h2>{{ detail.title }} · 详细日志</h2><div><button type="button" @click="toggleRawDetail">{{ rawDetail ? '返回脚本界面日志' : '查看原始日志' }}</button> <button @click="detail = null">关闭</button></div></header><p>{{ rawDetail ? '显示采集时间；日志原文中的时间保持不变。' : detail.uiStatus }}</p><div class="detail-content"><p v-if="detail.error" role="alert">{{ detail.error }}</p><p v-else-if="!detail.entries.length && !detail.loading">暂无详细日志。</p><div v-for="(entry, index) in displayedDetail" :key="index"><time>{{ new Date(entry.captured_at).toLocaleString('zh-CN', { hour12: false }) }}</time><pre>{{ entry.text }}</pre></div></div><button v-if="detail.next !== null" :disabled="detail.loading" @click="moreDetail">{{ detail.loading ? '正在读取' : '加载更多' }}</button></section></div>
   </section>
 </template>
 
@@ -120,4 +131,5 @@ function runHasFailures(run: HistoryRun) { return run.items.some((item) => item.
 
 <style scoped>
 .log-filters{padding:18px}.quick-ranges{gap:7px;margin:8px 0 14px}.quick-ranges button{padding:6px 10px;font-size:14px}.filter-row{gap:10px;padding-top:14px}.filter-row input,.group-mode select{min-width:150px;min-height:36px;padding:6px 8px;border:1px solid var(--line-strong);border-radius:6px;background:var(--panel-deep);color:var(--ink);color-scheme:dark}.group-mode select{min-width:110px}.cleanup input{min-width:150px}.cleanup button,.filter-actions button{min-height:36px;padding:6px 10px;font-size:14px}@media(max-width:980px){.filter-actions{margin-left:0}}
+.run-record li{display:flex;align-items:center;justify-content:space-between;gap:12px}.history-item-info{display:grid;min-width:0;gap:3px;overflow-wrap:anywhere}.run-record li button{flex:none}@media(max-width:620px){.run-record li{align-items:flex-start;flex-direction:column}}
 </style>

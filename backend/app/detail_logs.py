@@ -64,9 +64,11 @@ class DetailLogs:
     def delete_runs(self, runs: list[RunRecord]) -> None:
         for run in runs:
             for item in run.items:
-                if item.detail_log_id:
+                for identifier in (item.detail_log_id, item.ui_log_id):
+                    if not identifier:
+                        continue
                     try:
-                        self.delete(item.detail_log_id)
+                        self.delete(identifier)
                     except (OSError, ValueError):
                         pass
 
@@ -80,15 +82,18 @@ class DetailLogs:
             if now - ended < timedelta(days=7):
                 continue
             for item in run.items:
-                if not item.detail_log_id:
-                    continue
-                try:
-                    self._archive_one(item.detail_log_id)
-                    if item.detail_log_status and item.detail_log_status.startswith("详细日志压缩失败："):
-                        item.detail_log_status = "已采集"
-                except (OSError, ValueError, EOFError) as error:
-                    item.detail_log_status = f"详细日志压缩失败：{error}"
-                    errors.append(item.detail_log_status)
+                for identifier, status_field in ((item.detail_log_id, "detail_log_status"), (item.ui_log_id, "ui_log_status")):
+                    if not identifier:
+                        continue
+                    try:
+                        self._archive_one(identifier)
+                        status = getattr(item, status_field)
+                        if status and status.startswith("详细日志压缩失败："):
+                            setattr(item, status_field, "已采集")
+                    except (OSError, ValueError, EOFError) as error:
+                        message = f"详细日志压缩失败：{error}"
+                        setattr(item, status_field, message)
+                        errors.append(message)
         return errors
 
     def _archive_one(self, identifier: str) -> None:
@@ -116,7 +121,7 @@ class DetailLogs:
 
     def matching(self, history: HistoryDocument, cutoff: date) -> list[ItemRecord]:
         return [item for run in history.runs if run.ended_at and run.ended_at.astimezone().date() <= cutoff
-                for item in run.items if item.detail_log_id]
+                for item in run.items if item.detail_log_id or item.ui_log_id]
 
 
 class DetailCapture:
