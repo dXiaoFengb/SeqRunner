@@ -12,6 +12,7 @@ from app.models import (
     AppConfig,
     CompletionSource,
     ItemRecord,
+    LogRule,
     MatchMode,
     QueueDefinition,
     RunRecord,
@@ -104,6 +105,83 @@ async def test_manual_confirmation_stops_only_owned_process(tmp_path: Path) -> N
     item = engine.history.runs[0].items[0]
     assert item.completion_source == CompletionSource.MANUAL
     assert engine._owned_process is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allow_exit", [False, True])
+async def test_manual_waits_after_success_log_and_zero_exit(tmp_path: Path, allow_exit: bool) -> None:
+    log = tmp_path / "success.log"
+    marker = tmp_path / "next.txt"
+    first = python_task("人工确认", "from pathlib import Path; import sys,time; Path(sys.argv[1]).write_text('DONE\\n'); time.sleep(.3)", str(log))
+    first.log_path = str(log)
+    first.success_log = "DONE"
+    first.allow_manual_confirmation = True
+    first.allow_process_exit = allow_exit
+    second = python_task("下一项", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')", str(marker))
+    engine, _ = build_engine(tmp_path, [first, second])
+    await engine.start_all()
+    for _ in range(100):
+        if engine.current_run and engine.current_run.run_log_id and any(
+            "仍等待人工确认" in entry["text"]
+            for entry in engine.detail_logs.page(engine.current_run.run_log_id, 0)["entries"]
+        ):
+            break
+        await asyncio.sleep(.05)
+    else:
+        await engine.stop()
+        await engine.wait_until_idle()
+        pytest.fail("未观察到程序正常退出后等待人工确认")
+    assert engine.is_busy and not marker.exists()
+    await engine.confirm(first.id)
+    await engine.wait_until_idle()
+    assert marker.exists()
+    assert engine.history.runs[0].items[0].completion_source == CompletionSource.MANUAL
+
+
+@pytest.mark.asyncio
+async def test_manual_keeps_monitoring_failure_after_success(tmp_path: Path) -> None:
+    log = tmp_path / "signals.log"
+    source = "from pathlib import Path; import sys,time; p=Path(sys.argv[1]); p.write_text('DONE\\n'); time.sleep(.4); p.open('a').write('FAIL\\n'); time.sleep(2)"
+    task = python_task("人工确认", source, str(log))
+    task.log_path = str(log)
+    task.success_log = "DONE"
+    task.failure_log = "FAIL"
+    task.success_log_rules = [LogRule(pattern="PRESET_DONE")]
+    task.failure_log_rules = [LogRule(pattern="PRESET_FAIL")]
+    task.allow_manual_confirmation = True
+    engine, _ = build_engine(tmp_path, [task])
+    await engine.start_all()
+    await engine.wait_until_idle()
+    assert "FAIL" in (engine.history.runs[0].items[0].error_summary or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["stop", "timeout", "nonzero"])
+async def test_manual_exit_still_obeys_failure_stop_timeout(tmp_path: Path, action: str) -> None:
+    task = python_task("人工确认", "import sys,time; time.sleep(.2); sys.exit(int(sys.argv[1]))", "1" if action == "nonzero" else "0")
+    task.allow_manual_confirmation = True
+    task.timeout_seconds = 1
+    engine, _ = build_engine(tmp_path, [task])
+    await engine.start_all()
+    if action == "stop":
+        await asyncio.sleep(.5)
+        await engine.stop()
+    await engine.wait_until_idle()
+    item = engine.history.runs[0].items[0]
+    if action == "stop":
+        assert item.state.value == "stopped"
+    else:
+        assert ("退出码 1" if action == "nonzero" else "超时") in (item.error_summary or "")
+
+
+@pytest.mark.asyncio
+async def test_zero_exit_without_enabled_completion_does_not_succeed(tmp_path: Path) -> None:
+    task = python_task("不启用退出", "import time; time.sleep(.2)")
+    task.allow_process_exit = False
+    engine, _ = build_engine(tmp_path, [task])
+    await engine.start_all()
+    await engine.wait_until_idle()
+    assert "未获得完成信号" in (engine.history.runs[0].items[0].error_summary or "")
 
 
 @pytest.mark.asyncio

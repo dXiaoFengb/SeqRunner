@@ -28,10 +28,13 @@ class LogWatcher:
         *,
         success_rules: list[LogRule] | None = None,
         failure_rules: list[LogRule] | None = None,
+        monitor_success: bool = True,
     ) -> None:
         self.path = Path(path)
-        self.success = self._compile_all(success_rules or ([LogRule(pattern=success, mode=success_mode)] if success else []))
-        self.failure = self._compile_all(failure_rules or ([LogRule(pattern=failure, mode=failure_mode)] if failure else []))
+        all_success = list(success_rules or []) + ([LogRule(pattern=success, mode=success_mode)] if success else [])
+        all_failure = list(failure_rules or []) + ([LogRule(pattern=failure, mode=failure_mode)] if failure else [])
+        self.success = self._compile_all(all_success) if monitor_success else []
+        self.failure = self._compile_all(all_failure)
         self.poll_seconds = poll_seconds
         self._offset = 0
         self._identity: tuple[int, int] | None = None

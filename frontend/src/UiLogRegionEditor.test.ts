@@ -11,11 +11,16 @@ describe('界面日志区域', () => {
   it('按预设提示可靠界面文本或画面识别', async () => {
     const model = task()
     const wrapper = mount(UiLogRegionEditor, { props: { task: model, busy: false, request: vi.fn() } })
-    expect(wrapper.text()).toContain('可框选界面日志，使用本地画面识别')
+    expect(wrapper.text()).toContain('可通过框选启用画面识别')
+    expect(wrapper.get('.source-badge').classes()).toContain('source-ocr')
     await wrapper.setProps({ task: { ...model, preset_id: 'march7th' } })
-    expect(wrapper.text()).toContain('支持界面文本读取；框选识别可作为备用')
-    await wrapper.setProps({ task: { ...model, preset_id: 'maa' } })
-    expect(wrapper.text()).toContain('可框选界面日志，使用本地画面识别')
+    expect(wrapper.text()).toContain('支持界面文本读取，框选为备用')
+    expect(wrapper.get('.source-badge').classes()).toContain('source-direct')
+    for (const preset_id of ['maa', 'maaend', 'bettergi', 'zzz']) {
+      await wrapper.setProps({ task: { ...model, preset_id } })
+      expect(wrapper.text()).toContain('可通过框选启用画面识别')
+      expect(wrapper.get('.source-badge').classes()).toContain('source-ocr')
+    }
     wrapper.unmount()
   })
 

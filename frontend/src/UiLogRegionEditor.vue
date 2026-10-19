@@ -82,7 +82,7 @@ function saveRegion() {
 
 <template>
   <div class="ui-region-editor">
-    <h4>界面日志区域 <small>{{ task.preset_id === 'march7th' ? '支持界面文本读取；框选识别可作为备用。' : '可框选界面日志，使用本地画面识别。' }}</small></h4>
+    <h4>界面日志区域 <span class="source-badge" :class="task.preset_id === 'march7th' ? 'source-direct' : 'source-ocr'">{{ task.preset_id === 'march7th' ? '支持界面文本读取，框选为备用' : '可通过框选启用画面识别' }}</span></h4>
     <p>读取软件界面显示的日志；与上面的原始日志文件分开保存。仅支持用户选择的窗口，识别在本机进行。</p>
     <p>{{ task.ui_log_region ? '已设置日志区域；窗口尺寸变化会暂停读取，布局变化时请重新框选。' : '尚未设置日志区域。' }}</p>
     <div class="ui-region-actions">
@@ -107,7 +107,9 @@ function saveRegion() {
 
 <style scoped>
 .ui-region-editor h4 { margin: 0 0 8px; color: var(--ink); font-size: 16px; }
-.ui-region-editor h4 small { color: var(--muted); font-size: 12px; font-weight: normal; }
+.source-badge { display: inline-block; margin: 2px 0 2px 8px; padding: 3px 8px; border: 1px solid; border-radius: 5px; font-size: 12px; font-weight: 600; vertical-align: middle; }
+.source-direct { color: #9debd0; background: #123c32; border-color: #368d72; }
+.source-ocr { color: #ffdb92; background: #423317; border-color: #a47b2c; }
 .ui-region-editor p { margin: 8px 0; color: var(--muted); }
 .ui-region-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .ui-region-actions select { min-width: 180px; max-width: 100%; }

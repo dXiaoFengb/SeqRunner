@@ -441,6 +441,7 @@ class RunnerEngine:
                 task.failure_log_mode,
                 success_rules=task.success_log_rules,
                 failure_rules=task.failure_log_rules,
+                monitor_success=not task.allow_manual_confirmation,
             )
             try:
                 # 必须先取得游标，后启动目标进程，避免历史成功行误判本轮。
@@ -502,7 +503,7 @@ class RunnerEngine:
             item.ui_log_status = "当前预设暂无可靠的界面日志来源"
         await self._publish_state()
         try:
-            outcome, detail, log_detail = await self._wait_for_outcome(process, task, watcher)
+            outcome, detail, log_detail = await self._wait_for_outcome(process, task, watcher, item)
         finally:
             if ui_capture:
                 try:
@@ -519,6 +520,8 @@ class RunnerEngine:
             await self._log(item, "收到全局停止请求，仅收尾当前受管进程")
             await self._cleanup_owned(item)
             await self._cleanup_auxiliary(item, task)
+            item.state = ItemState.STOPPED
+            await self._publish_state()
             return
         if outcome == "success":
             self._manual_accepting_task_id = None
@@ -582,6 +585,7 @@ class RunnerEngine:
         process: asyncio.subprocess.Process,
         task: TaskDefinition,
         watcher: LogWatcher | None,
+        item: ItemRecord,
     ) -> tuple[str, CompletionSource | str, str | None]:
         signal_tasks: dict[asyncio.Task[object], str] = {
             asyncio.create_task(process.wait()): "process",
@@ -595,7 +599,19 @@ class RunnerEngine:
         try:
             while signal_tasks:
                 done, _ = await asyncio.wait(signal_tasks, return_when=asyncio.FIRST_COMPLETED)
-                for completed in done:
+                # 同时到达的停止和失败信号优先于人工确认或成功信号。
+                def priority(completed: asyncio.Task[object]) -> int:
+                    kind = signal_tasks[completed]
+                    value = completed.result()
+                    if kind == "stop":
+                        return 0
+                    if kind == "process" and isinstance(value, int) and value != 0:
+                        return 1
+                    if kind == "log" and isinstance(value, LogSignal) and value.kind != "success":
+                        return 2
+                    return {"manual": 3, "log": 4, "process": 5, "timeout": 6}[kind]
+
+                for completed in sorted(done, key=priority):
                     kind = signal_tasks.pop(completed)
                     value = completed.result()
                     if kind == "stop" and self._stop_requested.is_set():
@@ -610,9 +626,13 @@ class RunnerEngine:
                     if kind == "process" and isinstance(value, int):
                         if value != 0:
                             return "failure", f"进程以退出码 {value} 结束", None
+                        if task.allow_manual_confirmation:
+                            await self._log(item, "程序已正常退出，仍等待人工确认")
+                            await self._publish_state()
+                            continue
                         if task.has_success_log():
                             return "failure", "已配置成功日志，但目标进程在命中前退出", None
-                        if task.allow_process_exit or not task.has_success_log():
+                        if task.allow_process_exit:
                             return "success", CompletionSource.PROCESS_EXIT, None
                         return "failure", "目标进程退出，未获得完成信号", None
                     if kind == "timeout":
