@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,12 +41,19 @@ class LogWatcher:
         self._identity: tuple[int, int] | None = None
         self._anchor_offset = 0
         self._anchor = b""
+        self._context = ""
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    def _reset_stream(self) -> None:
+        self._context = ""
+        self._decoder.reset()
 
     @staticmethod
     def _compile_all(rules: list[LogRule]) -> list[re.Pattern[str]]:
         return [re.compile(rule.pattern if rule.mode == MatchMode.REGEX else re.escape(rule.pattern)) for rule in rules]
 
     async def start_at_end(self) -> None:
+        self._reset_stream()
         try:
             stat = await asyncio.to_thread(self.path.stat)
             self._offset = stat.st_size
@@ -79,22 +87,31 @@ class LogWatcher:
         if self._identity is None or identity != self._identity or stat.st_size < self._offset:
             self._offset = 0
             self._identity = identity
+            self._reset_stream()
         elif self._anchor and self._anchor_changed():
             # 有些程序用覆盖写快速完成“截断再写入”，轮询可能看不到短暂的小文件。
             self._offset = 0
-        with self.path.open("r", encoding="utf-8", errors="replace") as handle:
+            self._reset_stream()
+        with self.path.open("rb") as handle:
             handle.seek(self._offset)
-            text = handle.read()
+            data = handle.read()
             self._offset = handle.tell()
         self._refresh_anchor()
+        text = self._decoder.decode(data, final=False).replace("\r\n", "\n").replace("\r", "\n")
         if not text:
             return None
-        for rule in self.failure:
-            if match := rule.search(text):
-                return LogSignal("failure", match.group(0))
-        for rule in self.success:
-            if match := rule.search(text):
-                return LogSignal("success", match.group(0))
+        previous = self._context
+        combined = previous + text
+        for kind, rules in (("failure", self.failure), ("success", self.success)):
+            for rule in rules:
+                old = {(m.span(), m.group(0)) for m in rule.finditer(previous)}
+                for match in rule.finditer(combined):
+                    if (match.span(), match.group(0)) not in old:
+                        return LogSignal(kind, match.group(0))
+                # Preserve patterns anchored to the beginning of a read.
+                if match := rule.search(text):
+                    return LogSignal(kind, match.group(0))
+        self._context = combined.encode("utf-8")[-65536:].decode("utf-8", errors="ignore")
         return None
 
     def _anchor_changed(self) -> bool:

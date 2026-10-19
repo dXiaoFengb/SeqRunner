@@ -91,6 +91,30 @@ async def test_success_log_locks_success_before_process_exit(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [False, True])
+async def test_split_log_signal_from_owned_process(tmp_path: Path, failure: bool) -> None:
+    log = tmp_path / "split.log"
+    source = (
+        "from pathlib import Path; import sys,time; p=Path(sys.argv[1]); "
+        "p.write_text(sys.argv[2]); time.sleep(.8); "
+        "p.open('a').write(sys.argv[3]); time.sleep(10)"
+    )
+    task = python_task("分片日志", source, str(log), "FA" if failure else "DO", "IL" if failure else "NE")
+    task.log_path = str(log)
+    task.success_log = "DONE"
+    task.failure_log = "FAIL"
+    task.allow_manual_confirmation = failure
+    engine, _ = build_engine(tmp_path, [task])
+    await engine.start_all()
+    await engine.wait_until_idle()
+    item = engine.history.runs[0].items[0]
+    if failure:
+        assert item.state.value == "failed" and "FAIL" in (item.error_summary or "")
+    else:
+        assert item.completion_source == CompletionSource.SUCCESS_LOG
+
+
+@pytest.mark.asyncio
 async def test_manual_confirmation_stops_only_owned_process(tmp_path: Path) -> None:
     task = python_task("人工确认", "import time; time.sleep(10)")
     task.allow_manual_confirmation = True
