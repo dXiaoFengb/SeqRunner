@@ -76,6 +76,20 @@ def test_archive_paging_and_cleanup_selection(tmp_path):
     assert not store.path(item.detail_log_id, True).exists()
 
 
+def test_run_log_retained_through_detail_cleanup_and_archived(tmp_path):
+    store = DetailLogs(tmp_path)
+    identifier = "f6e372af-0e2c-4fd7-9434-f229c3a1643f"
+    run = RunRecord(queue_id="q", queue_name="队列", trigger_source="manual",
+                    ended_at=datetime(2026, 1, 1, tzinfo=UTC), run_log_id=identifier)
+    history = HistoryDocument(runs=[run])
+    store.append(identifier, "整轮日志")
+    assert store.matching(history, date(2026, 1, 3)) == []
+    assert not store.archive(history, run.ended_at + timedelta(days=7))
+    assert content(store, identifier) == "整轮日志"
+    store.delete_runs([run])
+    assert not store.path(identifier, True).exists()
+
+
 def test_compression_failure_keeps_original(tmp_path, monkeypatch):
     store = DetailLogs(tmp_path)
     identifier = "f6e372af-0e2c-4fd7-9434-f229c3a1643f"

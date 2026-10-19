@@ -39,4 +39,19 @@ describe('界面日志区域', () => {
     expect(model.ui_log_region).toEqual(region)
     expect(wrapper.emitted('save')).toBeUndefined()
   })
+
+  it('重新选择窗口后展示保存的选区画面', async () => {
+    const model = task(); model.ui_log_region = region
+    const request = vi.fn(async (path: string) => {
+      if (path.endsWith('/windows')) return [windowCandidate]
+      if (path.endsWith('/frame')) return { image: 'cG5n' }
+      return { text: '实时日志' }
+    })
+    const wrapper = mount(UiLogRegionEditor, { props: { task: model, busy: false, request } })
+    await wrapper.get('button').trigger('click'); await flushPromises()
+    expect(wrapper.find('.selection').exists()).toBe(true)
+    expect(wrapper.text()).toContain('实时日志')
+    expect(model.ui_log_region).toEqual(region)
+    wrapper.unmount()
+  })
 })

@@ -36,6 +36,11 @@ async def test_process_exit_runs_tasks_in_strict_order(tmp_path: Path) -> None:
 
     assert output.read_text(encoding="utf-8").splitlines() == ["first", "second"]
     run = engine.history.runs[0]
+    entries = engine.detail_logs.page(run.run_log_id, 0)["entries"]
+    messages = [entry["text"] for entry in entries]
+    assert messages[0] == "本轮开始运行"
+    assert any("第一项：开始校验任务配置" in message for message in messages)
+    assert "全部成功" in messages[-1] and "总耗时" in messages[-1]
     assert [item.completion_source for item in run.items] == [
         CompletionSource.PROCESS_EXIT,
         CompletionSource.PROCESS_EXIT,

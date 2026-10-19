@@ -63,6 +63,11 @@ class DetailLogs:
 
     def delete_runs(self, runs: list[RunRecord]) -> None:
         for run in runs:
+            if run.run_log_id:
+                try:
+                    self.delete(run.run_log_id)
+                except (OSError, ValueError):
+                    pass
             for item in run.items:
                 for identifier in (item.detail_log_id, item.ui_log_id):
                     if not identifier:
@@ -81,6 +86,14 @@ class DetailLogs:
             ended = run.ended_at.astimezone(UTC)
             if now - ended < timedelta(days=7):
                 continue
+            if run.run_log_id:
+                try:
+                    self._archive_one(run.run_log_id)
+                    if (run.run_log_status or "").startswith("本轮日志压缩失败："):
+                        run.run_log_status = "已采集"
+                except (OSError, ValueError, EOFError) as error:
+                    run.run_log_status = f"本轮日志压缩失败：{error}"
+                    errors.append(run.run_log_status)
             for item in run.items:
                 for identifier, status_field in ((item.detail_log_id, "detail_log_status"), (item.ui_log_id, "ui_log_status")):
                     if not identifier:

@@ -19,7 +19,7 @@ async def run_helper(mode: str, process: OwnedProcess, region: UiLogRegion) -> d
     script = Path(__file__).with_name("maa_window_helper.ps1")
     script_text = script.read_text(encoding="utf-8-sig")
     # Arguments are fixed modes and validated numeric values, never user-provided PowerShell.
-    if mode not in ("ocr", "select"):
+    if mode not in ("ocr", "select", "frame"):
         raise ValueError("无效的界面日志操作")
     command = (f"try {{ & {{ {script_text} }} -Mode '{mode}' -WindowHandle {candidate.handle} "
                f"-TargetPid {process.pid} -Started {process.created_at:.6f} "

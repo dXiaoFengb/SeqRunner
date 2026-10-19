@@ -51,6 +51,14 @@ test('distinguishes no records from no matching records', () => {
   expect(setup([run('旧', '2020-01-01T12:00:00')]).text()).toContain('没有符合条件的日志')
 })
 
+test('shows the run log entry and distinguishes failure', async () => {
+  const record = { ...run('失败运行', '2026-01-01T12:00:00'), items: [{ task_id: 't', task_name: '程序', state: 'failed', error_summary: '退出失败' }] }
+  const wrapper = setup([record])
+  expect(wrapper.text()).toContain('存在失败')
+  await wrapper.findAll('button').find(button => button.text() === '查看本轮运行日志')!.trigger('click')
+  expect(wrapper.text()).toContain('旧记录没有保存完整的本轮运行日志')
+})
+
 test('custom range includes both end dates and groups multiple runs on one day', async () => {
   const wrapper = setup([run('上界', '2026-01-01T23:59:00'), run('同日', '2026-01-01T01:00:00'), run('下界', '2025-12-25T00:00:00'), run('界外', '2025-12-24T23:59:00')])
   await wrapper.get('[aria-label="开始日期"]').setValue('2025-12-25')

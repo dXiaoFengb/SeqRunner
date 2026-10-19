@@ -211,6 +211,8 @@ class RunRecord(BaseModel):
     items: list[ItemRecord] = Field(default_factory=list)
     message: str | None = None
     scheduler_skips: list[str] = Field(default_factory=list)
+    run_log_id: str | None = None
+    run_log_status: str | None = None
     completion_action: CompletionAction = CompletionAction.NONE
     completion_action_status: str | None = None
 

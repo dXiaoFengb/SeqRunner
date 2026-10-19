@@ -132,10 +132,12 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
             while True:
                 try:
                     before = [(item, item.detail_log_status) for run in engine.history.runs for item in run.items]
+                    before_run = [(run, run.run_log_status) for run in engine.history.runs]
                     errors = await asyncio.to_thread(engine.detail_logs.archive, engine.history)
                     for error in errors:
                         logger.warning("%s", error)
-                    if any(item.detail_log_status != status for item, status in before):
+                    if (any(item.detail_log_status != status for item, status in before)
+                            or any(run.run_log_status != status for run, status in before_run)):
                         engine.store.save_history(engine.history)
                 except Exception:  # 日志维护失败不能影响调度。
                     logger.exception("详细日志维护失败")
@@ -201,6 +203,15 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
             raise HTTPException(409, "运行期间不能预览日志区域")
         try:
             return {"text": await read_maa_region(OwnedProcess(payload.pid, payload.created_at), payload.region)}
+        except (RuntimeError, ValueError, TypeError, TimeoutError) as error:
+            raise HTTPException(422, str(error)) from error
+
+    @app.post("/api/ui-log/frame")
+    async def ui_log_frame(payload: RegionWindowIn):
+        if engine.is_busy:
+            raise HTTPException(409, "运行期间不能预览日志区域")
+        try:
+            return await run_helper("frame", OwnedProcess(payload.pid, payload.created_at), payload.region)
         except (RuntimeError, ValueError, TypeError, TimeoutError) as error:
             raise HTTPException(422, str(error)) from error
 
@@ -315,7 +326,7 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
     @app.get("/api/history/{run_id}/details/{detail_id}")
     async def history_detail(run_id: str, detail_id: str, offset: int = 0):
         record = next((run for run in engine.history.runs if run.id == run_id), None)
-        if not record or not any(detail_id in (item.detail_log_id, item.ui_log_id) for item in record.items):
+        if not record or (record.run_log_id != detail_id and not any(detail_id in (item.detail_log_id, item.ui_log_id) for item in record.items)):
             raise HTTPException(404, "详细日志不存在")
         try:
             return await asyncio.to_thread(engine.detail_logs.page, detail_id, offset)

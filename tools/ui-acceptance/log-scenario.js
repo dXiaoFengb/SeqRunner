@@ -4,7 +4,7 @@ async page => {
   const region = { executable:'C:\\fixture\\MAA.exe', window_class:'FixtureWindow', client_width:640, client_height:480, x:20, y:30, width:200, height:100 }
   await page.route('**/api/ui-log/**', async route => {
     const path = new URL(route.request().url()).pathname
-    const data = path.endsWith('/windows') ? [{handle:1,pid:10,created_at:1,title:'受控窗口',window_class:'FixtureWindow',client_width:640,client_height:480}] : path.endsWith('/select') ? {canceled:false,region} : {text:'受控预览日志'}
+    const data = path.endsWith('/windows') ? [{handle:1,pid:10,created_at:1,title:'受控窗口',window_class:'FixtureWindow',client_width:640,client_height:480}] : path.endsWith('/select') ? {canceled:false,region} : path.endsWith('/frame') ? {image:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR9sAAAAASUVORK5CYII='} : {text:'受控预览日志'}
     await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(data)})
   })
   await page.getByRole('button',{name:'脚本',exact:true}).click()
@@ -12,6 +12,7 @@ async page => {
   await page.getByRole('button',{name:'查找已打开的窗口'}).click()
   await page.getByRole('button',{name:'框选并预览'}).click()
   await page.getByText('受控预览日志').waitFor()
+  await page.locator('.visual-preview .selection').waitFor({timeout:15000})
   await page.getByRole('button',{name:'确认并保存区域'}).click()
   await page.getByText('已设置日志区域',{exact:false}).waitFor()
   await page.getByRole('button',{name:'保存更改'}).click()
@@ -34,6 +35,11 @@ async page => {
   await page.getByRole('button', { name: '最近三个月' }).click()
   await page.getByRole('button', { name: '搜索', exact: true }).click()
   check(await page.getByText('旧验收记录').isVisible(), '日期筛选未显示旧记录')
+  const oldRecord = page.locator('.run-record').filter({hasText:'旧验收记录'})
+  check((await oldRecord.textContent()).includes('存在失败'), '运行结果未区分失败')
+  await oldRecord.getByRole('button',{name:'查看本轮运行日志'}).click()
+  await page.getByText('受控本轮日志：总耗时 12 秒').waitFor({timeout:15000})
+  await page.getByRole('dialog', {name:'详细日志'}).getByRole('button',{name:'关闭'}).click()
   await page.getByLabel('合并模式').selectOption('week')
   check((await page.locator('.log-group h2').allTextContents()).every(text => /\d{4}-W\d{2}/.test(text)), '按周分组错误')
   await page.getByLabel('合并模式').selectOption('month')
@@ -65,6 +71,9 @@ async page => {
   await page.getByRole('alertdialog').getByRole('button',{name:'确认清理'}).click()
   await page.getByText('已清理 1 条详细日志。').waitFor({timeout:15000})
   check(await page.getByText('旧验收记录').isVisible(), '清理明细后运行记录丢失')
+  await oldRecord.getByRole('button',{name:'查看本轮运行日志'}).click()
+  await page.getByText('受控本轮日志：总耗时 12 秒').waitFor({timeout:15000})
+  await page.getByRole('dialog', {name:'详细日志'}).getByRole('button',{name:'关闭'}).click()
   check(await page.getByText('本轮日志摘要').isVisible(), '实时摘要区域不可见')
   await page.getByLabel('开始日期').fill('2099-12-31')
   await page.getByLabel('结束日期').fill('2099-01-01')

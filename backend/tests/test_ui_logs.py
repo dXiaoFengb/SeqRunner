@@ -26,6 +26,25 @@ def test_ocr_overlap_ignores_small_recognition_error_but_rejects_ambiguity():
 
 
 @pytest.mark.asyncio
+async def test_fallback_rebaselines_without_replaying_old_messages(tmp_path):
+    item = ItemRecord(task_id="t", task_name="测试")
+    seen = []
+    async def unavailable(_):
+        raise RuntimeError("控件不可读")
+    snapshots = iter(["旧内容\n", "旧内容\n新增\n"])
+    async def fallback(_):
+        return next(snapshots)
+    async def emit(text):
+        seen.append(text)
+    capture = WindowLogCapture(DetailLogs(tmp_path), item, OwnedProcess(1, 1), emit,
+                               unavailable, fallback_reader=fallback)
+    for _ in range(5):
+        await capture._poll()
+    assert seen == ["新增\n"]
+    assert "可能遗漏" in item.ui_log_status
+
+
+@pytest.mark.asyncio
 async def test_window_capture_baselines_and_preserves_only_new_text(tmp_path):
     store = DetailLogs(tmp_path)
     item = ItemRecord(task_id="t", task_name="测试")

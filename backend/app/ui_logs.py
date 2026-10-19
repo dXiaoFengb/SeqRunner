@@ -121,11 +121,14 @@ class WindowLogCapture:
                  reader: Callable[[OwnedProcess], Awaitable[str]] = read_march_window,
                  notify: Callable[[], Awaitable[None]] | None = None,
                  source: str = "脚本界面日志",
-                 matcher: Callable[[str, str], str | None] = appended) -> None:
+                 matcher: Callable[[str, str], str | None] = appended,
+                 fallback_reader: Callable[[OwnedProcess], Awaitable[str]] | None = None) -> None:
         self.store, self.item, self.process, self.emit, self.reader = store, item, process, emit, reader
         self.notify = notify
         self.source = source
         self.matcher = matcher
+        self.fallback_reader = fallback_reader
+        self.failures = 0
         self.previous: str | None = None
         self.interrupted = False
         self.discontinuous = False
@@ -140,6 +143,7 @@ class WindowLogCapture:
         old_status = self.item.ui_log_status
         try:
             current = await self.reader(self.process)
+            self.failures = 0
             if self.previous is None:
                 self.previous = current
                 if self.interrupted:
@@ -171,11 +175,19 @@ class WindowLogCapture:
                     await asyncio.to_thread(self.store.append, self.item.ui_log_id, delta[offset:offset + 4096])
                 await self.emit(delta)
         except (OSError, ValueError, TypeError, RuntimeError, TimeoutError) as error:
+            self.failures += 1
             if self.previous is not None:
                 self.interrupted = True
             detail = str(error) if isinstance(error, RuntimeError) and str(error) else "读取失败"
             self.item.ui_log_status = f"{self.source}读取暂停：{detail}；界面日志可能不完整"
             self.previous = None
+            if self.fallback_reader and self.failures >= 3:
+                self.reader, self.fallback_reader = self.fallback_reader, None
+                self.source = "画面识别（可能有错字或遗漏）"
+                self.matcher = ocr_appended
+                self.interrupted = True
+                self.failures = 0
+                self.item.ui_log_status = "已切换为画面识别；切换期间的内容可能遗漏"
         finally:
             if self.notify and self.item.ui_log_status != old_status:
                 await self.notify()

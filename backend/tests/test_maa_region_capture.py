@@ -126,6 +126,9 @@ async def test_ocr_reads_controlled_window_only(tmp_path):
         region = UiLogRegion(executable=psutil.Process(child.pid).exe(), window_class=candidate.window_class,
                              client_width=candidate.client_width, client_height=candidate.client_height,
                              x=0, y=0, width=candidate.client_width, height=candidate.client_height)
+        import base64
+        image = await run_helper("frame", owned, region)
+        assert base64.b64decode(image["image"]).startswith(b"\x89PNG\r\n\x1a\n")
         item = ItemRecord(task_id="controlled", task_name="受控窗口")
         output = []
 

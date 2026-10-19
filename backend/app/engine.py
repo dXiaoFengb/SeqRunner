@@ -288,6 +288,9 @@ class RunnerEngine:
                 await self._runner_task
 
     async def _run(self, record: RunRecord, tasks: list[TaskDefinition]) -> None:
+        from uuid import uuid4
+        record.run_log_id = str(uuid4())
+        await self._run_log(record, "本轮开始运行")
         try:
             for index, (item, task) in enumerate(zip(record.items, tasks, strict=True)):
                 if self._stop_requested.is_set():
@@ -298,6 +301,9 @@ class RunnerEngine:
                     break
             record.state = RunState.STOPPED if self._stop_requested.is_set() else RunState.COMPLETED
             record.ended_at = datetime.now(UTC)
+            elapsed = max(0, int((record.ended_at - record.started_at.astimezone(UTC)).total_seconds()))
+            result = "已停止" if record.state == RunState.STOPPED else ("全部成功" if self._run_succeeded(record) else "存在失败或未执行项")
+            await self._run_log(record, f"本轮{result}，总耗时 {elapsed} 秒")
         finally:
             self._active_task_id = None
             self._manual_accepting_task_id = None
@@ -466,18 +472,22 @@ class RunnerEngine:
         item.state = ItemState.WAITING_MANUAL if task.allow_manual_confirmation else ItemState.MONITORING
         self._manual_accepting_task_id = task.id if task.allow_manual_confirmation else None
         ui_capture = None
-        if self._owned_process and (task.preset_id == "march7th" or (task.preset_id == "maa" and task.ui_log_region)):
+        if self._owned_process and (task.preset_id == "march7th" or task.ui_log_region):
             async def emit_ui_log(text: str) -> None:
                 await self._publish_state()
                 await self.events.publish("script_log", {"runId": record.id, "taskId": task.id, "text": text})
 
-            if task.preset_id == "maa" and task.ui_log_region:
+            if task.ui_log_region:
                 async def read_maa(process: OwnedProcess) -> str:
                     return await read_maa_region(process, task.ui_log_region)
 
-                ui_capture = WindowLogCapture(self.detail_logs, item, self._owned_process, emit_ui_log,
-                                              reader=read_maa, notify=self._publish_state,
-                                              source="画面识别（可能有错字或遗漏）", matcher=ocr_appended)
+                if task.preset_id == "march7th":
+                    ui_capture = WindowLogCapture(self.detail_logs, item, self._owned_process, emit_ui_log,
+                                                  notify=self._publish_state, fallback_reader=read_maa)
+                else:
+                    ui_capture = WindowLogCapture(self.detail_logs, item, self._owned_process, emit_ui_log,
+                                                  reader=read_maa, notify=self._publish_state,
+                                                  source="画面识别（可能有错字或遗漏）", matcher=ocr_appended)
             else:
                 ui_capture = WindowLogCapture(self.detail_logs, item, self._owned_process, emit_ui_log,
                                               notify=self._publish_state)
@@ -695,9 +705,21 @@ class RunnerEngine:
         await self.events.publish("runtime", self.snapshot())
 
     async def _log(self, item: ItemRecord, text: str) -> None:
-        """Only expose the bounded per-item summary already stored in history."""
+        if self.current_run:
+            await self._run_log(self.current_run, f"{item.task_name}：{text}")
         self._logger.info("任务 %s (%s): %s", item.task_name, item.task_id, text)
         await self.events.publish("log", {"taskId": item.task_id, "message": text})
+
+    async def _run_log(self, record: RunRecord, text: str) -> None:
+        if not record.run_log_id:
+            return
+        try:
+            await asyncio.to_thread(self.detail_logs.append, record.run_log_id, text)
+            if not (record.run_log_status or "").startswith("本轮日志保存失败"):
+                record.run_log_status = "已采集"
+        except (OSError, ValueError) as error:
+            record.run_log_status = f"本轮日志保存失败：{error}"
+            self._logger.exception("本轮日志保存失败")
 
     def snapshot(self) -> dict:
         cooldown_seconds = 0

@@ -110,6 +110,24 @@ if ($Mode -eq 'select') {
     if ($null -eq $state.result) { @{canceled=$true} | ConvertTo-Json -Compress } else { $state.result | ConvertTo-Json -Compress }
     return
 }
+if ($Mode -eq 'frame') {
+    if (-not [RegionNative]::IsRegionVisible($handle, $origin.X, $origin.Y, $actualWidth, $actualHeight)) { throw '日志区域被遮挡或位于屏幕外' }
+    $frame = [System.Drawing.Bitmap]::new($actualWidth, $actualHeight)
+    try {
+        $g = [System.Drawing.Graphics]::FromImage($frame)
+        try { $g.CopyFromScreen($origin.X, $origin.Y, 0, 0, $frame.Size) } finally { $g.Dispose() }
+        CheckIdentity
+        $after = [RegionNative+POINT]::new()
+        $afterRect = [RegionNative+RECT]::new()
+        if (-not [RegionNative]::GetClientRect($handle, [ref]$afterRect) -or -not [RegionNative]::ClientToScreen($handle, [ref]$after) -or
+            $after.X -ne $origin.X -or $after.Y -ne $origin.Y -or $afterRect.Right -ne $actualWidth -or $afterRect.Bottom -ne $actualHeight -or
+            -not [RegionNative]::IsRegionVisible($handle, $origin.X, $origin.Y, $actualWidth, $actualHeight)) { throw '识别期间目标窗口位置或尺寸已改变' }
+        $memory = [System.IO.MemoryStream]::new()
+        try { $frame.Save($memory, [System.Drawing.Imaging.ImageFormat]::Png); @{image=[Convert]::ToBase64String($memory.ToArray())} | ConvertTo-Json -Compress }
+        finally { $memory.Dispose() }
+    } finally { $frame.Dispose() }
+    return
+}
 if ($Mode -ne 'ocr') { throw '不支持的操作' }
 if ($X -lt 0 -or $Y -lt 0 -or $Width -le 0 -or $Height -le 0 -or
     $X + $Width -gt $actualWidth -or $Y + $Height -gt $actualHeight) { throw '日志区域已失效' }

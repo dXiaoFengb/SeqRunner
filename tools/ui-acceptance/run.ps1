@@ -32,13 +32,14 @@ if ($Scenario -eq 'log') {
   $today = (Get-Date).Date
   $runs = @(
     @{ id='today'; queue_id='fixture-1'; queue_name='今日验收记录'; trigger_source='manual'; state='completed'; started_at=$today.AddHours(12).ToString('s'); items=@(); scheduler_skips=@('验收计划跳过') },
-    @{ id='old'; queue_id='fixture-2'; queue_name='旧验收记录'; trigger_source='manual'; state='completed'; started_at=$today.AddDays(-40).AddHours(12).ToString('s'); ended_at=$today.AddDays(-40).AddHours(13).ToString('s'); items=@(@{task_id='task';task_name='验收任务';state='failed';error_summary='受控失败';log_summary=@('受控摘要');detail_log_id='f6e372af-0e2c-4fd7-9434-f229c3a1643f';detail_log_status='已采集';ui_log_id='69220a50-b013-4b4c-8109-850c9c62daca';ui_log_status='已采集界面日志'}) }
+    @{ id='old'; queue_id='fixture-2'; queue_name='旧验收记录'; trigger_source='manual'; state='completed'; started_at=$today.AddDays(-40).AddHours(12).ToString('s'); ended_at=$today.AddDays(-40).AddHours(13).ToString('s'); run_log_id='9718cc60-639e-48c9-8875-069541d28b52'; run_log_status='已采集'; items=@(@{task_id='task';task_name='验收任务';state='failed';error_summary='受控失败';log_summary=@('受控摘要');detail_log_id='f6e372af-0e2c-4fd7-9434-f229c3a1643f';detail_log_status='已采集';ui_log_id='69220a50-b013-4b4c-8109-850c9c62daca';ui_log_status='已采集界面日志'}) }
   )
   @{ schema_version=3; runs=$runs } | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $dataPath 'history.json')
   $details = Join-Path $dataPath 'detail_logs'
   New-Item -ItemType Directory -Path $details | Out-Null
   '{"captured_at":"2026-01-01T00:00:00+00:00","text":"[2026-01-01 12:00:00.000][INF][Bootstrapper] <2> MaaAssistantArknights GUI started\n受控详细内容"}' | Set-Content -Encoding utf8NoBOM (Join-Path $details 'f6e372af-0e2c-4fd7-9434-f229c3a1643f.jsonl')
   '{"captured_at":"2026-01-01T00:00:00+00:00","text":"受控界面日志"}' | Set-Content -Encoding utf8NoBOM (Join-Path $details '69220a50-b013-4b4c-8109-850c9c62daca.jsonl')
+  '{"captured_at":"2026-01-01T00:00:00+00:00","text":"受控本轮日志：总耗时 12 秒"}' | Set-Content -Encoding utf8NoBOM (Join-Path $details '9718cc60-639e-48c9-8875-069541d28b52.jsonl')
 }
 $session = "runner-$runId"
 $process = $null; $attached = $false; $success = $false
