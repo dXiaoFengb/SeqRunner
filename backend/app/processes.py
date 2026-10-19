@@ -8,6 +8,19 @@ from dataclasses import dataclass
 import psutil
 
 
+def executable_running(executable: str) -> bool:
+    """只读比较可执行文件完整路径，不操作已有进程。"""
+    wanted = os.path.normcase(os.path.realpath(executable))
+    for process in psutil.process_iter(["exe"]):
+        try:
+            path = process.info.get("exe")
+            if path and os.path.normcase(os.path.realpath(path)) == wanted:
+                return True
+        except (psutil.Error, OSError):
+            continue
+    return False
+
+
 @dataclass(frozen=True)
 class OwnedProcess:
     pid: int

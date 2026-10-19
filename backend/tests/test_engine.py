@@ -8,7 +8,15 @@ import pytest
 
 from app.engine import ConfirmRejectedError, RunnerEngine, RunValidationError
 from app.events import EventHub
-from app.models import AppConfig, CompletionSource, MatchMode, QueueDefinition, TaskDefinition
+from app.models import (
+    AppConfig,
+    CompletionSource,
+    ItemRecord,
+    MatchMode,
+    QueueDefinition,
+    RunRecord,
+    TaskDefinition,
+)
 from app.storage import JsonStore
 
 
@@ -21,6 +29,23 @@ def build_engine(tmp_path: Path, tasks: list[TaskDefinition]) -> tuple[RunnerEng
 
 def python_task(name: str, source: str, *args: str) -> TaskDefinition:
     return TaskDefinition(name=name, executable=sys.executable, arguments=["-c", source, *args])
+
+
+@pytest.mark.asyncio
+async def test_existing_maa_is_reported_without_starting_or_stopping_it(tmp_path: Path, monkeypatch) -> None:
+    from app.processes import executable_running
+
+    task = python_task("MAA", "pass")
+    task.preset_id = "maa"
+    engine, _ = build_engine(tmp_path, [task])
+    item = ItemRecord(task_id=task.id, task_name=task.name)
+    record = RunRecord(queue_id="q", queue_name="q", trigger_source="manual", items=[item])
+    assert executable_running(sys.executable)
+    async def forbidden(*args, **kwargs):
+        pytest.fail("不应启动或停止已有进程")
+    monkeypatch.setattr("app.engine.asyncio.create_subprocess_exec", forbidden)
+    await engine._run_item_inner(record, item, task, has_next=False)
+    assert "程序已在运行，请先自行关闭后再运行" in (item.error_summary or "")
 
 
 @pytest.mark.asyncio

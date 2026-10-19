@@ -112,7 +112,8 @@ async def test_busy_plan_is_recorded_as_skipped_in_current_run(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_maa_adb_preflight_failure_is_warning_only(tmp_path: Path) -> None:
+async def test_maa_adb_preflight_failure_is_warning_only(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("app.engine.executable_running", lambda _: False)
     store = JsonStore(tmp_path / "data")
     engine = RunnerEngine(store, EventHub())
     target = TaskDefinition(name="MAA", executable=sys.executable, preset_id="maa", maa_adapter=MAAAdapterConfig(adb_executable="missing-adb.exe", adb_address="127.0.0.1:5555"))

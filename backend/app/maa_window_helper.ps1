@@ -160,7 +160,21 @@ try {
     if (-not [RegionNative]::IsRegionVisible($handle, $origin.X + $X, $origin.Y + $Y, $Width, $Height)) { throw '识别期间日志区域被遮挡' }
         $memory = [System.IO.MemoryStream]::new()
         try {
-            $bitmap.Save($memory, [System.Drawing.Imaging.ImageFormat]::Png)
+            # 放大小字以改善系统 OCR，同时遵守 Windows OCR 的最大图像尺寸。
+            $scale = [Math]::Min(2.0, [double][Windows.Media.Ocr.OcrEngine]::MaxImageDimension / [Math]::Max($Width, $Height))
+            if ($scale -gt 1.0) {
+                $enlarged = [System.Drawing.Bitmap]::new([int]($Width * $scale), [int]($Height * $scale))
+                try {
+                    $resize = [System.Drawing.Graphics]::FromImage($enlarged)
+                    try {
+                        $resize.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                        $resize.DrawImage($bitmap, 0, 0, $enlarged.Width, $enlarged.Height)
+                    } finally { $resize.Dispose() }
+                    $enlarged.Save($memory, [System.Drawing.Imaging.ImageFormat]::Png)
+                } finally { $enlarged.Dispose() }
+            } else {
+                $bitmap.Save($memory, [System.Drawing.Imaging.ImageFormat]::Png)
+            }
             $stream = [Windows.Storage.Streams.InMemoryRandomAccessStream]::new()
             $writer = [Windows.Storage.Streams.DataWriter]::new($stream)
             $writer.WriteBytes($memory.ToArray())

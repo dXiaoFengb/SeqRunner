@@ -100,17 +100,22 @@ def ocr_appended(previous: str, current: str) -> str | None:
         return ""
     old_lines = previous.splitlines()
     new_lines = current.splitlines(keepends=True)
+    def comparable(line: str) -> str:
+        return "".join(line.split())
+
+    old_normalized = [comparable(line) for line in old_lines]
+    new_normalized = [comparable(line) for line in new_lines]
     candidates = []
     for size in range(1, min(len(old_lines), len(new_lines)) + 1):
-        pairs = zip(old_lines[-size:], new_lines[:size], strict=True)
-        if all(len(a.strip()) >= 6 and len(b.strip()) >= 6 and
-               SequenceMatcher(None, a.strip(), b.strip(), autojunk=False).ratio() >= 0.9 for a, b in pairs):
+        pairs = zip(old_normalized[-size:], new_normalized[:size], strict=True)
+        if all(a and b and (a == b or (len(a) >= 6 and len(b) >= 6 and
+               SequenceMatcher(None, a, b, autojunk=False).ratio() >= 0.9)) for a, b in pairs):
             candidates.append(size)
     if len(candidates) != 1:
         return None
     size = candidates[0]
-    overlap = old_lines[-size:]
-    if sum(old_lines[index:index + size] == overlap for index in range(len(old_lines) - size + 1)) != 1:
+    overlap = old_normalized[-size:]
+    if sum(old_normalized[index:index + size] == overlap for index in range(len(old_lines) - size + 1)) != 1:
         return None
     return "".join(new_lines[size:])
 
@@ -131,6 +136,7 @@ class WindowLogCapture:
         self.failures = 0
         self.previous: str | None = None
         self.interrupted = False
+        self.reconnecting = False
         self.discontinuous = False
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
@@ -161,9 +167,14 @@ class WindowLogCapture:
             delta = self.matcher(self.previous, current)
             approximate = self.matcher is ocr_appended and appended(self.previous, current) is None and delta is not None
             self.previous = current
+            if self.reconnecting:
+                self.reconnecting = False
+                self.item.ui_log_status = f"已重新连接{self.source}；读取中断期间的内容可能遗漏"
             if delta is None:
                 self.discontinuous = True
-                self.item.ui_log_status = f"{self.source}发生清空或改写，无法确认期间的内容"
+                self.item.ui_log_status = (f"{self.source}发生清空或改写，无法确认期间的内容；"
+                                           "读取中断期间的内容可能遗漏" if self.interrupted else
+                                           f"{self.source}发生清空或改写，无法确认期间的内容")
                 return
             if approximate:
                 self.discontinuous = True
@@ -178,13 +189,14 @@ class WindowLogCapture:
             self.failures += 1
             if self.previous is not None:
                 self.interrupted = True
+                self.reconnecting = True
             detail = str(error) if isinstance(error, RuntimeError) and str(error) else "读取失败"
             self.item.ui_log_status = f"{self.source}读取暂停：{detail}；界面日志可能不完整"
-            self.previous = None
             if self.fallback_reader and self.failures >= 3:
                 self.reader, self.fallback_reader = self.fallback_reader, None
                 self.source = "画面识别（可能有错字或遗漏）"
                 self.matcher = ocr_appended
+                self.previous = None
                 self.interrupted = True
                 self.failures = 0
                 self.item.ui_log_status = "已切换为画面识别；切换期间的内容可能遗漏"
@@ -196,7 +208,7 @@ class WindowLogCapture:
         while not self.stopped.is_set():
             await self._poll()
             try:
-                await asyncio.wait_for(self.stopped.wait(), 1)
+                await asyncio.wait_for(self.stopped.wait(), 0.5 if self.matcher is ocr_appended else 1)
             except TimeoutError:
                 pass
 

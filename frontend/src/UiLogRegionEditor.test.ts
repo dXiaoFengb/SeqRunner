@@ -79,6 +79,8 @@ describe('界面日志区域', () => {
     expect(wrapper.get('.selection').attributes('style')).toContain('left: 15%')
     expect(wrapper.get('.selection').attributes('style')).toContain('top: 5%')
     expect(wrapper.get('.crop-frame img').attributes('style')).toContain('left: -30%')
+    expect(wrapper.get('.crop-frame').attributes('style')).toContain('aspect-ratio: 200 / 100')
+    expect(wrapper.get('.crop-image').attributes('style')).toContain('width: 62.5%')
     expect(wrapper.text()).toContain('实时日志')
     expect(model.ui_log_region).toEqual(region)
     wrapper.unmount()

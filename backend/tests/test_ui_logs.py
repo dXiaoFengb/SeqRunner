@@ -23,6 +23,33 @@ def test_ocr_overlap_ignores_small_recognition_error_but_rejects_ambiguity():
     assert ocr_appended(".baseline\n", "baseline\nnew line\n") == "new line\n"
     assert ocr_appended("same text\nsame text\n", "same text\nsame text\nnew line\n") == "new line\n"
     assert ocr_appended("same text\nsame text\n", "same text\nnew line\n") is None
+    assert ocr_appended("旧日志\n等待结束\n", "等待结束\n正在运行\n") == "正在运行\n"
+    assert ocr_appended("旧日志\n等待结束\n", "等 待 结 束\n正在运行\n") == "正在运行\n"
+    assert ocr_appended("等待结束\n等待结束\n", "等待结束\n正在运行\n") is None
+
+
+@pytest.mark.asyncio
+async def test_ocr_reconnect_recovers_proven_overlap(tmp_path):
+    snapshots = iter(["连接模拟器\n等待结束\n", RuntimeError("窗口被遮挡"),
+                      "等待结束\n正在运行\n"])
+    emitted = []
+
+    async def read(_):
+        value = next(snapshots)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    async def emit(text):
+        emitted.append(text)
+
+    item = ItemRecord(task_id="t", task_name="MAA")
+    capture = WindowLogCapture(DetailLogs(tmp_path), item, OwnedProcess(1, 1), emit, read,
+                               source="画面识别（可能有错字或遗漏）", matcher=ocr_appended)
+    for _ in range(3):
+        await capture._poll()
+    assert emitted == ["正在运行\n"]
+    assert "中断期间的内容可能遗漏" in item.ui_log_status
 
 
 @pytest.mark.asyncio

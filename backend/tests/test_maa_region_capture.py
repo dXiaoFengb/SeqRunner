@@ -158,17 +158,18 @@ async def test_select_region_on_controlled_window(monkeypatch, left, top):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="需要 Windows OCR 和可见的受控窗口")
+@pytest.mark.parametrize("baseline,added", [("baseline", "new line"), ("正在连接模拟器", "等待结束")])
 @pytest.mark.asyncio
-async def test_ocr_reads_controlled_window_only(tmp_path):
+async def test_ocr_reads_controlled_window_only(tmp_path, baseline, added):
     source = (Path(__file__).parent / "fixtures" / "ui_log_window.ps1").read_text(encoding="utf-8")
     trigger = (tmp_path / "append-now").as_posix().replace("'", "''")
     source = source.replace("$window.Left = -2000", "$window.Left = 120").replace(
         "$window.Top = -2000", "$window.Top = 120\n$window.Topmost = $true"
-    ).replace('$log.Text = "baseline`n"', '$log.FontSize = 32; $log.Text = "baseline`n"').replace(
+    ).replace('$log.Text = "baseline`n"', f'$log.FontSize = 22; $log.Background = "#181818"; $log.Foreground = "#FFD35A"; $log.Text = "{baseline}`n"').replace(
         "FromSeconds(5)", "FromMilliseconds(200)"
     ).replace(
         '$timer.Add_Tick({ $log.AppendText("new line`n"); $timer.Stop() })',
-        f'$timer.Add_Tick({{ if (Test-Path -LiteralPath \'{trigger}\') {{ $log.AppendText("new line`n"); $timer.Stop() }} }})',
+        f'$timer.Add_Tick({{ if (Test-Path -LiteralPath \'{trigger}\') {{ $log.AppendText("{added}`n"); $timer.Stop() }} }})',
     )
     child = await asyncio.create_subprocess_exec(
         "powershell.exe", "-NoProfile", "-STA", "-Command", source,
@@ -206,17 +207,18 @@ async def test_ocr_reads_controlled_window_only(tmp_path):
         capture = WindowLogCapture(store, item, owned, emit, reader, source="画面识别（可能有错字或遗漏）",
                                    matcher=ocr_appended)
         await capture._poll()
-        assert "baseline" in (capture.previous or "").lower()
+        normalize = lambda text: "".join(text.lower().split())
+        assert normalize(baseline) in normalize(capture.previous or "")
         initial = capture.previous
-        assert "newline" not in initial.lower().replace(" ", "")
+        assert normalize(added) not in normalize(initial)
         trigger_path = tmp_path / "append-now"
         trigger_path.write_text("go", encoding="utf-8")
         await asyncio.sleep(1)
         await capture._poll()
-        assert "newline" in "".join(output).lower().replace(" ", ""), (initial, capture.previous, item.ui_log_status)
-        assert "baseline" not in "".join(output).lower()
+        assert normalize(added) in normalize("".join(output)), (initial, capture.previous, item.ui_log_status)
+        assert normalize(baseline) not in normalize("".join(output))
         assert "画面识别" in item.ui_log_status
-        assert "newline" in store.page(item.ui_log_id, 0)["entries"][0]["text"].lower().replace(" ", "")
+        assert normalize(added) in normalize(store.page(item.ui_log_id, 0)["entries"][0]["text"])
     finally:
         if child.returncode is None:
             child.terminate()

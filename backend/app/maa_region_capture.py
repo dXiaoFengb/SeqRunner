@@ -17,11 +17,12 @@ async def run_helper(mode: str, process: OwnedProcess, region: UiLogRegion) -> d
         raise RuntimeError("当前系统不支持 Windows 界面日志采集")
     candidate = await asyncio.to_thread(find_owned_region_window, process, region)
     script = Path(__file__).with_name("maa_window_helper.ps1")
-    script_text = script.read_text(encoding="utf-8-sig")
+    script_path = str(script).replace("'", "''")
     # Arguments are fixed modes and validated numeric values, never user-provided PowerShell.
     if mode not in ("ocr", "select", "frame"):
         raise ValueError("无效的界面日志操作")
-    command = (f"try {{ & {{ {script_text} }} -Mode '{mode}' -WindowHandle {candidate.handle} "
+    command = (f"try {{ $source = [IO.File]::ReadAllText('{script_path}', [Text.Encoding]::UTF8); "
+               f"& ([ScriptBlock]::Create($source)) -Mode '{mode}' -WindowHandle {candidate.handle} "
                f"-TargetPid {process.pid} -Started {process.created_at:.6f} "
                f"-ClientWidth {region.client_width} -ClientHeight {region.client_height} "
                f"-X {region.x} -Y {region.y} -Width {region.width} -Height {region.height} "

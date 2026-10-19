@@ -28,6 +28,7 @@ from .presets import PRESETS
 from .processes import (
     OwnedProcess,
     capture_owned_process,
+    executable_running,
     force_stop_process_tree,
     process_tree_alive,
     request_graceful_close,
@@ -426,6 +427,9 @@ class RunnerEngine:
         executable = Path(task.executable)
         if not executable.exists():
             await self._fail_then_cool(item, "目标程序不存在", has_next=has_next, task=task)
+            return
+        if task.preset_id == "maa" and await asyncio.to_thread(executable_running, str(executable)):
+            await self._fail_then_cool(item, "程序已在运行，请先自行关闭后再运行", has_next=has_next, task=task)
             return
         watcher: LogWatcher | None = None
         if task.log_path:

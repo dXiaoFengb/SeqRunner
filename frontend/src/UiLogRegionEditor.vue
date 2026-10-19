@@ -96,7 +96,7 @@ function saveRegion() {
     <p role="status">{{ message }}</p>
     <div v-if="frame && activeRegion" class="visual-preview">
       <div><b>窗口与选区</b><div class="window-frame"><img :src="frame" alt="所选软件窗口实时画面"><span class="selection" :style="{ left: `${activeRegion.x / activeRegion.client_width * 100}%`, top: `${activeRegion.y / activeRegion.client_height * 100}%`, width: `${activeRegion.width / activeRegion.client_width * 100}%`, height: `${activeRegion.height / activeRegion.client_height * 100}%` }"></span></div></div>
-      <div><b>选区画面</b><div class="crop-frame" :style="{ aspectRatio: `${activeRegion.width} / ${activeRegion.height}` }"><img :src="frame" alt="日志区域实时画面" :style="{ width: `${activeRegion.client_width / activeRegion.width * 100}%`, maxWidth: 'none', left: `${-activeRegion.x / activeRegion.width * 100}%`, top: `${-activeRegion.y / activeRegion.height * 100}%` }"></div></div>
+      <div><b>选区画面</b><div class="crop-frame" :style="{ aspectRatio: `${activeRegion.client_width} / ${activeRegion.client_height}` }"><div class="crop-image" :style="{ aspectRatio: `${activeRegion.width} / ${activeRegion.height}`, width: `${Math.min(100, activeRegion.width / activeRegion.height * activeRegion.client_height / activeRegion.client_width * 100)}%` }"><img :src="frame" alt="日志区域实时画面" :style="{ width: `${activeRegion.client_width / activeRegion.width * 100}%`, maxWidth: 'none', left: `${-activeRegion.x / activeRegion.width * 100}%`, top: `${-activeRegion.y / activeRegion.height * 100}%` }"></div></div></div>
     </div>
     <div v-if="preview !== null" class="ui-region-preview">
       <b>识别预览</b><pre>{{ preview || '区域内暂无可识别文字。' }}</pre>
@@ -117,5 +117,7 @@ function saveRegion() {
 .window-frame, .crop-frame { position: relative; overflow: hidden; margin-top: 6px; background: #071018; border: 1px solid var(--line); }
 .window-frame img { display: block; width: 100%; }
 .selection { position: absolute; border: 2px solid #42baff; background: #42baff22; box-sizing: border-box; }
+.crop-frame { display: flex; align-items: center; justify-content: center; }
+.crop-image { position: relative; overflow: hidden; }
 .crop-frame img { position: absolute; }
 </style>
