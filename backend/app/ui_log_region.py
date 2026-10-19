@@ -41,7 +41,7 @@ def same_window_class(left: str, right: str) -> bool:
 
 
 def system_dpi_client_rect(user32, hwnd, rect) -> bool:
-    """Use the same system-DPI context as the selection and OCR helper."""
+    """Use physical pixels in the same per-monitor context as the helper."""
     import ctypes
     from ctypes import wintypes
 
@@ -50,7 +50,7 @@ def system_dpi_client_rect(user32, hwnd, rect) -> bool:
         return bool(user32.GetClientRect(hwnd, ctypes.byref(rect)))
     setter.argtypes = (wintypes.HANDLE,)
     setter.restype = wintypes.HANDLE
-    previous = setter(wintypes.HANDLE(-2))
+    previous = setter(wintypes.HANDLE(-4))
     if not previous:
         return False
     try:

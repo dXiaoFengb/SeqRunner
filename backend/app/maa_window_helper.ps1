@@ -2,14 +2,13 @@
       [int]$ClientWidth, [int]$ClientHeight, [int]$X = 0, [int]$Y = 0, [int]$Width = 0, [int]$Height = 0)
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Drawing
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class RegionNative {
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
-    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
@@ -17,6 +16,7 @@ public static class RegionNative {
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
     public delegate bool EnumProc(IntPtr hwnd, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
@@ -35,7 +35,8 @@ public static class RegionNative {
     }
 }
 '@
-[void][RegionNative]::SetProcessDPIAware()
+if ([RegionNative]::SetThreadDpiAwarenessContext([IntPtr]::new(-4)) -eq [IntPtr]::Zero) { throw '无法确认屏幕缩放，窗口读取已暂停' }
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Drawing
 $handle = [IntPtr]::new($WindowHandle)
 function CheckIdentity {
     [uint32]$windowPid = 0
@@ -74,9 +75,10 @@ if ($Mode -eq 'select') {
     $window.Add_SourceInitialized({
         $source = [System.Windows.PresentationSource]::FromVisual($window)
         $transform = $source.CompositionTarget.TransformFromDevice
-        $p = $transform.Transform([System.Windows.Point]::new($origin.X, $origin.Y))
         $s = $transform.Transform([System.Windows.Point]::new($actualWidth, $actualHeight))
-        $window.Left = $p.X; $window.Top = $p.Y; $window.Width = $s.X; $window.Height = $s.Y
+        $window.Width = $s.X; $window.Height = $s.Y
+        $overlay = [System.Windows.Interop.WindowInteropHelper]::new($window).Handle
+        if (-not [RegionNative]::SetWindowPos($overlay, [IntPtr]::Zero, $origin.X, $origin.Y, $actualWidth, $actualHeight, 0x0014)) { throw '无法定位框选区域' }
     })
     $state = @{start = $null; result = $null}
     $canvas.Add_MouseLeftButtonDown({ param($sender, $event)
@@ -97,8 +99,8 @@ if ($Mode -eq 'select') {
         $source = [System.Windows.PresentationSource]::FromVisual($window)
         $a = $source.CompositionTarget.TransformToDevice.Transform($state.start)
         $b = $source.CompositionTarget.TransformToDevice.Transform($p)
-        $left = [int][Math]::Floor([Math]::Min($a.X, $b.X)); $top = [int][Math]::Floor([Math]::Min($a.Y, $b.Y))
-        $right = [int][Math]::Ceiling([Math]::Max($a.X, $b.X)); $bottom = [int][Math]::Ceiling([Math]::Max($a.Y, $b.Y))
+        $left = [Math]::Max(0, [int][Math]::Floor([Math]::Min($a.X, $b.X))); $top = [Math]::Max(0, [int][Math]::Floor([Math]::Min($a.Y, $b.Y)))
+        $right = [Math]::Min($actualWidth, [int][Math]::Ceiling([Math]::Max($a.X, $b.X))); $bottom = [Math]::Min($actualHeight, [int][Math]::Ceiling([Math]::Max($a.Y, $b.Y)))
         if ($right - $left -ge 5 -and $bottom - $top -ge 5) {
             $state.result = @{x=$left; y=$top; width=$right-$left; height=$bottom-$top}
             $window.Close()

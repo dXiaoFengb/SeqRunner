@@ -18,10 +18,14 @@ const working = ref(false)
 const message = ref('请自行打开软件，然后选择窗口并框选日志区域。')
 watch(() => props.task.id, () => { generation++; windows.value = []; selected.value = null; pending.value = null; preview.value = null; frame.value = null })
 watch(() => props.task.executable, () => { generation++; clearTimeout(timer); windows.value = []; selected.value = null; pending.value = null; preview.value = null; frame.value = null; message.value = '程序路径已更改，请重新选择窗口并检查区域。' })
-watch([selected, activeRegion, () => props.busy], () => { generation++; frame.value = null; clearTimeout(timer); void refreshFrame(generation) })
+watch([selected, activeRegion, () => props.busy], () => { generation++; frame.value = null; preview.value = null; clearTimeout(timer); void refreshFrame(generation) })
 onBeforeUnmount(() => { unmounted = true; generation++; clearTimeout(timer) })
 function post(path: string, body: unknown) { return props.request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }
-function describe(error: unknown) { return error instanceof Error ? error.message : String(error) }
+function describe(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  try { const parsed = JSON.parse(message); if (typeof parsed.detail === 'string') return parsed.detail } catch { /* 普通错误消息 */ }
+  return message
+}
 async function refreshFrame(version: number) {
   const window = windows.value.find(item => item.handle === selected.value)
   const region = activeRegion.value
@@ -32,17 +36,20 @@ async function refreshFrame(version: number) {
     if (version === generation && !unmounted) frame.value = `data:image/png;base64,${result.image}`
     try {
       const recognized = await post('/api/ui-log/preview', { pid: window.pid, created_at: window.created_at, region })
-      if (version === generation && !unmounted) preview.value = recognized.text
+      if (version === generation && !unmounted) {
+        preview.value = recognized.text
+        if (message.value.startsWith('画面预览暂停：') || message.value.startsWith('识别预览暂停：')) message.value = '预览已恢复。'
+      }
     } catch (error) {
-      if (version === generation && !unmounted) { preview.value = null; message.value = `识别预览暂停：${describe(error)}` }
+      if (version === generation && !unmounted) { frame.value = null; preview.value = null; message.value = `识别预览暂停：${describe(error)}` }
     }
   } catch (error) {
-    if (version === generation && !unmounted) { frame.value = null; message.value = `画面预览暂停：${describe(error)}` }
+    if (version === generation && !unmounted) { frame.value = null; preview.value = null; message.value = `画面预览暂停：${describe(error)}` }
   }
   if (version === generation && !unmounted) timer = setTimeout(() => refreshFrame(version), 1500)
 }
 async function findWindows() {
-  working.value = true; pending.value = null; preview.value = null
+  generation++; clearTimeout(timer); working.value = true; pending.value = null; selected.value = null; frame.value = null; preview.value = null
   try {
     windows.value = await post('/api/ui-log/windows', { executable: props.task.executable })
     selected.value = windows.value.length === 1 ? windows.value[0].handle : null
@@ -75,7 +82,7 @@ function saveRegion() {
 
 <template>
   <div class="ui-region-editor">
-    <h4>界面日志区域</h4>
+    <h4>界面日志区域 <small>{{ task.preset_id === 'march7th' ? '支持界面文本读取；框选识别可作为备用。' : '可框选界面日志，使用本地画面识别。' }}</small></h4>
     <p>读取软件界面显示的日志；与上面的原始日志文件分开保存。仅支持用户选择的窗口，识别在本机进行。</p>
     <p>{{ task.ui_log_region ? '已设置日志区域；窗口尺寸变化会暂停读取，布局变化时请重新框选。' : '尚未设置日志区域。' }}</p>
     <div class="ui-region-actions">
@@ -100,6 +107,7 @@ function saveRegion() {
 
 <style scoped>
 .ui-region-editor h4 { margin: 0 0 8px; color: var(--ink); font-size: 16px; }
+.ui-region-editor h4 small { color: var(--muted); font-size: 12px; font-weight: normal; }
 .ui-region-editor p { margin: 8px 0; color: var(--muted); }
 .ui-region-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .ui-region-actions select { min-width: 180px; max-width: 100%; }

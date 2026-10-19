@@ -8,6 +8,32 @@ const windowCandidate = { handle: 3, pid: 12, created_at: 10, title: 'MAA', wind
 const region = { executable: 'C:\\MAA\\MAA.exe', window_class: 'test', client_width: 200, client_height: 100, x: 30, y: 5, width: 100, height: 80 }
 
 describe('界面日志区域', () => {
+  it('按预设提示可靠界面文本或画面识别', async () => {
+    const model = task()
+    const wrapper = mount(UiLogRegionEditor, { props: { task: model, busy: false, request: vi.fn() } })
+    expect(wrapper.text()).toContain('可框选界面日志，使用本地画面识别')
+    await wrapper.setProps({ task: { ...model, preset_id: 'march7th' } })
+    expect(wrapper.text()).toContain('支持界面文本读取；框选识别可作为备用')
+    await wrapper.setProps({ task: { ...model, preset_id: 'maa' } })
+    expect(wrapper.text()).toContain('可框选界面日志，使用本地画面识别')
+    wrapper.unmount()
+  })
+
+  it('显示可读的遮挡原因并清除旧预览', async () => {
+    const model = task(); model.ui_log_region = region
+    const request = vi.fn(async (path: string) => {
+      if (path.endsWith('/windows')) return [windowCandidate]
+      if (path.endsWith('/frame')) throw new Error('{"detail":"日志区域被遮挡或位于屏幕外"}')
+      return { text: '旧日志' }
+    })
+    const wrapper = mount(UiLogRegionEditor, { props: { task: model, busy: false, request } })
+    await wrapper.get('button').trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('画面预览暂停：日志区域被遮挡或位于屏幕外')
+    expect(wrapper.text()).not.toContain('{"detail"')
+    expect(wrapper.find('.visual-preview').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('旧日志')
+    wrapper.unmount()
+  })
   it('仅在预览后确认时保存区域', async () => {
     const model = task()
     const request = vi.fn(async (path: string) => {
@@ -50,6 +76,9 @@ describe('界面日志区域', () => {
     const wrapper = mount(UiLogRegionEditor, { props: { task: model, busy: false, request } })
     await wrapper.get('button').trigger('click'); await flushPromises()
     expect(wrapper.find('.selection').exists()).toBe(true)
+    expect(wrapper.get('.selection').attributes('style')).toContain('left: 15%')
+    expect(wrapper.get('.selection').attributes('style')).toContain('top: 5%')
+    expect(wrapper.get('.crop-frame img').attributes('style')).toContain('left: -30%')
     expect(wrapper.text()).toContain('实时日志')
     expect(model.ui_log_region).toEqual(region)
     wrapper.unmount()

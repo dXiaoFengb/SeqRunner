@@ -15,14 +15,64 @@ from app.ui_logs import WindowLogCapture, ocr_appended
 
 @pytest.mark.skipif(os.name != "nt", reason="需要 Windows 受控窗口")
 @pytest.mark.asyncio
-async def test_select_region_on_controlled_window(monkeypatch):
+async def test_frame_contains_controlled_window_pixels():
+    import psutil
+
+    source = (Path(__file__).parent / "fixtures" / "ui_log_window.ps1").read_text(encoding="utf-8")
+    source = source.replace("$window.Left = -2000", "$window.Left = 120").replace(
+        "$window.Top = -2000", "$window.Top = 120\n$window.Topmost = $true"
+    ).replace("$window.Content = $panel", "$window.Background = [System.Windows.Media.Brushes]::Magenta")
+    child = await asyncio.create_subprocess_exec(
+        "powershell.exe", "-NoProfile", "-STA", "-Command", source,
+        stderr=asyncio.subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    try:
+        owned = await capture_owned_process(child.pid)
+        for _ in range(30):
+            windows = await asyncio.to_thread(list_windows_for_executable, psutil.Process(child.pid).exe())
+            windows = [window for window in windows if window.pid == child.pid]
+            if windows:
+                break
+            await asyncio.sleep(0.2)
+        assert len(windows) == 1
+        window = windows[0]
+        region = UiLogRegion(executable=psutil.Process(child.pid).exe(), window_class=window.window_class,
+                             client_width=window.client_width, client_height=window.client_height,
+                             x=0, y=0, width=window.client_width, height=window.client_height)
+        frame = await run_helper("frame", owned, region)
+        check = ("Add-Type -AssemblyName System.Drawing; "
+                 "$bytes=[Convert]::FromBase64String([Console]::In.ReadToEnd()); "
+                 "$s=[IO.MemoryStream]::new($bytes); $b=[Drawing.Bitmap]::new($s); "
+                 "$points=@(@(5,5),@(($b.Width-6),5),@(5,($b.Height-6)),"
+                 "@(($b.Width-6),($b.Height-6)),@([int]($b.Width/2),[int]($b.Height/2))); "
+                 "foreach($q in $points){$p=$b.GetPixel([int]$q[0],[int]$q[1]); "
+                 "Write-Output ($p.R.ToString()+','+$p.G.ToString()+','+$p.B.ToString())}; $b.Dispose(); $s.Dispose()")
+        decoder = await asyncio.create_subprocess_exec("powershell.exe", "-NoProfile", "-Command", check,
+                                                       stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                                                       creationflags=subprocess.CREATE_NO_WINDOW)
+        output, _ = await decoder.communicate(frame["image"].encode())
+        assert decoder.returncode == 0
+        assert output.decode().splitlines() == ["255,0,255"] * 5
+    finally:
+        if child.returncode is None:
+            child.terminate()
+        await child.wait()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="需要 Windows 受控窗口")
+@pytest.mark.parametrize("left,top", [(120, 120), (-1200, -250)])
+@pytest.mark.asyncio
+async def test_select_region_on_controlled_window(monkeypatch, left, top):
     import ctypes
     from ctypes import wintypes
 
     import psutil
 
+    if left < 0 and (ctypes.windll.user32.GetSystemMetrics(80) < 2 or ctypes.windll.user32.GetSystemMetrics(76) > -1200):
+        pytest.skip("未连接足够宽的左侧显示器")
+
     source = (Path(__file__).parent / "fixtures" / "ui_log_window.ps1").read_text(encoding="utf-8")
-    source = source.replace("$window.Left = -2000", "$window.Left = 120").replace("$window.Top = -2000", "$window.Top = 120")
+    source = source.replace("$window.Left = -2000", f"$window.Left = {left}").replace("$window.Top = -2000", f"$window.Top = {top}")
     create = asyncio.create_subprocess_exec
     target = await create("powershell.exe", "-NoProfile", "-STA", "-Command", source,
                           stderr=asyncio.subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -73,6 +123,18 @@ async def test_select_region_on_controlled_window(monkeypatch):
             await asyncio.sleep(0.1)
         assert len(handles) == 1
         hwnd = handles[0]
+        user32.SetThreadDpiAwarenessContext.argtypes = (wintypes.HANDLE,)
+        user32.SetThreadDpiAwarenessContext.restype = wintypes.HANDLE
+        user32.ClientToScreen.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.POINT))
+        user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+        dpi_context = user32.SetThreadDpiAwarenessContext(wintypes.HANDLE(-4))
+        assert dpi_context
+        origin = wintypes.POINT(0, 0)
+        bounds = wintypes.RECT()
+        assert user32.ClientToScreen(candidate.handle, ctypes.byref(origin))
+        assert user32.GetWindowRect(hwnd, ctypes.byref(bounds))
+        assert (bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top) == (
+            origin.x, origin.y, candidate.client_width, candidate.client_height)
         point = wintypes.POINT(20, 20)
         previous = wintypes.POINT()
         user32.GetCursorPos(ctypes.byref(previous))
@@ -85,7 +147,9 @@ async def test_select_region_on_controlled_window(monkeypatch):
         user32.mouse_event(0x0004, 0, 0, 0, 0)
         user32.SetCursorPos(previous.x, previous.y)
         result = await asyncio.wait_for(task, 10)
-        assert result["width"] > 0 and result["height"] > 0
+        assert abs(result["x"] - 20) <= 2 and abs(result["y"] - 20) <= 2
+        assert abs(result["width"] - 100) <= 2 and abs(result["height"] - 50) <= 2
+        user32.SetThreadDpiAwarenessContext(dpi_context)
     finally:
         for process in helper + [target]:
             if process.returncode is None:

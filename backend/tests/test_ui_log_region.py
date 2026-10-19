@@ -103,7 +103,8 @@ async def test_finds_controlled_window_only_for_current_process():
         name = ctypes.create_unicode_buffer(256)
         assert ctypes.windll.user32.GetClassNameW(handle, name, len(name))
         rect = wintypes.RECT()
-        assert ctypes.windll.user32.GetClientRect(handle, ctypes.byref(rect))
+        from app.ui_log_region import system_dpi_client_rect
+        assert system_dpi_client_rect(ctypes.windll.user32, handle, rect)
         configured = region(executable=process.exe(), window_class=name.value,
                             client_width=rect.right, client_height=rect.bottom, x=0, y=0, width=1, height=1)
         assert find_owned_region_window(owned, configured).handle == handle

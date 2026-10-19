@@ -50,6 +50,7 @@ async def run_helper(mode: str, process: OwnedProcess, region: UiLogRegion) -> d
             raw = stderr.decode("utf-8", errors="replace")
         reasons = ("目标窗口不可见或已最小化", "日志区域已失效", "日志区域被遮挡或位于屏幕外",
                    "识别期间日志区域被遮挡", "Windows 中文 OCR 不可用", "目标窗口身份已变化",
+                   "无法确认屏幕缩放，窗口读取已暂停", "无法定位框选区域",
                    "窗口客户区尺寸已改变，请重新框选", "识别期间目标窗口位置或尺寸已改变")
         raise RuntimeError(next((reason for reason in reasons if reason in raw), "窗口选择或本地 OCR 失败"))
     try:
