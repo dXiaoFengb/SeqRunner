@@ -11,7 +11,11 @@ from app.main import create_app
 def test_health_returns_the_startup_instance_and_development_cors(tmp_path) -> None:
     with TestClient(create_app(tmp_path / "data", instance_id="this-instance")) as client:
         response = client.get("/health", headers={"Origin": "http://127.0.0.1:5173"})
-    assert response.json() == {"status": "ok", "instanceId": "this-instance"}
+    assert response.json() == {
+        "status": "ok",
+        "instanceId": "this-instance",
+        "scheduler": {"status": "healthy", "lastError": None, "failedAt": None},
+    }
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
 
 

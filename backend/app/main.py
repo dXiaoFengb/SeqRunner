@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import UTC, date, datetime
@@ -109,6 +110,69 @@ def validate_schedule_plans(config: AppConfig) -> None:
         raise ValueError("；".join(problems))
 
 
+class SchedulerHealth:
+    """Keep scheduler failures observable without making the API unavailable."""
+
+    def __init__(self) -> None:
+        self.status = "healthy"
+        self.last_error: str | None = None
+        self.failed_at: str | None = None
+
+    def mark_degraded(self, phase: str, error: Exception) -> None:
+        self.status = "degraded"
+        self.last_error = f"{phase}: {type(error).__name__}"
+        self.failed_at = datetime.now(UTC).isoformat()
+
+    def mark_healthy(self) -> None:
+        self.status = "healthy"
+        self.last_error = None
+        self.failed_at = None
+
+    def snapshot(self) -> dict[str, str | None]:
+        return {
+            "status": self.status,
+            "lastError": self.last_error,
+            "failedAt": self.failed_at,
+        }
+
+
+async def _report_scheduler_failure(
+    health: SchedulerHealth, hub: EventHub, logger: logging.Logger, phase: str, error: Exception
+) -> None:
+    health.mark_degraded(phase, error)
+    label = "启动计划检查" if phase == "startup" else "定时调度检查"
+    logger.exception("%s失败", label)
+    try:
+        await hub.publish(
+            "schedule",
+            {"planId": None, "message": f"{label}异常，下一轮会自动重试（{type(error).__name__}）"},
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("调度错误通知失败")
+
+
+async def _run_scheduler_loop(
+    scheduler: QueueScheduler,
+    health: SchedulerHealth,
+    hub: EventHub,
+    logger: logging.Logger,
+    *,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> None:
+    while True:
+        try:
+            await scheduler.tick(datetime.now(UTC).astimezone())
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001 - 后台调度异常不能终止后续检查。
+            await _report_scheduler_failure(health, hub, logger, "tick", error)
+        else:
+            health.mark_healthy()
+        await sleep(60)
+
+
 def create_app(data_directory: Path | None = None, *, instance_id: str = "development") -> FastAPI:
     root = data_directory or Path(__file__).resolve().parents[2] / "data"
     logs = root / "logs"
@@ -120,14 +184,10 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
     hub = EventHub()
     engine = RunnerEngine(JsonStore(root), hub, logger=logger)
     scheduler = QueueScheduler(engine)
+    scheduler_health = SchedulerHealth()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        async def timer_loop() -> None:
-            while True:
-                await scheduler.tick(__import__("datetime").datetime.now())
-                await asyncio.sleep(60)
-
         async def archive_loop() -> None:
             while True:
                 try:
@@ -143,8 +203,13 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
                     logger.exception("详细日志维护失败")
                 await asyncio.sleep(3600)
 
-        await scheduler.run_startup_once()
-        task = asyncio.create_task(timer_loop())
+        try:
+            await scheduler.run_startup_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001 - 启动计划异常不能阻止服务启动。
+            await _report_scheduler_failure(scheduler_health, hub, logger, "startup", error)
+        task = asyncio.create_task(_run_scheduler_loop(scheduler, scheduler_health, hub, logger))
         archive_task = asyncio.create_task(archive_loop())
         try:
             yield
@@ -158,6 +223,7 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
     app.state.engine = engine
     app.state.events = hub
     app.state.instance_id = instance_id
+    app.state.scheduler_health = scheduler_health
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173", "null"],
@@ -168,7 +234,11 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
 
     @app.get("/health")
     async def health():
-        return {"status": "ok", "instanceId": app.state.instance_id}
+        return {
+            "status": "ok",
+            "instanceId": app.state.instance_id,
+            "scheduler": app.state.scheduler_health.snapshot(),
+        }
 
     @app.get("/api/presets")
     async def presets():
