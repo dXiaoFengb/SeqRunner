@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from .engine import RunBusyError, RunnerEngine, RunValidationError
-from .models import SchedulePlan, StartupMode
+from .models import AppConfig, SchedulePlan, StartupMode
 
 
 class QueueScheduler:
@@ -12,6 +12,7 @@ class QueueScheduler:
     def __init__(self, engine: RunnerEngine) -> None:
         self.engine = engine
         self._startup_triggered = False
+        self._pending_fired_slots: set[str] = set()
 
     async def run_startup_once(self) -> None:
         """本次后端启动只检查一次启动计划，且依旧交给同一执行器。"""
@@ -29,8 +30,16 @@ class QueueScheduler:
         try:
             await self.engine.start_plan(plan.id, "startup", local_now)
             if plan.startup_mode == StartupMode.DAILY_FIRST:
-                self.engine.config.startup_fired_dates[plan.id] = today
-                await self.engine.save_config()
+                def mark_startup_fired(candidate: AppConfig) -> None:
+                    candidate.startup_fired_dates[plan.id] = today
+
+                try:
+                    await self.engine.update_config(mark_startup_fired)
+                except OSError as error:
+                    await self.engine.events.publish(
+                        "schedule",
+                        {"planId": plan.id, "message": f"启动计划已执行，但每日标记保存失败：{error}"},
+                    )
         except RunBusyError:
             await self.engine.record_schedule_skip(plan, datetime.now(UTC))
         except (RunValidationError, StopIteration) as error:
@@ -39,8 +48,7 @@ class QueueScheduler:
     async def tick(self, now: datetime) -> None:
         current = now.replace(second=0, microsecond=0)
         window_start = current - timedelta(minutes=10)
-        fired = set(self.engine.config.fired_slots)
-        changed = False
+        fired = set(self.engine.config.fired_slots) | self._pending_fired_slots
         candidates: list[tuple[datetime, int, SchedulePlan]] = []
         for plan_index, plan in enumerate(self.engine.config.plans):
             if not plan.scheduled_enabled:
@@ -58,7 +66,7 @@ class QueueScheduler:
                 continue
             # 一个队列同一检查只启动一次；其余同刻槽位一起标记。
             fired.update(key for _, key in new_keys)
-            changed = True
+            self._pending_fired_slots.update(key for _, key in new_keys)
             candidates.append((min(minute for minute, _ in new_keys), plan_index, plan))
 
         # 计划卡顺序只影响界面；恢复窗口内的定时项始终按实际预定时刻处理。
@@ -72,9 +80,21 @@ class QueueScheduler:
                 await self.engine.record_schedule_skip(plan, due_at)
             except (RunValidationError, StopIteration) as error:
                 await self.engine.events.publish("schedule", {"planId": plan.id, "message": f"定时计划未执行：{error}"})
-        if changed:
-            self.engine.config.fired_slots = sorted(fired)[-1000:]
-            await self.engine.save_config()
+        if self._pending_fired_slots:
+            pending = set(self._pending_fired_slots)
+
+            def persist_fired_slots(candidate: AppConfig) -> None:
+                candidate.fired_slots = sorted(set(candidate.fired_slots) | pending)[-1000:]
+
+            try:
+                await self.engine.update_config(persist_fired_slots)
+            except OSError as error:
+                await self.engine.events.publish(
+                    "schedule",
+                    {"planId": None, "message": f"定时触发标记保存失败：{error}"},
+                )
+            else:
+                self._pending_fired_slots.difference_update(pending)
 
     @staticmethod
     def _minutes_between(start: datetime, end: datetime):

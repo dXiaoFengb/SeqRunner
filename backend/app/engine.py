@@ -4,9 +4,10 @@ import asyncio
 import copy
 import logging
 import os
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeVar
 
 from .completion_actions import CompletionActionDispatcher
 from .detail_logs import DetailCapture, DetailLogs
@@ -14,6 +15,7 @@ from .events import EventHub
 from .logwatch import LogSignal, LogWatcher
 from .maa_region_capture import read_maa_region
 from .models import (
+    AppConfig,
     CompletionAction,
     CompletionSource,
     ItemRecord,
@@ -57,6 +59,9 @@ class _CompletionCancelled(Exception):
     pass
 
 
+ConfigUpdateResult = TypeVar("ConfigUpdateResult")
+
+
 class RunnerEngine:
     """单一运行器；配置在每轮开始时深拷贝，防止热更新改变执行顺序。"""
 
@@ -93,14 +98,29 @@ class RunnerEngine:
         self._completion_cancel = asyncio.Event()
         self._pending_completion: dict[str, object] | None = None
         self._logger = logger or logging.getLogger("sequential-runner")
+        self._config_lock = asyncio.Lock()
 
     @property
     def is_busy(self) -> bool:
         return self._runner_task is not None and not self._runner_task.done()
 
-    async def save_config(self) -> None:
-        self.store.save_config(self.config)
-        await self.events.publish("config", self.config.model_dump(mode="json"))
+    async def replace_config(self, candidate: AppConfig) -> None:
+        """持久化成功后才替换运行中的配置并通知订阅者。"""
+        async with self._config_lock:
+            committed = candidate.model_copy(deep=True)
+            self.store.save_config(committed)
+            self.config = committed
+            await self.events.publish("config", committed.model_dump(mode="json"))
+
+    async def update_config(self, update: Callable[[AppConfig], ConfigUpdateResult]) -> ConfigUpdateResult:
+        """在最新配置副本上提交一项小变更，避免并发追加相互覆盖。"""
+        async with self._config_lock:
+            candidate = self.config.model_copy(deep=True)
+            result = update(candidate)
+            self.store.save_config(candidate)
+            self.config = candidate
+            await self.events.publish("config", candidate.model_dump(mode="json"))
+            return result
 
     def queue_by_id(self, queue_id: str) -> QueueDefinition:
         return next(queue for queue in self.config.queues if queue.id == queue_id)

@@ -233,8 +233,7 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
         try:
             validate_single_software_config(config)
             validate_schedule_plans(config)
-            engine.config = config
-            await engine.save_config()
+            await engine.replace_config(config)
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
         except OSError as error:
@@ -243,21 +242,25 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
 
     @app.post("/api/queues", response_model=QueueDefinition)
     async def add_queue(queue: QueueDefinition):
-        candidate = engine.config.model_copy(deep=True)
-        candidate.queues.append(queue)
         try:
-            validate_single_software_config(candidate)
-            validate_schedule_plans(candidate)
+            def append_queue(candidate: AppConfig) -> None:
+                candidate.queues.append(queue.model_copy(deep=True))
+                validate_single_software_config(candidate)
+                validate_schedule_plans(candidate)
+
+            await engine.update_config(append_queue)
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
-        engine.config = candidate
-        await engine.save_config()
+        except OSError as error:
+            raise HTTPException(500, f"配置保存失败，原配置未被覆盖：{error}") from error
         return queue
 
     @app.post("/api/tasks", response_model=TaskDefinition)
     async def add_task(task: TaskDefinition):
-        engine.config.tasks.append(task)
-        await engine.save_config()
+        try:
+            await engine.update_config(lambda candidate: candidate.tasks.append(task.model_copy(deep=True)))
+        except OSError as error:
+            raise HTTPException(500, f"配置保存失败，原配置未被覆盖：{error}") from error
         return task
 
     @app.post("/api/start")
