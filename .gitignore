@@ -21,11 +21,8 @@ dist-electron/
 build/
 release/
 portable/
-/portable-validation/
-/portable-validation-v012/
-/portable-validation-v012-r2/
-/portable-validation-v012-r3/
-/portable-validation-v*/
+/产物/工作/
+/产物/验证/
 backend/build/
 backend/dist/
 coverage/
@@ -47,6 +44,7 @@ coverage/
 /backend/.test-tmp*/
 /.portable-health-*.txt
 /node-compile-cache/
+/.commit-evidence/
 
 # 本地环境和凭证
 .env

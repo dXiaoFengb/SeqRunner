@@ -13,7 +13,10 @@
     "package:backend": "backend\\.venv\\Scripts\\python.exe -m PyInstaller --noconfirm --clean --distpath portable\\backend --workpath build\\pyinstaller backend\\sequential_runner_backend.spec",
     "package:win": "npm run build && npm run package:backend && node scripts/package-portable.cjs",
     "package:backend:validation": "node scripts/package-backend-validation.cjs",
-    "package:validation": "npm run build && npm run package:backend:validation && node scripts/package-portable.cjs --validation"
+    "package:validation:prepare": "npm run build && npm run package:backend:validation && cross-env RUNNER_VALIDATION_PREPARED=1 node scripts/package-portable.cjs --validation",
+    "validation:health": "pwsh -NoProfile -File scripts/validate-validation-package.ps1",
+    "validation:finalize": "node scripts/finalize-validation-package.cjs",
+    "package:validation": "npm run package:validation:prepare && npm run validation:health && npm run validation:finalize"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "6.0.1",

@@ -1,20 +1,12 @@
 {
   "appId": "local.sequential-task-runner",
   "productName": "顺序任务调度器",
-  "directories": {
-    "output": "portable-validation-v023/electron"
-  },
   "files": [
     "frontend-dist/**",
     "electron/**",
     "package.json",
-    "VERSION.md"
-  ],
-  "extraResources": [
-    {
-      "from": "portable-validation-v023/backend/sequential-runner-backend.exe",
-      "to": "backend/sequential-runner-backend.exe"
-    }
+    "VERSION.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "win": {
     "target": [
