@@ -44,10 +44,10 @@ class DetailLogs:
             opener = gzip.open if path == packed else open
             with opener(path, "rb") as stream:
                 stream.seek(offset)
-                # 每条记录由 16 KB 以下的源数据形成，页边界对齐 JSON 行。
+                # 页边界对齐 JSON 行；单条记录可超过页目标，仍必须完整读取。
                 data = bytearray()
                 while len(data) < limit:
-                    line = stream.readline(128 * 1024)
+                    line = stream.readline()
                     if not line:
                         break
                     data.extend(line)
@@ -181,8 +181,10 @@ class DetailCapture:
                             break
                     except OSError:
                         continue
+            self._reset_decoder()
             self.offset = 0
         elif stat.st_size < self.offset or self._anchor_changed():
+            self._reset_decoder()
             self.offset = 0
         self.identity = identity
         self.offset = self._consume(self.source, self.offset)
@@ -208,6 +210,12 @@ class DetailCapture:
             while chunk := stream.read(16384):
                 self.store.append(self.item.detail_log_id, self.decoder.decode(chunk))
             return stream.tell()
+
+    def _reset_decoder(self) -> None:
+        """Flush an unfinished old file before beginning a replacement file."""
+        tail = self.decoder.decode(b"", final=True)
+        self.store.append(self.item.detail_log_id, tail)
+        self.decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
     async def _loop(self) -> None:
         while not self.stopped.is_set():
