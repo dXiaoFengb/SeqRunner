@@ -57,6 +57,16 @@ class RegionWindowIn(BaseModel):
     region: UiLogRegion
 
 
+def cleanup_identifiers(items: list) -> set[str]:
+    """Return every captured-log identifier that a cleanup request may delete."""
+    return {
+        identifier
+        for item in items
+        for identifier in (item.detail_log_id, item.ui_log_id)
+        if identifier
+    }
+
+
 def validate_single_software_config(config: AppConfig) -> None:
     task_ids = {task.id for task in config.tasks}
     problems: list[str] = []
@@ -409,12 +419,16 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
     @app.post("/api/history/detail-cleanup/preview")
     async def preview_detail_cleanup(payload: DetailCleanupIn):
         items = engine.detail_logs.matching(engine.history, payload.cutoff)
-        return {"count": len(items), "cutoff": payload.cutoff.isoformat(), "ids": [item.detail_log_id or item.ui_log_id for item in items]}
+        return {
+            "count": len(items),
+            "cutoff": payload.cutoff.isoformat(),
+            "ids": sorted(cleanup_identifiers(items)),
+        }
 
     @app.post("/api/history/detail-cleanup")
     async def cleanup_details(payload: DetailCleanupIn):
         items = engine.detail_logs.matching(engine.history, payload.cutoff)
-        if payload.ids is None or set(payload.ids) != {item.detail_log_id or item.ui_log_id for item in items}:
+        if payload.ids is None or set(payload.ids) != cleanup_identifiers(items):
             raise HTTPException(409, "清理范围已变化，请重新预览")
         removed = 0
         for item in items:
@@ -474,4 +488,20 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
     return app
 
 
-app = create_app()
+_default_app: FastAPI | None = None
+
+
+def default_app() -> FastAPI:
+    """Create the legacy ``app.main:app`` application only when ASGI receives a request."""
+    global _default_app
+    if _default_app is None:
+        _default_app = create_app()
+    return _default_app
+
+
+class LazyDefaultApp:
+    async def __call__(self, scope, receive, send) -> None:
+        await default_app()(scope, receive, send)
+
+
+app = LazyDefaultApp()

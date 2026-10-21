@@ -1,4 +1,8 @@
+import os
+import subprocess
+import sys
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -76,6 +80,16 @@ def test_archive_paging_and_cleanup_selection(tmp_path):
     assert not store.path(item.detail_log_id, True).exists()
 
 
+def test_page_keeps_a_single_long_jsonl_record_intact_for_raw_and_gzip(tmp_path):
+    store = DetailLogs(tmp_path)
+    identifier = "f6e372af-0e2c-4fd7-9434-f229c3a1643f"
+    text = "测" * 140_000
+    store.append(identifier, text)
+    assert store.page(identifier, 0)["entries"][0]["text"] == text
+    store._archive_one(identifier)
+    assert store.page(identifier, 0)["entries"][0]["text"] == text
+
+
 def test_run_log_retained_through_detail_cleanup_and_archived(tmp_path):
     store = DetailLogs(tmp_path)
     identifier = "f6e372af-0e2c-4fd7-9434-f229c3a1643f"
@@ -127,6 +141,66 @@ def test_api_preview_cleanup_and_paged_read(tmp_path):
         assert item.detail_log_status == "详细日志已清理"
 
 
+def test_api_cleanup_rejects_any_identifier_changed_after_preview(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    app = create_app(tmp_path / "data")
+    engine = app.state.engine
+    detail_id = "f6e372af-0e2c-4fd7-9434-f229c3a1643f"
+    ui_id = "69220a50-b013-4b4c-8109-850c9c62daca"
+    item = ItemRecord(task_id="t", task_name="程序", detail_log_id=detail_id, ui_log_id=ui_id)
+    run = RunRecord(
+        queue_id="q",
+        queue_name="队列",
+        trigger_source="manual",
+        ended_at=datetime(2026, 1, 1, tzinfo=UTC),
+        items=[item],
+    )
+    engine.history.runs = [run]
+    engine.detail_logs.append(detail_id, "原始明细日志")
+    engine.detail_logs.append(ui_id, "原始界面日志")
+    with TestClient(app) as client:
+        preview = client.post("/api/history/detail-cleanup/preview", json={"cutoff": "2026-01-03"}).json()
+        assert set(preview["ids"]) == {detail_id, ui_id}
+        item.ui_log_id = "d9bc2a22-5d4b-4511-a4cf-a6f3e94c8780"
+        engine.detail_logs.append(item.ui_log_id, "预览后新增的界面日志")
+        response = client.post(
+            "/api/history/detail-cleanup",
+            json={"cutoff": "2026-01-03", "ids": preview["ids"]},
+        )
+    assert response.status_code == 409
+    for identifier in (detail_id, ui_id, item.ui_log_id):
+        assert engine.detail_logs.path(identifier).is_file() or engine.detail_logs.path(identifier, True).is_file()
+
+
+def test_importing_main_does_not_create_default_app_or_data_directory():
+    backend = Path(__file__).resolve().parents[1]
+    program = """
+import logging
+from pathlib import Path
+
+def fail(*args, **kwargs):
+    raise AssertionError('import must not initialize the default application')
+
+Path.mkdir = fail
+logging.FileHandler = fail
+import app.main
+assert callable(app.main.app)
+"""
+    environment = os.environ | {"PYTHONPATH": str(backend)}
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=backend,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.asyncio
 async def test_rewrite_larger_than_previous_size_is_detected(tmp_path):
     source = tmp_path / "source.log"
@@ -139,6 +213,31 @@ async def test_rewrite_larger_than_previous_size_is_detected(tmp_path):
     capture._read()
     await capture.finish()
     assert content(store, item.detail_log_id) == "brand new, longer text"
+
+
+@pytest.mark.asyncio
+async def test_rotation_and_rewrite_do_not_join_incomplete_utf8_bytes(tmp_path):
+    source = tmp_path / "source.log"
+    source.write_bytes(b"")
+    store = DetailLogs(tmp_path)
+    item = ItemRecord(task_id="t", task_name="程序")
+    capture = DetailCapture(store, str(source), item)
+    capture.start()
+    source.write_bytes("你".encode()[:2])
+    capture._read()
+    rotated = tmp_path / "source.old"
+    source.rename(rotated)
+    source.write_bytes("你".encode()[2:] + b"\n")
+    capture._read()
+    source.write_bytes("好".encode()[:2])
+    capture._read()
+    source.write_bytes("好".encode()[2:] + b"\n")
+    capture._read()
+    await capture.finish()
+    captured = content(store, item.detail_log_id)
+    assert "你" not in captured
+    assert "好" not in captured
+    assert captured.count("�") >= 4
 
 
 def test_pruned_history_cleans_only_owned_detail(tmp_path):
