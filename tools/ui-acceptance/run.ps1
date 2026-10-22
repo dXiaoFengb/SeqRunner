@@ -2,7 +2,7 @@ param([Parameter(Mandatory=$true)][string]$Executable, [ValidateSet('plan','log'
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $source = (Resolve-Path -LiteralPath $Executable).Path
-if ($source -notmatch ('^' + [regex]::Escape($root) + '[\\/]产物[\\/]验证[\\/]v\d+\.\d+\.\d+[\\/]electron[\\/][^\\/]+-portable\.exe$')) { throw '仅允许工作区内已最终化验证包目录的 portable EXE。' }
+if ($source -notmatch ('^' + [regex]::Escape($root) + '[\\/]产物[\\/]验证[\\/]v\d+\.\d+\.\d+[\\/][^\\/]+-portable\.exe$')) { throw '仅允许工作区内已最终化验证包根目录的 portable EXE。' }
 $runId = [guid]::NewGuid().ToString('N')
 $runPath = Join-Path $root "build/ui-acceptance/$runId"
 if (Test-Path -LiteralPath $runPath) { throw '隔离目录已经存在。' }
@@ -18,15 +18,16 @@ SHA-256：$sourceHash
 隔离目录：$runPath
 "@ | Set-Content -Encoding utf8 (Join-Path $runPath 'source.txt')
 New-Item -ItemType Directory -Path (Join-Path $runPath 'appdata'),(Join-Path $runPath 'localappdata'),(Join-Path $runPath 'temp') | Out-Null
-$oldAppData = $env:APPDATA; $oldLocalAppData = $env:LOCALAPPDATA; $oldNoProxy = $env:NO_PROXY; $oldNoProxyLower = $env:no_proxy; $oldHealth = $env:RUNNER_HEALTH_CHECK; $oldTemp = $env:TEMP; $oldTmp = $env:TMP
+$oldAppData = $env:APPDATA; $oldLocalAppData = $env:LOCALAPPDATA; $oldNoProxy = $env:NO_PROXY; $oldNoProxyLower = $env:no_proxy; $oldHealth = $env:RUNNER_HEALTH_CHECK; $oldTemp = $env:TEMP; $oldTmp = $env:TMP; $oldRunnerUserData = $env:RUNNER_USER_DATA_DIR
 $env:APPDATA = Join-Path $runPath 'appdata'; $env:LOCALAPPDATA = Join-Path $runPath 'localappdata'
 $env:TEMP = Join-Path $runPath 'temp'; $env:TMP = $env:TEMP
+$env:RUNNER_USER_DATA_DIR = Join-Path $runPath '用户数据'
 $env:NO_PROXY = '127.0.0.1,localhost'; $env:no_proxy = '127.0.0.1,localhost'; $env:RUNNER_HEALTH_CHECK = '0'
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $listener.Start(); $port = $listener.LocalEndpoint.Port; $listener.Stop()
 $cli = Join-Path $PSScriptRoot 'node_modules/@playwright/cli/playwright-cli.js'
 $scenarioPath = Join-Path $PSScriptRoot "$Scenario-scenario.js"
 if ($Scenario -eq 'log') {
-  $dataPath = Join-Path $runPath 'data'
+  $dataPath = Join-Path $runPath '用户数据'
   New-Item -ItemType Directory -Path $dataPath | Out-Null
   @{ schema_version=3; queues=@(@{id='fixture-script';name='受控 MAA';task_ids=@('fixture-maa');time_slots=@()}); tasks=@(@{id='fixture-maa';name='受控 MAA';executable='C:\fixture\MAA.exe';preset_id='maa';preset_evidence='受控夹具';success_log_rules=@(@{mode='keyword';pattern='成功'});failure_log_rules=@(@{mode='keyword';pattern='失败'});maa_adapter=@{installation_directory='C:\fixture'} }); plans=@(); fired_slots=@(); startup_fired_dates=@{} } | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $dataPath 'config.json')
   $today = (Get-Date).Date
@@ -68,5 +69,5 @@ try {
   if ($attached) { & node $cli "-s=$session" run-code 'async page => { await page.close() }' 2>&1 | Out-Null; & node $cli "-s=$session" detach 2>&1 | Out-Null }
   if ($process -and -not $process.HasExited) { if (-not $process.WaitForExit(10000)) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } }
   Pop-Location
-  $env:APPDATA=$oldAppData; $env:LOCALAPPDATA=$oldLocalAppData; $env:NO_PROXY=$oldNoProxy; $env:no_proxy=$oldNoProxyLower; $env:RUNNER_HEALTH_CHECK=$oldHealth; $env:TEMP=$oldTemp; $env:TMP=$oldTmp
+  $env:APPDATA=$oldAppData; $env:LOCALAPPDATA=$oldLocalAppData; $env:NO_PROXY=$oldNoProxy; $env:no_proxy=$oldNoProxyLower; $env:RUNNER_HEALTH_CHECK=$oldHealth; $env:TEMP=$oldTemp; $env:TMP=$oldTmp; $env:RUNNER_USER_DATA_DIR=$oldRunnerUserData
 }

@@ -19,12 +19,13 @@ watch(() => props.runtime?.run?.id, async (id, previous) => { if (id && id !== p
 watch(() => [props.runtime?.run?.id, current.value?.task_id] as const, () => { scriptFollowing.value = true })
 watch(() => [props.scriptLog, current.value] as const, async () => { if (scriptFollowing.value) { await nextTick(); scriptToBottom() } }, { flush: 'pre' })
 const scriptText = computed(() => current.value && props.scriptLog?.runId === props.runtime?.run?.id && props.scriptLog?.taskId === current.value.task_id ? props.scriptLog.text : '')
+const hasScriptLog = computed(() => Boolean(current.value && (current.value.log_source_configured || current.value.ui_log_source_configured || scriptText.value)))
 </script>
 <template>
   <section class="side-live-log" :class="{ 'has-script-log': runtime?.busy }" aria-label="本轮日志摘要">
     <div class="side-live-header scheduler-header"><b>本轮日志摘要</b><button v-if="!following" type="button" @click="toBottom">回到底部</button></div>
     <div ref="list" class="side-live-list scheduler-live-list" tabindex="0" @scroll="onScroll"><span v-if="!logs.length" class="side-live-empty">暂无实时日志</span><ol v-else><li v-for="(line, index) in logs" :key="index">{{ logLabel(line) }}</li></ol><span v-if="summary" class="side-live-summary">{{ summary }}</span></div>
-    <template v-if="runtime?.busy">
+    <template v-if="runtime?.busy && hasScriptLog">
       <div class="side-live-header script-header"><b>{{ current ? `${current.task_name} · 脚本日志` : '脚本日志' }}</b><button v-if="!scriptFollowing && current" type="button" @click="scriptToBottom">回到底部</button></div>
       <div ref="scriptList" class="side-live-list script-live-list" tabindex="0" @scroll="onScriptScroll"><span class="side-live-empty">{{ current ? (current.ui_log_status || '暂无法可靠获取该脚本的界面日志。') : '等待脚本运行' }}</span><pre v-if="scriptText" class="script-text">{{ scriptText }}</pre></div>
     </template>

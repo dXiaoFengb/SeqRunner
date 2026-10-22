@@ -117,6 +117,7 @@ class TaskDefinition(BaseModel):
     allow_manual_confirmation: bool = False
     allow_process_exit: bool = True
     log_path: str | None = None
+    log_patterns: str = "*.log;*.txt"
     ui_log_region: UiLogRegion | None = None
     success_log: str | None = None
     success_log_mode: MatchMode = MatchMode.KEYWORD
@@ -195,6 +196,11 @@ class ItemRecord(BaseModel):
     detail_log_status: str | None = None
     ui_log_id: str | None = None
     ui_log_status: str | None = None
+    # 外部原始日志只保留本轮允许读取的来源，不复制正文到用户数据目录。
+    external_log_files: list[str] = Field(default_factory=list)
+    external_log_status: str | None = None
+    log_source_configured: bool = False
+    ui_log_source_configured: bool = False
 
 
 class RunRecord(BaseModel):

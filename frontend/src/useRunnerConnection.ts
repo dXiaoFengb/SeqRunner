@@ -16,6 +16,9 @@ declare global {
       getConnection(): Promise<RunnerConnection | null>
       selectExecutable(presetId?: string | null): Promise<{ canceled: boolean; path?: string; matchesPreset?: boolean }>
       selectDirectory?(): Promise<{ canceled: boolean; path?: string }>
+      copyText?(text: string): Promise<{ accepted: boolean }>
+      exportFile?(reference: { runId: string; taskId: string; index: number }): Promise<{ canceled: boolean; path?: string }>
+      showInFolder?(reference: { runId: string; taskId: string; index: number }): Promise<{ accepted: boolean }>
       getBackendStatus?(): Promise<{ state: string; detail: string }>
       getBuildInfo?(): Promise<{ version: string }>
       quitApp?(): Promise<{ accepted: boolean }>

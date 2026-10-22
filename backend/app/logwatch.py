@@ -43,6 +43,7 @@ class LogWatcher:
         self._anchor = b""
         self._context = ""
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self.last_text = ""
 
     def _reset_stream(self) -> None:
         self._context = ""
@@ -78,6 +79,7 @@ class LogWatcher:
         return None
 
     def _read_new(self) -> LogSignal | None:
+        self.last_text = ""
         try:
             stat = self.path.stat()
         except FileNotFoundError:
@@ -100,6 +102,7 @@ class LogWatcher:
         text = self._decoder.decode(data, final=False).replace("\r\n", "\n").replace("\r", "\n")
         if not text:
             return None
+        self.last_text = text
         previous = self._context
         combined = previous + text
         for kind, rules in (("failure", self.failure), ("success", self.success)):

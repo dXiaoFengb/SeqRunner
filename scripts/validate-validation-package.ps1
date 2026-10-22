@@ -13,7 +13,7 @@ if ($env:RUNNER_VALIDATION_SUFFIX) { throw '验证包已改用开发版本目录
 if (-not (Test-Path -LiteralPath $workPath -PathType Container)) { throw '验证工作目录不存在。' }
 if (Test-Path -LiteralPath $verifiedPath) { throw '验证包目录已存在，不允许覆盖。' }
 
-$executables = @(Get-ChildItem -LiteralPath (Join-Path $workPath 'electron') -File -Filter '*-portable.exe')
+$executables = @(Get-ChildItem -LiteralPath (Join-Path $workPath '软件包') -File -Filter '*-portable.exe')
 if ($executables.Count -ne 1) { throw '验证工作目录中必须恰好有一个 portable EXE。' }
 $executable = $executables[0].FullName
 $beforeHash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash
@@ -22,7 +22,7 @@ New-Item -ItemType Directory -Path $evidence | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $evidence 'appdata'),(Join-Path $evidence 'localappdata'),(Join-Path $evidence 'temp') | Out-Null
 
 $oldAppData = $env:APPDATA; $oldLocalAppData = $env:LOCALAPPDATA; $oldTemp = $env:TEMP; $oldTmp = $env:TMP
-$oldNoProxy = $env:NO_PROXY; $oldNoProxyLower = $env:no_proxy; $oldHealth = $env:RUNNER_HEALTH_CHECK
+$oldNoProxy = $env:NO_PROXY; $oldNoProxyLower = $env:no_proxy; $oldHealth = $env:RUNNER_HEALTH_CHECK; $oldRunnerUserData = $env:RUNNER_USER_DATA_DIR
 $process = $null; $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 $trackedProcessIds = [System.Collections.Generic.HashSet[int]]::new()
 $processTreeStatus = 'checked'; $processTreeError = $null; $exitCode = $null; $failure = $null
@@ -44,6 +44,7 @@ try {
     $env:TEMP = Join-Path $evidence 'temp'; $env:TMP = $env:TEMP
     $env:NO_PROXY = '127.0.0.1,localhost'; $env:no_proxy = $env:NO_PROXY
     $env:RUNNER_HEALTH_CHECK = '1'
+    $env:RUNNER_USER_DATA_DIR = Join-Path $evidence '用户数据'
     $process = Start-Process -FilePath $executable -WorkingDirectory $evidence -WindowStyle Hidden -PassThru
     $deadline = [DateTime]::UtcNow.AddSeconds(60)
     while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
@@ -88,5 +89,6 @@ try {
     $result | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'result.json') -Encoding utf8NoBOM
     $env:APPDATA=$oldAppData; $env:LOCALAPPDATA=$oldLocalAppData; $env:TEMP=$oldTemp; $env:TMP=$oldTmp
     $env:NO_PROXY=$oldNoProxy; $env:no_proxy=$oldNoProxyLower; $env:RUNNER_HEALTH_CHECK=$oldHealth
+    $env:RUNNER_USER_DATA_DIR=$oldRunnerUserData
 }
 if ($failure) { throw $failure }

@@ -162,3 +162,25 @@ test('shows a compact task name and distinguishes interface and raw log status',
   expect(item.text()).toContain('原始日志：已采集')
   expect(item.get('button').text()).toBe('查看详细日志')
 })
+
+test('lists and pages only external log files recorded by the history item', async () => {
+  const exportFile = vi.fn(async () => ({ canceled: false }))
+  const showInFolder = vi.fn(async () => ({ accepted: true }))
+  window.desktopRunner = { getConnection: async () => null, selectExecutable: async () => ({ canceled: true }), exportFile, showInFolder }
+  const request = vi.fn(async (path: string) => {
+    if (!path.includes('/0?')) return { files: [{ index: 0, path: 'C:/受控/part.log', name: 'part.log', available: true }], status: '已记录 1 个外部日志文件' }
+    return path.endsWith('offset=0') ? { text: '第一段', next_offset: 3 } : { text: '第二段', next_offset: null }
+  })
+  const record = { ...run('样例', '2026-01-01T12:00:00'), items: [{ task_id: 't', task_name: '程序', state: 'succeeded', external_log_files: ['C:/受控/part.log'], external_log_status: '已记录 1 个外部日志文件' }] }
+  const wrapper = setup([record]); await wrapper.setProps({ request, expanded: new Set(['样例']) })
+  await wrapper.findAll('button').find(button => button.text() === '查看外部日志')!.trigger('click')
+  expect(wrapper.get('[aria-label="外部日志"]').text()).toContain('第一段')
+  await wrapper.findAll('button').find(button => button.text() === '加载更多')!.trigger('click')
+  expect(wrapper.get('[aria-label="外部日志"]').text()).toContain('第一段第二段')
+  expect(request.mock.calls.every(([path]) => path.includes('/external-logs/'))).toBe(true)
+  await wrapper.findAll('button').find(button => button.text() === '导出原文件')!.trigger('click')
+  await wrapper.findAll('button').find(button => button.text() === '打开所在文件夹')!.trigger('click')
+  expect(exportFile).toHaveBeenCalledWith({ runId: '样例', taskId: 't', index: 0 })
+  expect(showInFolder).toHaveBeenCalledWith({ runId: '样例', taskId: 't', index: 0 })
+  delete window.desktopRunner
+})

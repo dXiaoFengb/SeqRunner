@@ -51,7 +51,7 @@ test('验证 portable 阶段只能使用本轮已准备且未输出 Electron 的
     mkdirSync(paths.backendDirectory, { recursive: true });
     writeFileSync(join(paths.backendDirectory, 'sequential-runner-backend.exe'), 'fixture backend', 'utf8');
     assertPortableValidationReady(paths, { RUNNER_VALIDATION_PREPARED: '1' });
-    mkdirSync(paths.electronDirectory, { recursive: true });
+    mkdirSync(paths.applicationDirectory, { recursive: true });
     assert.throws(() => assertPortableValidationReady(paths, { RUNNER_VALIDATION_PREPARED: '1' }), /输出目录已存在/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -64,8 +64,8 @@ test('只有匹配的通过健康记录才能最终化', () => {
   const root = fixture();
   try {
     const paths = getValidationPackagePaths(root);
-    mkdirSync(paths.electronDirectory, { recursive: true });
-    const executable = join(paths.electronDirectory, 'runner-v1.2.3-portable.exe');
+    mkdirSync(paths.applicationDirectory, { recursive: true });
+    const executable = join(paths.applicationDirectory, 'runner-v1.2.3-portable.exe');
     writeFileSync(executable, 'fixture executable', 'utf8');
     assert.throws(() => finalizeValidationPackage(paths), /缺少通过/);
     writeFileSync(join(paths.workDirectory, '.validation-health.json'), JSON.stringify({ status: 'failed', version: '1.2.3', executableSha256: 'ignored' }), 'utf8');
@@ -74,6 +74,8 @@ test('只有匹配的通过健康记录才能最终化', () => {
     writeFileSync(join(paths.workDirectory, '.validation-health.json'), JSON.stringify({ status: 'passed', version: '1.2.3', executableSha256: hash }), 'utf8');
     finalizeValidationPackage(paths);
     assert.equal(existsSync(paths.workDirectory), false);
-    assert.equal(existsSync(join(paths.verificationDirectory, 'electron', 'runner-v1.2.3-portable.exe')), true);
+    assert.equal(existsSync(join(paths.verificationDirectory, 'runner-v1.2.3-portable.exe')), true);
+    assert.equal(existsSync(join(paths.verificationDirectory, '验证证据', '打包输出')), true);
+    assert.equal(existsSync(join(paths.verificationDirectory, '验证证据', '.validation-health.json')), true);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

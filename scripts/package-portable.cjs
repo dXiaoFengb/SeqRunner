@@ -32,7 +32,7 @@ if (validation) {
   const baseConfig = JSON.parse(readFileSync(resolve(root, 'electron-builder.validation.json'), 'utf8'));
   writeFileSync(generatedConfig, JSON.stringify({
     ...baseConfig,
-    directories: { output: relative(root, paths.electronDirectory) },
+    directories: { output: relative(root, paths.applicationDirectory) },
     // electron-builder 通过 electronDist 直接定位隔离 ZIP，不使用其网络下载器或全局缓存。
     electronDist: relative(root, dirname(electronCacheEvidence.targetPath)),
     extraResources: [{ from: relative(root, resolve(paths.backendDirectory, 'sequential-runner-backend.exe')), to: 'backend/sequential-runner-backend.exe' }],

@@ -59,6 +59,8 @@ function runTime(run: HistoryRun) { const value = new Date(run.started_at); retu
 const detail = ref<{ runId: string; id: string | null; rawId: string | null; uiId: string | null; rawStatus: string; uiStatus: string; title: string; entries: DetailEntry[]; next: number | null; error: string; loading: boolean } | null>(null)
 const rawDetail = ref(false)
 const runDetail = ref(false)
+type ExternalFile = { index: number; path: string; name: string; size?: number; modified_at?: number; available: boolean }
+const external = ref<{ runId: string; taskId: string; files: ExternalFile[]; selected: ExternalFile | null; text: string; next: number | null; error: string; loading: boolean } | null>(null)
 const displayedDetail = computed(() => (detail.value?.entries || []).map(entry => runDetail.value ? { ...entry, text: logLabel(entry.text) } : entry))
 async function loadDetail(run: HistoryRun, item: RunItem) {
   runDetail.value = false
@@ -91,6 +93,42 @@ async function moreDetail() {
   } catch (error) { if (detail.value === current && current.id === requestedId) { current.error = `无法读取详细日志：${error instanceof Error ? error.message : String(error)}`; current.next = null } }
   finally { if (detail.value === current && current.id === requestedId) current.loading = false }
 }
+async function openExternalLogs(run: HistoryRun, item: RunItem) {
+  if (!props.request) return
+  external.value = { runId: run.id, taskId: item.task_id, files: [], selected: null, text: '', next: null, error: '', loading: true }
+  try {
+    const result = await props.request(`/api/history/${encodeURIComponent(run.id)}/external-logs/${encodeURIComponent(item.task_id)}`) as { files: ExternalFile[]; status?: string }
+    if (!external.value) return
+    external.value.files = result.files
+    external.value.error = result.files.length ? '' : (result.status || '本轮没有可用的外部日志文件。')
+    if (result.files[0]?.available) await selectExternal(result.files[0])
+  } catch (error) { if (external.value) external.value.error = `无法读取外部日志：${String(error)}` }
+  finally { if (external.value) external.value.loading = false }
+}
+async function selectExternal(file: ExternalFile) {
+  const current = external.value
+  if (!current || !props.request || !file.available) return
+  current.selected = file; current.text = ''; current.next = 0; current.error = ''; current.loading = true
+  try {
+    const result = await props.request(`/api/history/${encodeURIComponent(current.runId)}/external-logs/${encodeURIComponent(current.taskId)}/${file.index}?offset=0`) as { text: string; next_offset: number | null }
+    if (external.value === current) { current.text = result.text; current.next = result.next_offset }
+  } catch (error) { if (external.value === current) current.error = `外部日志不可读取：${String(error)}` }
+  finally { if (external.value === current) current.loading = false }
+}
+async function loadMoreExternal() {
+  const current = external.value
+  if (!current || !props.request || current.next === null || current.loading) return
+  current.loading = true
+  try {
+    const result = await props.request(`/api/history/${encodeURIComponent(current.runId)}/external-logs/${encodeURIComponent(current.taskId)}/${current.selected?.index}?offset=${current.next}`) as { text: string; next_offset: number | null }
+    if (external.value === current) { current.text += result.text; current.next = result.next_offset }
+  } catch (error) { if (external.value === current) current.error = `无法继续读取外部日志：${String(error)}` }
+  finally { if (external.value === current) current.loading = false }
+}
+async function copyExternal() { if (!external.value?.text) return; try { await window.desktopRunner?.copyText?.(external.value.text) } catch (error) { external.value.error = `复制失败：${String(error)}` } }
+function externalReference(current: NonNullable<typeof external.value>) { return { runId: current.runId, taskId: current.taskId, index: current.selected!.index } }
+async function exportExternal() { const current = external.value; if (!current?.selected) return; try { await window.desktopRunner?.exportFile?.(externalReference(current)) } catch (error) { current.error = `导出失败：${String(error)}` } }
+async function showExternalFolder() { const current = external.value; if (!current?.selected) return; try { await window.desktopRunner?.showInFolder?.(externalReference(current)) } catch (error) { current.error = `无法打开文件夹：${String(error)}` } }
 const cleanupDate = ref(''), cleanupCount = ref<number | null>(null), cleanupError = ref('')
 const cleanupIds = ref<string[]>([])
 async function previewCleanup() {
@@ -125,8 +163,9 @@ function runOutcome(run: HistoryRun) { if (run.state === 'stopped') return '已�
       <div v-if="cleanupCount !== null" class="cleanup-confirm" role="alertdialog" aria-label="确认清理详细日志"><p>确定清理 {{ cleanupDate }} 当天及之前的 {{ cleanupCount }} 条详细日志？运行记录与原始软件日志会保留。</p><button class="danger" @click="confirmCleanup">确认清理</button><button @click="cleanupCount = null">取消</button></div>
     </div>
     <div v-if="!groups.length" class="log-empty"><FolderOpen aria-hidden="true" /><strong>{{ history.length ? '没有符合条件的日志' : '暂无运行记录' }}</strong><span>{{ history.length ? '请调整日期范围后重新搜索。' : '运行完成后，记录会显示在这里。' }}</span></div>
-    <section v-for="group in groups" :key="group.date" class="log-group"><h2><CalendarDays aria-hidden="true" />{{ group.date }}</h2><article v-for="run in group.runs" :key="run.id" class="run-record" :class="{ selected: selectedId === run.id, failed: runHasFailures(run) }"><div class="run-record-head"><div><b>{{ run.run_mode === 'plan' ? `计划：${run.queue_name}` : run.run_mode === 'all_scripts' ? '全部软件脚本' : run.queue_name }}</b><small>{{ groupMode === 'day' ? '' : recordDate(run) + ' ' }}{{ runTime(run) }} · {{ triggerLabel(run.trigger_source) }} · {{ runOutcome(run) }}</small></div><div class="run-actions"><button type="button" @click="loadRunDetail(run)">查看本轮运行日志</button><button @click="emit('toggle', run.id)">{{ expanded.has(run.id) ? '收起详情' : runHasFailures(run) ? '查看失败详情' : '查看详情' }}</button></div></div><ul v-if="expanded.has(run.id)"><li v-for="item in run.items" :key="item.task_id" :class="{ 'history-item-failed': item.state === 'failed' }"><div class="history-item-info"><b>{{ itemName(item) }}</b><span>{{ itemOutcome(item) }}</span><small v-if="item.log_summary?.length">日志：{{ item.log_summary.map(logLabel).join('；') }}</small><small>界面日志：{{ uiLogStatus(item) }}</small><small>原始日志：{{ rawLogStatus(item) }}</small></div><button type="button" @click="loadDetail(run, item)">查看详细日志</button></li></ul><p v-if="run.scheduler_skips?.length" class="schedule-skips"><b>计划跳过</b><span v-for="skip in run.scheduler_skips" :key="skip">{{ skip }}</span></p></article></section>
+    <section v-for="group in groups" :key="group.date" class="log-group"><h2><CalendarDays aria-hidden="true" />{{ group.date }}</h2><article v-for="run in group.runs" :key="run.id" class="run-record" :class="{ selected: selectedId === run.id, failed: runHasFailures(run) }"><div class="run-record-head"><div><b>{{ run.run_mode === 'plan' ? `计划：${run.queue_name}` : run.run_mode === 'all_scripts' ? '全部软件脚本' : run.queue_name }}</b><small>{{ groupMode === 'day' ? '' : recordDate(run) + ' ' }}{{ runTime(run) }} · {{ triggerLabel(run.trigger_source) }} · {{ runOutcome(run) }}</small></div><div class="run-actions"><button type="button" @click="loadRunDetail(run)">查看本轮运行日志</button><button @click="emit('toggle', run.id)">{{ expanded.has(run.id) ? '收起详情' : runHasFailures(run) ? '查看失败详情' : '查看详情' }}</button></div></div><ul v-if="expanded.has(run.id)"><li v-for="item in run.items" :key="item.task_id" :class="{ 'history-item-failed': item.state === 'failed' }"><div class="history-item-info"><b>{{ itemName(item) }}</b><span>{{ itemOutcome(item) }}</span><small v-if="item.log_summary?.length">日志：{{ item.log_summary.map(logLabel).join('；') }}</small><small>界面日志：{{ uiLogStatus(item) }}</small><small>原始日志：{{ rawLogStatus(item) }}</small><small v-if="item.external_log_status">外部日志：{{ item.external_log_status }}</small></div><div class="detail-buttons"><button v-if="item.external_log_files?.length" type="button" @click="openExternalLogs(run, item)">查看外部日志</button><button type="button" @click="loadDetail(run, item)">查看详细日志</button></div></li></ul><p v-if="run.scheduler_skips?.length" class="schedule-skips"><b>计划跳过</b><span v-for="skip in run.scheduler_skips" :key="skip">{{ skip }}</span></p></article></section>
     <div v-if="detail" class="detail-overlay" @click.self="detail = null"><section class="detail-dialog" role="dialog" aria-modal="true" aria-label="详细日志"><header><h2>{{ detail.title }} · 详细日志</h2><div><button v-if="!runDetail" type="button" @click="toggleRawDetail">{{ rawDetail ? '返回脚本界面日志' : '查看原始日志' }}</button> <button @click="detail = null">关闭</button></div></header><p>{{ rawDetail ? '显示采集时间；日志原文中的时间保持不变。' : detail.uiStatus }}</p><div class="detail-content"><p v-if="detail.error" role="alert">{{ detail.error }}</p><p v-else-if="!detail.entries.length && !detail.loading">暂无详细日志。</p><div v-for="(entry, index) in displayedDetail" :key="index"><time>{{ new Date(entry.captured_at).toLocaleString('zh-CN', { hour12: false }) }}</time><pre>{{ entry.text }}</pre></div></div><button v-if="detail.next !== null" :disabled="detail.loading" @click="moreDetail">{{ detail.loading ? '正在读取' : '加载更多' }}</button></section></div>
+    <div v-if="external" class="detail-overlay" @click.self="external = null"><section class="detail-dialog" role="dialog" aria-modal="true" aria-label="外部日志"><header><h2>外部脚本日志</h2><button @click="external = null">关闭</button></header><p>直接读取外部原文件；本软件不会保存副本。</p><div class="external-files"><button v-for="file in external.files" :key="file.index" :disabled="!file.available" :class="{ primary: external.selected?.index === file.index }" @click="selectExternal(file)">{{ file.name }}{{ file.available ? '' : '（不可读取）' }}</button></div><div class="detail-content"><p v-if="external.error" role="alert">{{ external.error }}</p><pre v-else>{{ external.text || (external.loading ? '正在读取…' : '暂无内容。') }}</pre></div><div class="detail-buttons"><button v-if="external.next !== null" :disabled="external.loading" @click="loadMoreExternal">{{ external.loading ? '读取中…' : '加载更多' }}</button><button :disabled="!external.selected || !external.text || external.text.length > 10 * 1024 * 1024" @click="copyExternal">复制当前已读取内容</button><button :disabled="!external.selected" @click="exportExternal">导出原文件</button><button :disabled="!external.selected" @click="showExternalFolder">打开所在文件夹</button></div></section></div>
   </section>
 </template>
 

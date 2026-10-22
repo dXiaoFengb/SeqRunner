@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Literal, TypeVar
 
 from .completion_actions import CompletionActionDispatcher
-from .detail_logs import DetailCapture, DetailLogs
+from .detail_logs import DetailLogs
 from .events import EventHub
-from .logwatch import LogSignal, LogWatcher
+from .external_logs import ExternalLogWatcher
+from .logwatch import LogSignal
 from .maa_region_capture import read_maa_region
 from .models import (
     AppConfig,
@@ -141,7 +142,9 @@ class RunnerEngine:
         selected = [task_book[item] for item in queue.task_ids if item in task_book]
         record = RunRecord(queue_id=queue.id, queue_name=queue.name, trigger_source=source)
         record.items = [
-            ItemRecord(task_id=item.id, task_name=item.name, script_id=queue.id, script_name=queue.name)
+            ItemRecord(task_id=item.id, task_name=item.name, script_id=queue.id, script_name=queue.name,
+                       log_source_configured=bool(item.log_path),
+                       ui_log_source_configured=bool(item.ui_log_region) or item.preset_id == "march7th")
             for item in selected
         ]
         self.current_run = record
@@ -262,7 +265,9 @@ class RunnerEngine:
                 problems.append(f"{label}的“{task.name}”{preset_problem}")
                 continue
             selected.append(task)
-            items.append(ItemRecord(task_id=task.id, task_name=task.name, script_id=script.id, script_name=script.name))
+            items.append(ItemRecord(task_id=task.id, task_name=task.name, script_id=script.id, script_name=script.name,
+                                    log_source_configured=bool(task.log_path),
+                                    ui_log_source_configured=bool(task.ui_log_region) or task.preset_id == "march7th"))
         return selected, items, problems
 
     async def record_schedule_skip(self, plan: SchedulePlan, due_at: datetime) -> None:
@@ -414,26 +419,8 @@ class RunnerEngine:
     async def _run_item(
         self, record: RunRecord, item: ItemRecord, task: TaskDefinition, *, has_next: bool
     ) -> None:
-        if not task.log_path:
-            item.detail_log_status = "未配置日志路径"
-            await self._run_item_inner(record, item, task, has_next=has_next)
-            return
-        capture = None
-        try:
-            capture = DetailCapture(self.detail_logs, task.log_path, item)
-            capture.start()
-        except Exception as error:
-            item.detail_log_status = f"详细日志采集失败：{error}"
-            self._logger.exception("详细日志采集启动失败")
-        try:
-            await self._run_item_inner(record, item, task, has_next=has_next)
-        finally:
-            if capture:
-                try:
-                    await capture.finish()
-                except Exception as error:
-                    item.detail_log_status = f"详细日志采集失败：{error}"
-                    self._logger.exception("详细日志采集收尾失败")
+        item.detail_log_status = "外部日志按原路径读取" if task.log_path else "未配置日志路径"
+        await self._run_item_inner(record, item, task, has_next=has_next)
 
     async def _run_item_inner(
         self, record: RunRecord, item: ItemRecord, task: TaskDefinition, *, has_next: bool
@@ -451,10 +438,13 @@ class RunnerEngine:
         if task.preset_id == "maa" and await asyncio.to_thread(executable_running, str(executable)):
             await self._fail_then_cool(item, "程序已在运行，请先自行关闭后再运行", has_next=has_next, task=task)
             return
-        watcher: LogWatcher | None = None
+        watcher: ExternalLogWatcher | None = None
         if task.log_path:
-            watcher = LogWatcher(
-                task.log_path,
+            async def emit_external_log(text: str) -> None:
+                await self.events.publish("script_log", {"runId": record.id, "taskId": task.id, "text": text})
+
+            watcher = ExternalLogWatcher(
+                task.log_path, task.log_patterns,
                 task.success_log,
                 task.success_log_mode,
                 task.failure_log,
@@ -462,10 +452,13 @@ class RunnerEngine:
                 success_rules=task.success_log_rules,
                 failure_rules=task.failure_log_rules,
                 monitor_success=not task.allow_manual_confirmation,
+                on_text=emit_external_log,
             )
             try:
                 # 必须先取得游标，后启动目标进程，避免历史成功行误判本轮。
                 await watcher.start_at_end()
+                item.external_log_files = watcher.paths
+                item.external_log_status = "已登记外部日志来源" if item.external_log_files else "日志目录中暂无匹配文件，运行期间会继续发现新文件"
             except (OSError, UnicodeError) as error:
                 await self._fail_then_cool(item, f"日志读取失败：{error}", has_next=has_next, task=task)
                 return
@@ -524,6 +517,9 @@ class RunnerEngine:
         await self._publish_state()
         try:
             outcome, detail, log_detail = await self._wait_for_outcome(process, task, watcher, item)
+            if watcher:
+                item.external_log_files = watcher.paths
+                item.external_log_status = "已读取外部日志" if item.external_log_files else "运行期间未发现匹配的外部日志"
         finally:
             if ui_capture:
                 try:
@@ -604,7 +600,7 @@ class RunnerEngine:
         self,
         process: asyncio.subprocess.Process,
         task: TaskDefinition,
-        watcher: LogWatcher | None,
+        watcher: ExternalLogWatcher | None,
         item: ItemRecord,
     ) -> tuple[str, CompletionSource | str, str | None]:
         signal_tasks: dict[asyncio.Task[object], str] = {

@@ -25,7 +25,7 @@ function getValidationPackagePaths(root) {
     workDirectory,
     verificationDirectory,
     backendDirectory: resolve(workDirectory, 'backend'),
-    electronDirectory: resolve(workDirectory, 'electron'),
+    applicationDirectory: resolve(workDirectory, '软件包'),
     cacheDirectory: resolve(workDirectory, 'cache'),
   };
 }
@@ -48,8 +48,8 @@ function assertPortableValidationReady(paths, env = process.env) {
   if (!existsSync(join(paths.backendDirectory, 'sequential-runner-backend.exe'))) {
     throw new Error('验证后端资源不存在，无法打包 portable EXE。');
   }
-  if (existsSync(paths.electronDirectory)) {
-    throw new Error('验证 Electron 输出目录已存在，不允许覆盖：' + paths.electronDirectory);
+  if (existsSync(paths.applicationDirectory)) {
+    throw new Error('验证软件包输出目录已存在，不允许覆盖：' + paths.applicationDirectory);
   }
 }
 

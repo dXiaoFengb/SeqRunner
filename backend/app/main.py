@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from .engine import ConfirmRejectedError, RunBusyError, RunnerEngine, RunValidationError
 from .events import EventHub
+from .external_logs import external_page
 from .maa_region_capture import read_maa_region, run_helper
 from .models import AppConfig, QueueDefinition, StartupMode, TaskDefinition, UiLogRegion
 from .presets import apply_preset, public_presets
@@ -415,6 +416,33 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
             return await asyncio.to_thread(engine.detail_logs.page, detail_id, offset)
         except (OSError, ValueError) as error:
             raise HTTPException(404, str(error)) from error
+
+    @app.get("/api/history/{run_id}/external-logs/{task_id}")
+    async def history_external_logs(run_id: str, task_id: str):
+        record = next((run for run in engine.history.runs if run.id == run_id), None)
+        item = next((candidate for candidate in (record.items if record else []) if candidate.task_id == task_id), None)
+        if not item:
+            raise HTTPException(404, "本轮外部日志不存在")
+        files = []
+        for index, value in enumerate(item.external_log_files):
+            path = Path(value)
+            try:
+                stat = await asyncio.to_thread(path.stat)
+                files.append({"index": index, "path": str(path), "name": path.name, "size": stat.st_size, "modified_at": stat.st_mtime, "available": True})
+            except OSError:
+                files.append({"index": index, "path": str(path), "name": path.name, "available": False})
+        return {"files": files, "status": item.external_log_status}
+
+    @app.get("/api/history/{run_id}/external-logs/{task_id}/{index}")
+    async def history_external_log_page(run_id: str, task_id: str, index: int, offset: int = 0):
+        record = next((run for run in engine.history.runs if run.id == run_id), None)
+        item = next((candidate for candidate in (record.items if record else []) if candidate.task_id == task_id), None)
+        if not item or index < 0 or index >= len(item.external_log_files):
+            raise HTTPException(404, "外部日志不存在")
+        try:
+            return await asyncio.to_thread(external_page, Path(item.external_log_files[index]), offset)
+        except (OSError, ValueError) as error:
+            raise HTTPException(404, f"外部日志不可读取：{error}") from error
 
     @app.post("/api/history/detail-cleanup/preview")
     async def preview_detail_cleanup(payload: DetailCleanupIn):

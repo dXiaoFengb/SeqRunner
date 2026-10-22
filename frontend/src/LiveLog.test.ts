@@ -16,8 +16,8 @@ test('follows new logs only while at the bottom and resumes on request', async (
   await wrapper.setProps({ logs: ['新消息'] }); expect(list.scrollTop).toBe(500)
 })
 
-test('distinguishes the running script and shows the final elapsed time', async () => {
-  const run = { id: 'r', queue_name: '队列', state: 'running', started_at: '2026-01-01T00:00:00Z', ended_at: null, items: [{ task_id: 't', task_name: 'MAA', state: 'waiting_manual' }] }
+test('distinguishes a script with a configured log source and shows the final elapsed time', async () => {
+  const run = { id: 'r', queue_name: '队列', state: 'running', started_at: '2026-01-01T00:00:00Z', ended_at: null, items: [{ task_id: 't', task_name: 'MAA', state: 'waiting_manual', log_source_configured: true }] }
   const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }
   const wrapper = mount(LiveLog, { props: { logs: ['检查完成'], runtime } })
   expect(wrapper.text()).toContain('MAA · 脚本日志')
@@ -29,8 +29,8 @@ test('distinguishes the running script and shows the final elapsed time', async 
   expect(wrapper.get('.scheduler-live-list').text().indexOf('检查完成')).toBeLessThan(wrapper.get('.scheduler-live-list').text().indexOf('总耗时'))
 })
 
-test('keeps the scheduler above a reserved script area throughout a run', async () => {
-  const run = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: 'MAA', state: 'monitoring' }] }
+test('keeps the scheduler above a configured script log area throughout a run', async () => {
+  const run = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: 'MAA', state: 'monitoring', log_source_configured: true }] }
   const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }
   const wrapper = mount(LiveLog, { props: { logs: [], runtime } })
   const scheduler = wrapper.get('.scheduler-live-list').element
@@ -38,7 +38,23 @@ test('keeps the scheduler above a reserved script area throughout a run', async 
   expect(scheduler.compareDocumentPosition(script) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   await wrapper.setProps({ runtime: { ...runtime, activeTaskId: null } })
   expect(wrapper.get('.scheduler-live-list').element).toBe(scheduler)
-  expect(wrapper.get('.script-live-list').text()).toContain('等待脚本运行')
+  expect(wrapper.find('.script-live-list').exists()).toBe(false)
+})
+
+test('hides the script log panel with no configured source while keeping software logs', () => {
+  const run = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: '无日志脚本', state: 'monitoring' }] }
+  const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }
+  const wrapper = mount(LiveLog, { props: { logs: ['本软件仍在运行'], runtime } })
+  expect(wrapper.find('.script-live-list').exists()).toBe(false)
+  expect(wrapper.get('.scheduler-live-list').text()).toContain('本软件仍在运行')
+})
+
+test('shows the script log panel for an enabled manual region even when OCR is still locating', () => {
+  const run = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: '已框选脚本', state: 'monitoring', ui_log_source_configured: true, ui_log_status: '正在定位画面识别（可能有错字或遗漏）' }] }
+  const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }
+  const wrapper = mount(LiveLog, { props: { logs: ['本软件仍在运行'], runtime } })
+  expect(wrapper.get('.script-live-list').text()).toContain('正在定位画面识别')
+  expect(wrapper.get('.scheduler-live-list').text()).toContain('本软件仍在运行')
 })
 
 test('script and scheduler logs scroll independently', async () => {
