@@ -75,7 +75,7 @@ test('只有匹配的通过健康记录才能最终化', () => {
     finalizeValidationPackage(paths);
     assert.equal(existsSync(paths.workDirectory), false);
     assert.equal(existsSync(join(paths.verificationDirectory, 'runner-v1.2.3-portable.exe')), true);
-    assert.equal(existsSync(join(paths.verificationDirectory, '验证证据', '打包输出')), true);
-    assert.equal(existsSync(join(paths.verificationDirectory, '验证证据', '.validation-health.json')), true);
+    assert.equal(existsSync(join(paths.verificationDirectory, 'Evidence', 'package-output')), true);
+    assert.equal(existsSync(join(paths.verificationDirectory, 'Evidence', '.validation-health.json')), true);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

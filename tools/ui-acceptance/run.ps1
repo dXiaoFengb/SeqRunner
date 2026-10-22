@@ -21,13 +21,13 @@ New-Item -ItemType Directory -Path (Join-Path $runPath 'appdata'),(Join-Path $ru
 $oldAppData = $env:APPDATA; $oldLocalAppData = $env:LOCALAPPDATA; $oldNoProxy = $env:NO_PROXY; $oldNoProxyLower = $env:no_proxy; $oldHealth = $env:RUNNER_HEALTH_CHECK; $oldTemp = $env:TEMP; $oldTmp = $env:TMP; $oldRunnerUserData = $env:RUNNER_USER_DATA_DIR
 $env:APPDATA = Join-Path $runPath 'appdata'; $env:LOCALAPPDATA = Join-Path $runPath 'localappdata'
 $env:TEMP = Join-Path $runPath 'temp'; $env:TMP = $env:TEMP
-$env:RUNNER_USER_DATA_DIR = Join-Path $runPath '用户数据'
+$env:RUNNER_USER_DATA_DIR = Join-Path $runPath 'UserData'
 $env:NO_PROXY = '127.0.0.1,localhost'; $env:no_proxy = '127.0.0.1,localhost'; $env:RUNNER_HEALTH_CHECK = '0'
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $listener.Start(); $port = $listener.LocalEndpoint.Port; $listener.Stop()
 $cli = Join-Path $PSScriptRoot 'node_modules/@playwright/cli/playwright-cli.js'
 $scenarioPath = Join-Path $PSScriptRoot "$Scenario-scenario.js"
 if ($Scenario -eq 'log') {
-  $dataPath = Join-Path $runPath '用户数据'
+  $dataPath = Join-Path $runPath 'UserData'
   New-Item -ItemType Directory -Path $dataPath | Out-Null
   @{ schema_version=3; queues=@(@{id='fixture-script';name='受控 MAA';task_ids=@('fixture-maa');time_slots=@()}); tasks=@(@{id='fixture-maa';name='受控 MAA';executable='C:\fixture\MAA.exe';preset_id='maa';preset_evidence='受控夹具';success_log_rules=@(@{mode='keyword';pattern='成功'});failure_log_rules=@(@{mode='keyword';pattern='失败'});maa_adapter=@{installation_directory='C:\fixture'} }); plans=@(); fired_slots=@(); startup_fired_dates=@{} } | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $dataPath 'config.json')
   $today = (Get-Date).Date

@@ -16,6 +16,23 @@ test('follows new logs only while at the bottom and resumes on request', async (
   await wrapper.setProps({ logs: ['新消息'] }); expect(list.scrollTop).toBe(500)
 })
 
+test('labels stages with color classes and reports unread entries while manual scrolling is paused', async () => {
+  const wrapper = mount(LiveLog, { props: { logs: [{ message: '开始校验任务配置', phase: 'validation' }, { message: '正在启动程序', phase: 'running' }, { message: '等待人工确认', phase: 'waiting' }, { message: '准备收尾', phase: 'closing' }, { message: '固定冷却', phase: 'cooling' }, { message: '任务成功', phase: 'success' }, { message: '任务已停止', phase: 'failed' }] } })
+  const list = wrapper.get('.scheduler-live-list').element as HTMLElement
+  Object.defineProperties(list, { scrollHeight: { configurable: true, value: 500 }, clientHeight: { configurable: true, value: 100 } })
+  await nextTick(); await nextTick()
+  expect(wrapper.get('.log-phase-validation').text()).toContain('校验')
+  expect(wrapper.get('.log-phase-running').text()).toContain('运行')
+  expect(wrapper.get('.log-phase-waiting').text()).toContain('等待确认')
+  expect(wrapper.get('.log-phase-cooling').text()).toContain('冷却')
+  expect(wrapper.get('.log-phase-success').text()).toContain('完成')
+  expect(wrapper.get('.log-phase-failed').text()).toContain('失败')
+  list.scrollTop = 100; await wrapper.get('.scheduler-live-list').trigger('scroll')
+  await wrapper.setProps({ logs: [...wrapper.props('logs'), { message: '收尾完成', phase: 'closing' }] })
+  expect(wrapper.text()).toContain('回到最新（1）')
+  expect(wrapper.get('.log-phase-closing').text()).toContain('收尾')
+})
+
 test('distinguishes a script with a configured log source and shows the final elapsed time', async () => {
   const run = { id: 'r', queue_name: '队列', state: 'running', started_at: '2026-01-01T00:00:00Z', ended_at: null, items: [{ task_id: 't', task_name: 'MAA', state: 'waiting_manual', log_source_configured: true }] }
   const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }

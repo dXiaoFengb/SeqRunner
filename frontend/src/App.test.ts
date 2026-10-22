@@ -50,7 +50,7 @@ test('keeps settings out of the plan page and makes plans the only timing entry'
 test('shows only Android emulator connection controls for an MAA script', async () => {
   installBackend(); const wrapper = runner(); await flushPromises()
   await wrapper.findAll('button').find((button) => button.text() === '编辑脚本')!.trigger('click')
-  await wrapper.find('.editor-run-config select').setValue('maa'); await flushPromises()
+  await wrapper.find('.editor-preset-step select').setValue('maa'); await flushPromises()
   expect(wrapper.text()).toContain('MAA 安装目录')
   expect(wrapper.text()).toContain('安卓模拟器连接')
   expect(wrapper.text()).toContain('ADB 程序')
@@ -62,11 +62,57 @@ test('shows only Android emulator connection controls for an MAA script', async 
 test('shows Windows game orchestration only for MaaEnd', async () => {
   installBackend(); const wrapper = runner(); await flushPromises()
   await wrapper.findAll('button').find((button) => button.text() === '编辑脚本')!.trigger('click')
-  await wrapper.find('.editor-run-config select').setValue('maaend'); await flushPromises()
+  await wrapper.find('.editor-preset-step select').setValue('maaend'); await flushPromises()
   expect(wrapper.text()).toContain('MaaEnd 安装目录')
   expect(wrapper.text()).toContain('Windows 游戏启动编排')
   expect(wrapper.text()).toContain('MaaEnd 结束后关闭本轮启动的游戏')
   expect(wrapper.text()).not.toContain('安卓模拟器连接')
+})
+
+test('keeps script-editor changes local until the user saves, then shows saved feedback', async () => {
+  const fetchMock = installBackend(); const wrapper = runner(); await flushPromises()
+  await wrapper.findAll('button').find((button) => button.text() === '编辑脚本')!.trigger('click')
+  await wrapper.get('[aria-label="软件名称"]').setValue('只在草稿中')
+  await wrapper.get('input[placeholder="请选择 .exe"]').setValue('C:\\Tools\\runner.exe')
+  await flushPromises()
+  expect(fetchMock.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(0)
+  expect(wrapper.text()).toContain('有未保存更改')
+  expect(wrapper.text()).toContain('未保存草稿')
+  await wrapper.findAll('button').find((button) => button.text() === '保存更改')!.trigger('click')
+  await flushPromises()
+  expect(fetchMock.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1)
+  expect(wrapper.text()).toContain('保存成功。')
+  expect(wrapper.text()).toContain('已保存')
+})
+
+test('keeps the editor draft intact and visible when its explicit save fails', async () => {
+  const fetchMock = installBackend(); const original = fetchMock.getMockImplementation()!
+  fetchMock.mockImplementation(async (url: string, options?: RequestInit) => String(url).endsWith('/config') && options?.method === 'PUT'
+    ? { ok: false, text: async () => JSON.stringify({ detail: '后端暂不可用' }) } as Awaited<ReturnType<typeof original>>
+    : original(url, options))
+  const wrapper = runner(); await flushPromises()
+  await wrapper.findAll('button').find((button) => button.text() === '编辑脚本')!.trigger('click')
+  await wrapper.get('[aria-label="软件名称"]').setValue('保留的草稿')
+  await wrapper.findAll('button').find((button) => button.text() === '保存更改')!.trigger('click')
+  await flushPromises()
+  expect(wrapper.text()).toContain('保存失败，草稿将保留')
+  expect(wrapper.get('[aria-label="软件名称"]').element).toHaveProperty('value', '保留的草稿')
+  expect(wrapper.text()).toContain('保存失败，请重试')
+  expect(wrapper.text()).toContain('未保存草稿')
+})
+
+test('prompts to save, discard, or continue when leaving an unsaved editor', async () => {
+  installBackend(); const wrapper = runner(); await flushPromises()
+  await wrapper.findAll('button').find((button) => button.text() === '编辑脚本')!.trigger('click')
+  await wrapper.get('[aria-label="软件名称"]').setValue('等待确认')
+  await wrapper.findAll('button').find((button) => button.text() === '← 返回')!.trigger('click')
+  expect(wrapper.get('[aria-label="未保存更改"]').text()).toContain('保存并离开')
+  await wrapper.get('[aria-label="未保存更改"]').findAll('button').find((button) => button.text() === '继续编辑')!.trigger('click')
+  expect(wrapper.find('[aria-label="未保存更改"]').exists()).toBe(false)
+  await wrapper.findAll('button').find((button) => button.text() === '← 返回')!.trigger('click')
+  await wrapper.get('[aria-label="未保存更改"]').findAll('button').find((button) => button.text() === '放弃更改')!.trigger('click')
+  expect(wrapper.text()).toContain('脚本管理')
+  expect(wrapper.text()).not.toContain('等待确认 脚本配置')
 })
 
 test('keeps a completed failure visible and opens history detail', async () => {
@@ -138,7 +184,7 @@ test('keeps the latest 40 realtime messages visible across pages', async () => {
   await flushPromises()
   expect(wrapper.findAll('.side-live-list li')).toHaveLength(40)
   expect(wrapper.get('.side-live-list').text()).not.toContain('消息 1消息')
-  expect(wrapper.findAll('.side-live-list li')[0].text()).toBe('消息 2')
+  expect(wrapper.findAll('.side-live-list li')[0].text()).toContain('消息 2')
   await wrapper.get('button[aria-label="计划"]').trigger('click')
   expect(wrapper.get('.side-live-list').text()).toContain('消息 41')
   wrapper.unmount()

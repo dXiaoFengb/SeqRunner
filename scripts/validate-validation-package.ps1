@@ -44,7 +44,7 @@ try {
     $env:TEMP = Join-Path $evidence 'temp'; $env:TMP = $env:TEMP
     $env:NO_PROXY = '127.0.0.1,localhost'; $env:no_proxy = $env:NO_PROXY
     $env:RUNNER_HEALTH_CHECK = '1'
-    $env:RUNNER_USER_DATA_DIR = Join-Path $evidence '用户数据'
+    $env:RUNNER_USER_DATA_DIR = Join-Path $evidence 'UserData'
     $process = Start-Process -FilePath $executable -WorkingDirectory $evidence -WindowStyle Hidden -PassThru
     $deadline = [DateTime]::UtcNow.AddSeconds(60)
     while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {

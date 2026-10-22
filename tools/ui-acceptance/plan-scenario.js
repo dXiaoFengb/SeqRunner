@@ -1,13 +1,13 @@
 async page => {
   const check = (ok, message) => { if (!ok) throw new Error(message) }
   const wait = async () => { await page.waitForTimeout(500); await page.locator('.draft-state').waitFor({state:'hidden', timeout:15000}) }
+  const saveEditor = async () => { await page.getByRole('button',{name:'保存更改',exact:true}).click(); await page.locator('.editor-sheet-actions .save-saved').waitFor({state:'visible', timeout:15000}) }
   await page.getByRole('button',{name:'脚本',exact:true}).click()
   for (const name of ['验收软件甲','验收软件乙']) {
     await page.getByRole('button',{name:'新建脚本'}).click()
-    await wait()
     await page.getByRole('textbox',{name:'软件名称'}).fill(name)
     await page.getByRole('textbox',{name:'软件名称'}).press('Tab')
-    await wait()
+    await saveEditor()
     await page.getByRole('button',{name:'← 返回',exact:true}).click()
   }
   await page.getByRole('button',{name:'计划',exact:true}).click()

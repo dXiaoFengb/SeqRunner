@@ -24,9 +24,9 @@ function finalizeValidationPackage(paths) {
   renameSync(paths.workDirectory, paths.verificationDirectory);
   const packagedDirectory = join(paths.verificationDirectory, '软件包');
   renameSync(join(packagedDirectory, executables[0]), join(paths.verificationDirectory, executables[0]));
-  const evidenceDirectory = join(paths.verificationDirectory, '验证证据');
+  const evidenceDirectory = join(paths.verificationDirectory, 'Evidence');
   mkdirSync(evidenceDirectory);
-  renameSync(packagedDirectory, join(evidenceDirectory, '打包输出'));
+  renameSync(packagedDirectory, join(evidenceDirectory, 'package-output'));
   for (const name of ['backend', 'cache', '.validation-health.json', 'electron-cache-preparation.json', 'builder-cache-preparation.json']) {
     const source = join(paths.verificationDirectory, name);
     if (existsSync(source)) renameSync(source, join(evidenceDirectory, name));
