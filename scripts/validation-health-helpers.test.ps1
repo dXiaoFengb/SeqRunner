@@ -7,4 +7,5 @@ if ($failed.status -ne 'failed' -or $null -ne $failed.exitCode -or $failed.proce
 $tree = Get-ValidationProcessTree -RootProcessIds @($PID)
 if ($tree.status -notin @('checked', 'unknown')) { throw '进程树检查状态无效。' }
 if ($tree.status -eq 'unknown' -and -not $tree.error) { throw '未知进程树状态必须记录原因。' }
+if ($tree.status -eq 'checked' -and ($tree.processIds -notcontains $PID -or $tree.processIds -contains 0)) { throw '进程树不得丢失根 PID 或误纳入 PID 0。' }
 Write-Output 'validation health helper tests: PASS'

@@ -17,7 +17,8 @@ function Get-ValidationProcessTree {
         }
         while ($pending.Count -gt 0) {
             $parentId = $pending.Dequeue()
-            foreach ($childId in @($childrenByParent[$parentId])) {
+            if (-not $childrenByParent.ContainsKey($parentId)) { continue }
+            foreach ($childId in $childrenByParent[$parentId]) {
                 if ($known.Add($childId)) { $pending.Enqueue($childId) }
             }
         }

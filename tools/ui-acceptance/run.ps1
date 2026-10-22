@@ -2,7 +2,7 @@ param([Parameter(Mandatory=$true)][string]$Executable, [ValidateSet('plan','log'
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $source = (Resolve-Path -LiteralPath $Executable).Path
-if ($source -notmatch ('^' + [regex]::Escape($root) + '[\\/]portable-validation-v[0-9]+[\\/]electron[\\/][^\\/]+-portable\.exe$')) { throw '仅允许工作区内独立验证包目录的 portable EXE。' }
+if ($source -notmatch ('^' + [regex]::Escape($root) + '[\\/]产物[\\/]验证[\\/]v\d+\.\d+\.\d+[\\/]electron[\\/][^\\/]+-portable\.exe$')) { throw '仅允许工作区内已最终化验证包目录的 portable EXE。' }
 $runId = [guid]::NewGuid().ToString('N')
 $runPath = Join-Path $root "build/ui-acceptance/$runId"
 if (Test-Path -LiteralPath $runPath) { throw '隔离目录已经存在。' }

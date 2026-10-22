@@ -4,14 +4,14 @@
 
 ## 安装和运行
 
-要求 Windows、Node.js 20 及以上、PowerShell 7 和已经生成的独立 portable 验证包；不需要额外下载浏览器。依赖使用局部安装，安装时跳过依赖脚本：
+要求 Windows、Node.js 20 及以上、PowerShell 7 和已经生成的独立 portable 验证包；不需要额外下载浏览器。运行前按 `../../REVIEW.md`、`../../GIT.md` 与 `../../TASK.md` 确认审核范围、隔离边界及“本轮验收目标 EXE”。依赖使用局部安装，安装时跳过依赖脚本：
 
 ```powershell
 corepack npm ci --prefix tools/ui-acceptance --ignore-scripts --no-audit --no-fund --cache build/ui-acceptance-npm-cache
-pwsh -NoProfile -File tools/ui-acceptance/run.ps1 -Executable 'portable-validation-v0512/electron/顺序任务调度器-v0.5.12-portable.exe'
+pwsh -NoProfile -File tools/ui-acceptance/run.ps1 -Executable '<TASK.md 指定且已核验 SHA-256 的 portable EXE 路径>'
 ```
 
-第二条命令请换为本轮独立验证包的实际路径。日志页面可加 `-Scenario log`，使用独立虚拟历史记录验证日期筛选、分组、失败详情和重置；默认仍运行计划场景。脚本只接受本工作区 `portable-validation-v*/electron/` 下以 `-portable.exe` 结尾的文件，并核对副本哈希；不接受业务程序。执行结果打印 `Evidence=...`；该目录的 `source.txt` 记录源与哈希，`result.txt` 记录运行结果，`final.png` 与 `viewport-*.png` 用于复核。测试故意制造一次冲突，控制台会出现对应的 HTTP 422，这不代表其他请求失败。
+第二条命令请换为本轮独立验证包的实际路径。日志页面可加 `-Scenario log`，使用独立虚拟历史记录验证日期筛选、分组、失败详情和重置；默认仍运行计划场景。脚本只接受本工作区 `产物/验证/vX.Y.Z/electron/` 下以 `-portable.exe` 结尾的文件，并核对副本哈希；不接受工作目录中的未最终化包或业务程序。执行结果打印 `Evidence=...`；该目录的 `source.txt` 记录源与哈希，`result.txt` 记录运行结果，`final.png` 与 `viewport-*.png` 用于复核。测试故意制造一次冲突，控制台会出现对应的 HTTP 422，这不代表其他请求失败。
 
 ## 与人工验收表的关系
 
@@ -26,4 +26,4 @@ pwsh -NoProfile -File tools/ui-acceptance/run.ps1 -Executable 'portable-validati
 | 12 | 计划概览在 1080/960/640 像素模拟视口的无横向溢出和截图 | 运行中心、菜单、各页面的实际窗口及视觉验收 |
 | 13 | 不覆盖 | MAA/MaaEnd 受控路径和进程编排 |
 
-本工具只为上表标注的场景提供自动化证据。模拟视口不是实际 Windows 窗口宽度或 DPI 验收；真实软件、系统操作、视觉观感和未覆盖项仍需另行验证。`docs/manual-acceptance.md` 中 v0.5.5 的固定包路径和版本是历史内容，实际目标以本次传入的独立验证包为准。
+本工具只为上表标注的场景提供自动化证据。模拟视口不是实际 Windows 窗口宽度或 DPI 验收；真实软件、系统操作、视觉观感和未覆盖项仍需另行验证。实际目标以当前任务指定、已核验 SHA-256 的独立验证包为准；审核方法与结果边界见 `../../REVIEW.md` 和 `../../docs/manual-acceptance.md`。

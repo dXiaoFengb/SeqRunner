@@ -39,6 +39,7 @@ coverage/
 /.test-tmp-v*/
 /.tmp-test/
 /.pytest-local*/
+/.pytest-final-audit*/
 /.pytest-cache*/
 /backend/.pytest-cache*/
 /backend/.test-tmp*/
