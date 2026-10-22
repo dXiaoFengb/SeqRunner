@@ -11,29 +11,24 @@ const current = computed(() => { const run = props.runtime?.run; if (!run || !pr
 const summary = computed(() => { const run = props.runtime?.run; if (!run || !['completed', 'stopped'].includes(run.state) || !run.started_at || !run.ended_at) return ''; const seconds = Math.max(0, Math.floor((Date.parse(run.ended_at) - Date.parse(run.started_at)) / 1000)); if (!Number.isFinite(seconds)) return ''; const state = run.state === 'stopped' ? '本轮已停止' : run.items.some(item => item.state === 'failed') ? '本轮完成，存在失败项' : '本轮执行完成'; return `${state}，总耗时 ${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds % 3600 / 60)} 分 ${seconds % 60} 秒` })
 const list = ref<HTMLElement | null>(null)
 const scriptList = ref<HTMLElement | null>(null)
-const following = ref(true)
-const scriptFollowing = ref(true)
-const unread = ref(0)
-let observedLogCount = 0
-function onScroll() { const el = list.value; if (el) { following.value = el.scrollHeight - el.scrollTop - el.clientHeight <= 8; if (following.value) unread.value = 0 } }
-function toBottom() { const el = list.value; if (el) { el.scrollTop = el.scrollHeight; following.value = true; unread.value = 0 } }
-function onScriptScroll() { const el = scriptList.value; if (el) scriptFollowing.value = el.scrollHeight - el.scrollTop - el.clientHeight <= 8 }
-function scriptToBottom() { const el = scriptList.value; if (el) { el.scrollTop = el.scrollHeight; scriptFollowing.value = true } }
-onMounted(async () => { observedLogCount = entries.value.length; await nextTick(); toBottom(); scriptToBottom() })
-watch(() => [entries.value.length, summary.value] as const, async ([count], [previousCount]) => { const added = Math.max(0, count - (previousCount ?? observedLogCount)); observedLogCount = count; if (following.value) { await nextTick(); toBottom() } else if (added) unread.value += added }, { flush: 'pre' })
-watch(() => props.runtime?.run?.id, async (id, previous) => { if (id && id !== previous) { following.value = true; unread.value = 0; observedLogCount = entries.value.length; await nextTick(); toBottom() } })
-watch(() => [props.runtime?.run?.id, current.value?.task_id] as const, () => { scriptFollowing.value = true })
-watch(() => [props.scriptLog, current.value] as const, async () => { if (scriptFollowing.value) { await nextTick(); scriptToBottom() } }, { flush: 'pre' })
+function scrollToEnd(element: HTMLElement | null) { if (element) element.scrollTop = element.scrollHeight }
+async function scrollSummaryToEnd() { await nextTick(); scrollToEnd(list.value) }
+async function scrollScriptToEnd() { await nextTick(); scrollToEnd(scriptList.value) }
+onMounted(async () => { await scrollSummaryToEnd(); await scrollScriptToEnd() })
+// 实时日志不保留浏览暂停状态：每条新增内容到达后都回到最新一行。
+watch(() => [props.logs, summary.value] as const, scrollSummaryToEnd, { flush: 'pre' })
+watch(() => props.runtime?.run?.id, scrollSummaryToEnd)
+watch(() => [props.scriptLog, current.value?.task_id] as const, scrollScriptToEnd, { flush: 'pre' })
 const scriptText = computed(() => current.value && props.scriptLog?.runId === props.runtime?.run?.id && props.scriptLog?.taskId === current.value.task_id ? props.scriptLog.text : '')
 const hasScriptLog = computed(() => Boolean(current.value && (current.value.log_source_configured || current.value.ui_log_source_configured || scriptText.value)))
 </script>
 <template>
   <section class="side-live-log" :class="{ 'has-script-log': runtime?.busy }" aria-label="本轮日志摘要">
-    <div class="side-live-header scheduler-header"><b>本轮日志摘要</b><button v-if="!following" type="button" @click="toBottom">{{ unread ? `回到最新（${unread}）` : '回到最新' }}</button></div>
-    <div ref="list" class="side-live-list scheduler-live-list" tabindex="0" @scroll="onScroll"><span v-if="!entries.length" class="side-live-empty">暂无实时日志</span><ol v-else><li v-for="(entry, index) in entries" :key="index" :class="'log-phase-' + entry.phase"><b class="log-phase">{{ phaseLabels[entry.phase] }}</b><span>{{ logLabel(entry.message) }}</span></li></ol><span v-if="summary" class="side-live-summary">{{ summary }}</span></div>
+    <div class="side-live-header scheduler-header"><b>本轮日志摘要</b></div>
+    <div ref="list" class="side-live-list scheduler-live-list" tabindex="0"><span v-if="!entries.length" class="side-live-empty">暂无实时日志</span><ol v-else><li v-for="(entry, index) in entries" :key="index" :class="'log-phase-' + entry.phase"><b class="log-phase">{{ phaseLabels[entry.phase] }}</b><span>{{ logLabel(entry.message) }}</span></li></ol><span v-if="summary" class="side-live-summary">{{ summary }}</span></div>
     <template v-if="runtime?.busy && hasScriptLog">
-      <div class="side-live-header script-header"><b>{{ current ? `${current.task_name} · 脚本日志` : '脚本日志' }}</b><button v-if="!scriptFollowing && current" type="button" @click="scriptToBottom">回到底部</button></div>
-      <div ref="scriptList" class="side-live-list script-live-list" tabindex="0" @scroll="onScriptScroll"><span class="side-live-empty">{{ current ? (current.ui_log_status || '暂无法可靠获取该脚本的界面日志。') : '等待脚本运行' }}</span><pre v-if="scriptText" class="script-text">{{ scriptText }}</pre></div>
+      <div class="side-live-header script-header"><b>{{ current ? `${current.task_name} · 脚本日志` : '脚本日志' }}</b></div>
+      <div ref="scriptList" class="side-live-list script-live-list" tabindex="0"><span class="side-live-empty">{{ current ? (current.ui_log_status || '暂无法可靠获取该脚本的界面日志。') : '等待脚本运行' }}</span><pre v-if="scriptText" class="script-text">{{ scriptText }}</pre></div>
     </template>
   </section>
 </template>

@@ -3,20 +3,22 @@ import { expect, test } from 'vitest'
 import { nextTick } from 'vue'
 import LiveLog from './LiveLog.vue'
 
-test('follows new logs only while at the bottom and resumes on request', async () => {
+test('always follows new summary logs even after manual scrolling', async () => {
   const wrapper = mount(LiveLog, { props: { logs: ['第一条'] } })
   const list = wrapper.get('.side-live-list').element as HTMLElement
   Object.defineProperties(list, { scrollHeight: { configurable: true, value: 500 }, clientHeight: { configurable: true, value: 100 } })
   await nextTick(); await nextTick()
   expect(list.scrollTop).toBe(500)
-  list.scrollTop = 100; await wrapper.get('.side-live-list').trigger('scroll')
+  list.scrollTop = 100
   await wrapper.setProps({ logs: ['第一条', '任务成功，来源：CompletionSource.MANUAL'] })
-  expect(list.scrollTop).toBe(100); expect(wrapper.text()).toContain('来源：人工确认')
-  await wrapper.get('button').trigger('click'); expect(list.scrollTop).toBe(500)
+  await nextTick()
+  expect(list.scrollTop).toBe(500); expect(wrapper.text()).toContain('来源：人工确认')
   await wrapper.setProps({ logs: ['新消息'] }); expect(list.scrollTop).toBe(500)
+  expect(wrapper.text()).not.toContain('回到最新')
+  expect(wrapper.text()).not.toContain('回到底部')
 })
 
-test('labels stages with color classes and reports unread entries while manual scrolling is paused', async () => {
+test('labels stages with color classes while always following', async () => {
   const wrapper = mount(LiveLog, { props: { logs: [{ message: '开始校验任务配置', phase: 'validation' }, { message: '正在启动程序', phase: 'running' }, { message: '等待人工确认', phase: 'waiting' }, { message: '准备收尾', phase: 'closing' }, { message: '固定冷却', phase: 'cooling' }, { message: '任务成功', phase: 'success' }, { message: '任务已停止', phase: 'failed' }] } })
   const list = wrapper.get('.scheduler-live-list').element as HTMLElement
   Object.defineProperties(list, { scrollHeight: { configurable: true, value: 500 }, clientHeight: { configurable: true, value: 100 } })
@@ -27,9 +29,11 @@ test('labels stages with color classes and reports unread entries while manual s
   expect(wrapper.get('.log-phase-cooling').text()).toContain('冷却')
   expect(wrapper.get('.log-phase-success').text()).toContain('完成')
   expect(wrapper.get('.log-phase-failed').text()).toContain('失败')
-  list.scrollTop = 100; await wrapper.get('.scheduler-live-list').trigger('scroll')
+  list.scrollTop = 100
   await wrapper.setProps({ logs: [...wrapper.props('logs'), { message: '收尾完成', phase: 'closing' }] })
-  expect(wrapper.text()).toContain('回到最新（1）')
+  await nextTick()
+  expect(list.scrollTop).toBe(500)
+  expect(wrapper.find('button').exists()).toBe(false)
   expect(wrapper.get('.log-phase-closing').text()).toContain('收尾')
 })
 
@@ -74,7 +78,7 @@ test('shows the script log panel for an enabled manual region even when OCR is s
   expect(wrapper.get('.scheduler-live-list').text()).toContain('本软件仍在运行')
 })
 
-test('script and scheduler logs scroll independently', async () => {
+test('script and scheduler logs always return to their own latest content', async () => {
   const run = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: '程序', state: 'monitoring' }] }
   const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }
   const wrapper = mount(LiveLog, { props: { logs: ['检查完成'], runtime, scriptLog: { runId: 'r', taskId: 't', text: '第一条' } } })
@@ -83,13 +87,31 @@ test('script and scheduler logs scroll independently', async () => {
   for (const el of [script, scheduler]) Object.defineProperties(el, { scrollHeight: { configurable: true, value: 500 }, clientHeight: { configurable: true, value: 100 } })
   await nextTick(); await nextTick()
   script.scrollTop = 100
-  await wrapper.get('.script-live-list').trigger('scroll')
+  scheduler.scrollTop = 100
   await wrapper.setProps({ logs: ['检查完成', '新状态'], scriptLog: { runId: 'r', taskId: 't', text: '第一条\n第二条' } })
   await nextTick()
-  expect(script.scrollTop).toBe(100)
+  expect(script.scrollTop).toBe(500)
   expect(scheduler.scrollTop).toBe(500)
   expect(wrapper.get('.script-live-list').text()).toContain('第二条')
   expect(wrapper.get('.scheduler-live-list').text()).toContain('新状态')
+})
+
+test('returns both panels to latest content when a new run and task become active', async () => {
+  const firstRun = { id: 'r1', queue_name: '队列', state: 'running', items: [{ task_id: 't1', task_name: '程序一', state: 'monitoring', log_source_configured: true }] }
+  const runtime = { busy: true, activeTaskId: 't1', cooldownSeconds: 0, run: firstRun }
+  const wrapper = mount(LiveLog, { props: { logs: ['旧摘要'], runtime, scriptLog: { runId: 'r1', taskId: 't1', text: '旧脚本日志' } } })
+  const scheduler = wrapper.get('.scheduler-live-list').element as HTMLElement
+  const script = wrapper.get('.script-live-list').element as HTMLElement
+  for (const el of [scheduler, script]) Object.defineProperties(el, { scrollHeight: { configurable: true, value: 500 }, clientHeight: { configurable: true, value: 100 } })
+  await nextTick(); await nextTick()
+  scheduler.scrollTop = 100
+  script.scrollTop = 100
+  const secondRun = { id: 'r2', queue_name: '队列', state: 'running', items: [{ task_id: 't2', task_name: '程序二', state: 'monitoring', log_source_configured: true }] }
+  await wrapper.setProps({ logs: ['新摘要'], runtime: { ...runtime, activeTaskId: 't2', run: secondRun }, scriptLog: { runId: 'r2', taskId: 't2', text: '新脚本日志' } })
+  await nextTick(); await nextTick()
+  expect(scheduler.scrollTop).toBe(500)
+  expect(script.scrollTop).toBe(500)
+  expect(wrapper.text()).toContain('程序二 · 脚本日志')
 })
 
 test('only shows messages for the active run and task', async () => {

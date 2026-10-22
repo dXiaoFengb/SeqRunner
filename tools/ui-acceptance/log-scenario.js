@@ -112,6 +112,24 @@ async page => {
   })
   check(await page.locator('.side-live-list').getByText('受控脚本实时日志').isVisible(), '脚本实时日志不可见')
   check(await page.locator('.scheduler-live-list').getByText('受控消息 41').isVisible(), '脚本运行时本软件日志不可见')
+  await page.evaluate(() => {
+    const socket = window.__fixtureSocket
+    const emit = (type, data) => socket.onmessage({data: JSON.stringify({type, data})})
+    emit('script_log', {runId:'fixture-run', taskId:'fixture', text:Array.from({length:60}, (_, index) => `受控脚本实时日志 ${index + 1}`).join('\n')})
+  })
+  await page.locator('.script-live-list').getByText('受控脚本实时日志 60').waitFor({timeout:15000})
+  await page.evaluate(() => {
+    document.querySelector('.scheduler-live-list').scrollTop = 0
+    document.querySelector('.script-live-list').scrollTop = 0
+    const socket = window.__fixtureSocket
+    socket.onmessage({data: JSON.stringify({type:'log', data:{message:'受控消息 42'}})})
+    socket.onmessage({data: JSON.stringify({type:'script_log', data:{runId:'fixture-run', taskId:'fixture', text:Array.from({length:61}, (_, index) => `受控脚本实时日志 ${index + 1}`).join('\n')}})})
+  })
+  await page.locator('.script-live-list').getByText('受控脚本实时日志 61').waitFor({timeout:15000})
+  for (const selector of ['.scheduler-live-list', '.script-live-list']) {
+    check(await page.locator(selector).evaluate(el => el.scrollTop + el.clientHeight >= el.scrollHeight - 1), `${selector} 新日志后未自动滚至末尾`)
+  }
+  check(await page.locator('.side-live-log button').count() === 0, '实时日志仍显示手动回到底部按钮')
   const before = await page.locator('.scheduler-live-list').boundingBox()
   const scriptBox = await page.locator('.script-live-list').boundingBox()
   check(before && scriptBox && before.y + before.height <= scriptBox.y, '摘要未位于脚本日志上方')
