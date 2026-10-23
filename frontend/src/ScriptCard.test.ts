@@ -6,7 +6,7 @@ import type { Task } from './types'
 const task: Task = { id: 't', name: '启动器', executable: '', arguments: [], working_directory: null, allow_manual_confirmation: true, allow_process_exit: true, log_path: null, success_log: null, success_log_mode: 'keyword', failure_log: null, failure_log_mode: 'keyword', success_log_rules: [], failure_log_rules: [], preset_id: null, preset_evidence: null, timeout_seconds: 600 }
 const props = { script: { id: 'q', name: '晨间脚本', task_ids: ['t'], time_slots: [] }, task, locked: false, blocked: false, presetSummary: '通用程序' }
 
-test('keeps the homepage card compact and exposes keyboard order actions in the menu', async () => {
+test('keeps the homepage card compact and leaves ordering to the drag handle', async () => {
   const wrapper = mount(ScriptCard, { props })
   expect(wrapper.find('.script-emblem').text()).toBe('通')
   expect(wrapper.find('.script-preset').text()).toBe('通用程序')
@@ -21,8 +21,11 @@ test('keeps the homepage card compact and exposes keyboard order actions in the 
   const menuCard = mount(ScriptCard, { props, attachTo: document.body })
   await menuCard.find('.more-trigger').trigger('click')
   await menuCard.vm.$nextTick()
-  await document.querySelector('[role="menuitem"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-  expect(menuCard.emitted('move')?.[0]).toEqual([-1])
+  expect(document.body.textContent).toContain('复制脚本')
+  expect(document.body.textContent).toContain('删除脚本')
+  expect(document.body.textContent).not.toContain('上移')
+  expect(document.body.textContent).not.toContain('下移')
+  expect(menuCard.emitted('move')).toBeUndefined()
   menuCard.unmount()
 })
 

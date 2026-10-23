@@ -145,6 +145,26 @@ test('shows task configuration only after a first slot and persists a selected p
   expect(data.plans[0].items[0].script_id).toBe('one')
 })
 
+test('opens and closes the weekday panel while preserving the final selected day', async () => {
+  const data = config(true)
+  data.plans[0].time_slots.push({ id: 'morning', enabled: true, days: [0], time: '09:00' })
+  data.plans[0].items[0].days = [0]
+  const wrapper = mount(PlanManager, { attachTo: document.body, props: { config: data, selectedPlanId: 'plan', busy: false } })
+  await openEditor(wrapper)
+
+  const summary = wrapper.get('.task-row .weekday-summary')
+  await summary.trigger('click')
+  expect(summary.attributes('aria-expanded')).toBe('true')
+  expect(wrapper.get('.task-row .weekday-popover').text()).toContain('周一')
+  await wrapper.get('.task-row .weekday-popover button.selected').trigger('click')
+  expect(data.plans[0].items[0].days).toEqual([0])
+  expect(wrapper.text()).toContain('请至少选择一个运行日。')
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+  await wrapper.vm.$nextTick()
+  expect(summary.attributes('aria-expanded')).toBe('false')
+  wrapper.unmount()
+})
+
 test('uses an accessible enabled or closed selector for each scheduled slot', async () => {
   const data = config(true)
   data.plans[0].time_slots.push({ id: 'morning', enabled: true, days: [0], time: '09:00' })

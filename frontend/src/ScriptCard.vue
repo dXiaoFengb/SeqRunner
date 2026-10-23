@@ -5,7 +5,7 @@ import type { Queue, Task } from './types'
 
 type Execution = { kind: 'idle' | 'queued' | 'running' | 'waiting_manual' | 'closing' | 'cooling_down' | 'succeeded' | 'failed' | 'stopped'; label: string; detail?: string }
 const props = defineProps<{ script: Queue; task: Task | null; locked: boolean; blocked: boolean; execution?: Execution; presetSummary: string }>()
-const emit = defineEmits<{ edit: []; run: []; duplicate: []; remove: []; dragstart: [event: DragEvent]; drop: [event: DragEvent]; move: [direction: -1 | 1] }>()
+const emit = defineEmits<{ edit: []; run: []; duplicate: []; remove: []; dragstart: [event: DragEvent]; drop: [event: DragEvent] }>()
 
 const moreOpen = ref(false)
 const trigger = ref<HTMLButtonElement>()
@@ -71,8 +71,6 @@ onBeforeUnmount(() => closeMenu())
     </div>
     <Teleport to="body">
       <div v-if="moreOpen" ref="menu" class="action-menu" role="menu" :style="menuStyle" @keydown="onMenuKeydown">
-        <button role="menuitem" :disabled="locked" @click="runAndClose(() => emit('move', -1))">上移</button>
-        <button role="menuitem" :disabled="locked" @click="runAndClose(() => emit('move', 1))">下移</button>
         <button role="menuitem" :disabled="locked" @click="runAndClose(() => emit('duplicate'))"><Copy aria-hidden="true" />复制脚本</button>
         <button role="menuitem" class="textdanger" :disabled="locked" @click="runAndClose(() => emit('remove'))"><Trash2 aria-hidden="true" />删除脚本</button>
       </div>
