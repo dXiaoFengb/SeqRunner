@@ -132,6 +132,71 @@ async def test_manual_confirmation_stops_only_owned_process(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_runtime_snapshot_restores_summary_before_manual_confirmation(tmp_path: Path) -> None:
+    task = python_task("人工确认", "import time; time.sleep(10)")
+    task.allow_manual_confirmation = True
+    task.allow_process_exit = False
+    engine, queue = build_engine(tmp_path, [task])
+
+    await engine.start(queue.id, "manual")
+    for _ in range(30):
+        snapshot = engine.snapshot()
+        if any(entry["phase"] == "waiting" for entry in snapshot["liveLogs"]):
+            break
+        await asyncio.sleep(0.05)
+    else:
+        await engine.stop()
+        await engine.wait_until_idle()
+        pytest.fail("等待人工确认前没有写入摘要日志快照")
+
+    entries = snapshot["liveLogs"]
+    assert [entry["sequence"] for entry in entries] == list(range(1, len(entries) + 1))
+    assert entries[0]["message"] == "本轮开始运行"
+    assert any(entry["phase"] == "validation" for entry in entries)
+    assert any(entry["phase"] == "running" for entry in entries)
+    assert any(entry["phase"] == "waiting" for entry in entries)
+    assert {entry["runId"] for entry in entries} == {snapshot["run"]["id"]}
+
+    await engine.confirm(task.id)
+    await engine.wait_until_idle()
+
+
+@pytest.mark.asyncio
+async def test_live_summary_keeps_recent_entries_and_survives_detail_log_failure(tmp_path: Path, monkeypatch) -> None:
+    task = python_task("摘要", "pass")
+    engine, _ = build_engine(tmp_path, [task])
+    record = RunRecord(queue_id="q", queue_name="q", trigger_source="manual", run_log_id="00000000-0000-0000-0000-000000000001")
+    engine.current_run = record
+    engine._reset_live_summary(record)
+
+    def reject_persist(*_args, **_kwargs) -> None:
+        raise OSError("受控写入失败")
+
+    monkeypatch.setattr(engine.detail_logs, "append", reject_persist)
+    subscription = engine.events.subscribe()
+    first_event = asyncio.create_task(anext(subscription))
+    await asyncio.sleep(0)
+    for sequence in range(45):
+        await engine._run_log(record, f"摘要 {sequence}", phase="info")
+
+    event = await first_event
+    assert event["type"] == "log"
+    assert event["data"]["message"] == "摘要 0"
+    await subscription.aclose()
+
+    snapshot = engine.snapshot()
+    assert record.run_log_status and record.run_log_status.startswith("本轮日志保存失败")
+    assert len(snapshot["liveLogs"]) == 40
+    assert [entry["sequence"] for entry in snapshot["liveLogs"]] == list(range(6, 46))
+    assert snapshot["liveLogs"][0]["message"] == "摘要 5"
+
+    next_record = RunRecord(queue_id="next", queue_name="下一轮", trigger_source="manual")
+    engine.current_run = next_record
+    engine._reset_live_summary(next_record)
+    assert engine.snapshot()["liveLogs"] == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("allow_exit", [False, True])
 async def test_manual_waits_after_success_log_and_zero_exit(tmp_path: Path, allow_exit: bool) -> None:
     log = tmp_path / "success.log"

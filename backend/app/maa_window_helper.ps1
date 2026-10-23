@@ -18,6 +18,7 @@ public static class RegionNative {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+    [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
     public delegate bool EnumProc(IntPtr hwnd, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
     public static bool IsRegionVisible(IntPtr target, int left, int top, int width, int height) {
@@ -27,7 +28,9 @@ public static class RegionNative {
         EnumWindows((hwnd, data) => {
             if (hwnd == target) { found = true; return false; }
             RECT r;
-            if (IsWindowVisible(hwnd) && !IsIconic(hwnd) && GetWindowRect(hwnd, out r) &&
+            int cloaked = 0;
+            bool isCloaked = DwmGetWindowAttribute(hwnd, 14, out cloaked, sizeof(int)) == 0 && cloaked != 0;
+            if (!isCloaked && IsWindowVisible(hwnd) && !IsIconic(hwnd) && GetWindowRect(hwnd, out r) &&
                 r.Left < left + width && r.Right > left && r.Top < top + height && r.Bottom > top) blocked = true;
             return true;
         }, IntPtr.Zero);
@@ -80,32 +83,40 @@ if ($Mode -eq 'select') {
         $overlay = [System.Windows.Interop.WindowInteropHelper]::new($window).Handle
         if (-not [RegionNative]::SetWindowPos($overlay, [IntPtr]::Zero, $origin.X, $origin.Y, $actualWidth, $actualHeight, 0x0014)) { throw '无法定位框选区域' }
     })
-    $state = @{start = $null; result = $null}
+    function Get-PhysicalCanvasPoint($point) {
+        $source = [System.Windows.PresentationSource]::FromVisual($canvas)
+        if ($null -eq $source -or $null -eq $source.CompositionTarget) { throw '无法确定框选区域的屏幕缩放' }
+        $pixels = $source.CompositionTarget.TransformToDevice.Transform($point)
+        $screen = [RegionNative+POINT]::new()
+        $screen.X = $origin.X + [int][Math]::Round($pixels.X)
+        $screen.Y = $origin.Y + [int][Math]::Round($pixels.Y)
+        return $screen
+    }
+    $state = @{start = $null; startVisual = $null; result = $null}
     $canvas.Add_MouseLeftButtonDown({ param($sender, $event)
-        $state.start = $event.GetPosition($canvas)
+        $point = $event.GetPosition($canvas)
+        $state.start = Get-PhysicalCanvasPoint $point
+        $state.startVisual = $point
         [void]$canvas.CaptureMouse()
     })
     $canvas.Add_MouseMove({ param($sender, $event)
         if ($null -eq $state.start) { return }
         $p = $event.GetPosition($canvas)
-        [System.Windows.Controls.Canvas]::SetLeft($border, [Math]::Min($state.start.X, $p.X))
-        [System.Windows.Controls.Canvas]::SetTop($border, [Math]::Min($state.start.Y, $p.Y))
-        $border.Width = [Math]::Abs($p.X - $state.start.X)
-        $border.Height = [Math]::Abs($p.Y - $state.start.Y)
+        [System.Windows.Controls.Canvas]::SetLeft($border, [Math]::Min($state.startVisual.X, $p.X))
+        [System.Windows.Controls.Canvas]::SetTop($border, [Math]::Min($state.startVisual.Y, $p.Y))
+        $border.Width = [Math]::Abs($p.X - $state.startVisual.X)
+        $border.Height = [Math]::Abs($p.Y - $state.startVisual.Y)
     })
     $canvas.Add_MouseLeftButtonUp({ param($sender, $event)
         if ($null -eq $state.start) { return }
-        $p = $event.GetPosition($canvas)
-        $source = [System.Windows.PresentationSource]::FromVisual($window)
-        $a = $source.CompositionTarget.TransformToDevice.Transform($state.start)
-        $b = $source.CompositionTarget.TransformToDevice.Transform($p)
-        $left = [Math]::Max(0, [int][Math]::Floor([Math]::Min($a.X, $b.X))); $top = [Math]::Max(0, [int][Math]::Floor([Math]::Min($a.Y, $b.Y)))
-        $right = [Math]::Min($actualWidth, [int][Math]::Ceiling([Math]::Max($a.X, $b.X))); $bottom = [Math]::Min($actualHeight, [int][Math]::Ceiling([Math]::Max($a.Y, $b.Y)))
+        $screen = Get-PhysicalCanvasPoint ($event.GetPosition($canvas))
+        $left = [Math]::Max(0, [Math]::Min($state.start.X, $screen.X) - $origin.X); $top = [Math]::Max(0, [Math]::Min($state.start.Y, $screen.Y) - $origin.Y)
+        $right = [Math]::Min($actualWidth, [Math]::Max($state.start.X, $screen.X) - $origin.X); $bottom = [Math]::Min($actualHeight, [Math]::Max($state.start.Y, $screen.Y) - $origin.Y)
         if ($right - $left -ge 5 -and $bottom - $top -ge 5) {
             $state.result = @{x=$left; y=$top; width=$right-$left; height=$bottom-$top}
             $window.Close()
         }
-        $canvas.ReleaseMouseCapture(); $state.start = $null
+        $canvas.ReleaseMouseCapture(); $state.start = $null; $state.startVisual = $null
     })
     $window.Add_KeyDown({ param($sender, $event) if ($event.Key -eq 'Escape') { $window.Close() } })
     [void]$window.ShowDialog()

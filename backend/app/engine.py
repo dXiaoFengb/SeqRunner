@@ -61,6 +61,7 @@ class _CompletionCancelled(Exception):
 
 
 ConfigUpdateResult = TypeVar("ConfigUpdateResult")
+SUMMARY_LOG_LIMIT = 40
 
 
 class RunnerEngine:
@@ -98,6 +99,9 @@ class RunnerEngine:
         self._completion_task: asyncio.Task[None] | None = None
         self._completion_cancel = asyncio.Event()
         self._pending_completion: dict[str, object] | None = None
+        self._live_summary_run_id: str | None = None
+        self._live_summary_sequence = 0
+        self._live_summary_logs: list[dict[str, object]] = []
         self._logger = logger or logging.getLogger("sequential-runner")
         self._config_lock = asyncio.Lock()
 
@@ -147,6 +151,7 @@ class RunnerEngine:
                        ui_log_source_configured=bool(item.ui_log_region) or item.preset_id == "march7th")
             for item in selected
         ]
+        self._reset_live_summary(record)
         self.current_run = record
         self._stop_requested.clear()
         self._manual_confirmed.clear()
@@ -171,6 +176,7 @@ class RunnerEngine:
             run_mode="all_scripts",
             items=items,
         )
+        self._reset_live_summary(record)
         self.current_run = record
         self._stop_requested.clear()
         self._manual_confirmed.clear()
@@ -199,6 +205,7 @@ class RunnerEngine:
             record.state = RunState.COMPLETED
             record.ended_at = datetime.now(UTC)
             record.message = "计划尚未添加软件脚本，已跳过本次执行"
+            self._reset_live_summary(record)
             self.history.runs.insert(0, record)
             self._save_new_history()
             self.current_run = record
@@ -228,11 +235,13 @@ class RunnerEngine:
             record.state = RunState.COMPLETED
             record.ended_at = datetime.now(UTC)
             record.message = "当天没有匹配“运行周几”的软件任务"
+            self._reset_live_summary(record)
             self.history.runs.insert(0, record)
             self._save_new_history()
             self.current_run = record
             await self._publish_state()
             return record
+        self._reset_live_summary(record)
         self.current_run = record
         self._plan_by_run_id[record.id] = plan
         self._stop_requested.clear()
@@ -316,7 +325,7 @@ class RunnerEngine:
     async def _run(self, record: RunRecord, tasks: list[TaskDefinition]) -> None:
         from uuid import uuid4
         record.run_log_id = str(uuid4())
-        await self._run_log(record, "本轮开始运行")
+        await self._run_log(record, "本轮开始运行", phase="running")
         try:
             for index, (item, task) in enumerate(zip(record.items, tasks, strict=True)):
                 if self._stop_requested.is_set():
@@ -329,7 +338,11 @@ class RunnerEngine:
             record.ended_at = datetime.now(UTC)
             elapsed = max(0, int((record.ended_at - record.started_at.astimezone(UTC)).total_seconds()))
             result = "已停止" if record.state == RunState.STOPPED else ("全部成功" if self._run_succeeded(record) else "存在失败或未执行项")
-            await self._run_log(record, f"本轮{result}，总耗时 {elapsed} 秒")
+            await self._run_log(
+                record,
+                f"本轮{result}，总耗时 {elapsed} 秒",
+                phase="failed" if record.state == RunState.STOPPED or not self._run_succeeded(record) else "success",
+            )
         finally:
             self._active_task_id = None
             self._manual_accepting_task_id = None
@@ -488,6 +501,8 @@ class RunnerEngine:
             return
 
         item.state = ItemState.WAITING_MANUAL if task.allow_manual_confirmation else ItemState.MONITORING
+        if item.state == ItemState.WAITING_MANUAL:
+            await self._log(item, "等待人工确认当前程序完成")
         self._manual_accepting_task_id = task.id if task.allow_manual_confirmation else None
         ui_capture = None
         if self._owned_process and (task.preset_id == "march7th" or task.ui_log_region):
@@ -746,20 +761,64 @@ class RunnerEngine:
 
     async def _log(self, item: ItemRecord, text: str) -> None:
         if self.current_run:
-            await self._run_log(self.current_run, f"{item.task_name}：{text}")
+            await self._run_log(
+                self.current_run,
+                f"{item.task_name}：{text}",
+                summary_message=text,
+                task_id=item.task_id,
+                phase=self._summary_phase(item.state),
+            )
         self._logger.info("任务 %s (%s): %s", item.task_name, item.task_id, text)
-        await self.events.publish("log", {"taskId": item.task_id, "message": text})
 
-    async def _run_log(self, record: RunRecord, text: str) -> None:
-        if not record.run_log_id:
-            return
-        try:
-            await asyncio.to_thread(self.detail_logs.append, record.run_log_id, text)
-            if not (record.run_log_status or "").startswith("本轮日志保存失败"):
-                record.run_log_status = "已采集"
-        except (OSError, ValueError) as error:
-            record.run_log_status = f"本轮日志保存失败：{error}"
-            self._logger.exception("本轮日志保存失败")
+    @staticmethod
+    def _summary_phase(state: ItemState) -> str:
+        return {
+            ItemState.VALIDATING: "validation",
+            ItemState.STARTING: "running",
+            ItemState.MONITORING: "running",
+            ItemState.WAITING_MANUAL: "waiting",
+            ItemState.CLOSING: "closing",
+            ItemState.FORCE_CLOSING: "closing",
+            ItemState.COOLING_DOWN: "cooling",
+            ItemState.SUCCEEDED: "success",
+            ItemState.FAILED: "failed",
+            ItemState.STOPPED: "failed",
+        }.get(state, "info")
+
+    def _reset_live_summary(self, record: RunRecord) -> None:
+        self._live_summary_run_id = record.id
+        self._live_summary_sequence = 0
+        self._live_summary_logs = []
+
+    async def _run_log(
+        self,
+        record: RunRecord,
+        text: str,
+        *,
+        summary_message: str | None = None,
+        task_id: str | None = None,
+        phase: str = "info",
+    ) -> None:
+        if record.run_log_id:
+            try:
+                await asyncio.to_thread(self.detail_logs.append, record.run_log_id, text)
+                if not (record.run_log_status or "").startswith("本轮日志保存失败"):
+                    record.run_log_status = "已采集"
+            except (OSError, ValueError) as error:
+                record.run_log_status = f"本轮日志保存失败：{error}"
+                self._logger.exception("本轮日志保存失败")
+        if self._live_summary_run_id != record.id:
+            self._reset_live_summary(record)
+        self._live_summary_sequence += 1
+        entry = {
+            "runId": record.id,
+            "sequence": self._live_summary_sequence,
+            "taskId": task_id,
+            "message": summary_message or text,
+            "phase": phase,
+        }
+        self._live_summary_logs = [*self._live_summary_logs[-(SUMMARY_LOG_LIMIT - 1):], entry]
+        await self.events.publish("log", entry)
 
     def snapshot(self) -> dict:
         cooldown_seconds = 0
@@ -783,6 +842,7 @@ class RunnerEngine:
             "cooldownUntil": self._cooldown_until.isoformat() if self._cooldown_until else None,
             "migrationNotice": self.migration_notice,
             "completionAction": dict(self._pending_completion) if self._pending_completion else None,
+            "liveLogs": list(self._live_summary_logs) if self.current_run and self._live_summary_run_id == self.current_run.id else [],
             "runCenter": {
                 "currentScriptId": active_item.script_id if active_item else None,
                 "currentScriptName": active_item.script_name if active_item else None,

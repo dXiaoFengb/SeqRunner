@@ -189,3 +189,59 @@ test('keeps the latest 40 realtime messages visible across pages', async () => {
   expect(wrapper.get('.side-live-list').text()).toContain('消息 41')
   wrapper.unmount()
 })
+
+test('restores validation, start, and manual-wait summaries from the initial runtime snapshot', async () => {
+  installBackend(config(), {
+    busy: true,
+    activeTaskId: 't1',
+    cooldownSeconds: 0,
+    run: { id: 'run-1', queue_name: '第一软件', state: 'running', items: [{ task_id: 't1', task_name: '第一软件', state: 'waiting_manual' }] },
+    liveLogs: [
+      { runId: 'run-1', sequence: 1, taskId: 't1', message: '开始校验任务配置', phase: 'validation' },
+      { runId: 'run-1', sequence: 2, taskId: 't1', message: '已启动受管进程 PID 42', phase: 'running' },
+      { runId: 'run-1', sequence: 3, taskId: 't1', message: '等待人工确认当前程序完成', phase: 'waiting' },
+    ],
+  })
+  const wrapper = runner(); await flushPromises()
+  const summary = wrapper.get('.side-live-list')
+  expect(summary.text()).toContain('开始校验任务配置')
+  expect(summary.text()).toContain('已启动受管程序 第一软件')
+  expect(summary.text()).toContain('等待人工确认当前程序完成')
+  expect(summary.text()).toContain('校验')
+  expect(summary.text()).toContain('等待确认')
+  wrapper.unmount()
+})
+
+test('deduplicates summary events and resynchronizes a sequence gap from runtime', async () => {
+  const snapshot: Runtime = {
+    busy: true,
+    activeTaskId: 't1',
+    cooldownSeconds: 0,
+    run: { id: 'run-1', queue_name: '第一软件', state: 'running', items: [{ task_id: 't1', task_name: '第一软件', state: 'waiting_manual' }] },
+    liveLogs: [{ runId: 'run-1', sequence: 1, taskId: 't1', message: '开始校验任务配置', phase: 'validation' }],
+  }
+  installBackend(config(), snapshot)
+  let socket: any
+  class TestSocket { static CONNECTING = 0; static OPEN = 1; readyState = 0; onmessage: any; onopen: any; onclose: any; onerror: any; constructor() { socket = this } close() {} send() {} }
+  vi.stubGlobal('WebSocket', TestSocket)
+  const wrapper = runner(); await flushPromises()
+  socket.onmessage({ data: JSON.stringify({ type: 'log', data: { runId: 'run-1', sequence: 2, taskId: 't1', message: '已启动受管进程 PID 42', phase: 'running' } }) })
+  socket.onmessage({ data: JSON.stringify({ type: 'log', data: { runId: 'run-1', sequence: 2, taskId: 't1', message: '已启动受管进程 PID 42', phase: 'running' } }) })
+  await flushPromises()
+  expect(wrapper.get('.side-live-list').text().match(/已启动受管程序 第一软件/g)).toHaveLength(1)
+
+  snapshot.liveLogs = [
+    ...snapshot.liveLogs!,
+    { runId: 'run-1', sequence: 2, taskId: 't1', message: '已启动受管进程 PID 42', phase: 'running' },
+    { runId: 'run-1', sequence: 3, taskId: 't1', message: '等待人工确认当前程序完成', phase: 'waiting' },
+  ]
+  socket.onmessage({ data: JSON.stringify({ type: 'log', data: { runId: 'run-1', sequence: 4, taskId: 't1', message: '仍在等待确认', phase: 'waiting' } }) })
+  await flushPromises(); await flushPromises()
+  expect(wrapper.get('.side-live-list').text()).toContain('等待人工确认当前程序完成')
+  expect(wrapper.get('.side-live-list').text()).not.toContain('仍在等待确认')
+
+  socket.onmessage({ data: JSON.stringify({ type: 'log', data: { runId: 'run-1', sequence: 4, taskId: 't1', message: '仍在等待确认', phase: 'waiting' } }) })
+  await flushPromises()
+  expect(wrapper.get('.side-live-list').text()).toContain('仍在等待确认')
+  wrapper.unmount()
+})

@@ -72,7 +72,9 @@ async def test_select_region_on_controlled_window(monkeypatch, left, top):
         pytest.skip("未连接足够宽的左侧显示器")
 
     source = (Path(__file__).parent / "fixtures" / "ui_log_window.ps1").read_text(encoding="utf-8")
-    source = source.replace("$window.Left = -2000", f"$window.Left = {left}").replace("$window.Top = -2000", f"$window.Top = {top}")
+    source = source.replace("$window.Left = -2000", f"$window.Left = {left}").replace(
+        "$window.Top = -2000", f"$window.Top = {top}\n$window.Topmost = $true"
+    )
     create = asyncio.create_subprocess_exec
     target = await create("powershell.exe", "-NoProfile", "-STA", "-Command", source,
                           stderr=asyncio.subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
