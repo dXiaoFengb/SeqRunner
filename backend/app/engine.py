@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import logging
 import os
 from collections.abc import Callable
@@ -62,6 +63,7 @@ class _CompletionCancelled(Exception):
 
 ConfigUpdateResult = TypeVar("ConfigUpdateResult")
 SUMMARY_LOG_LIMIT = 40
+SCRIPT_LOG_BUFFER_LIMIT = 200_000
 
 
 class RunnerEngine:
@@ -102,6 +104,8 @@ class RunnerEngine:
         self._live_summary_run_id: str | None = None
         self._live_summary_sequence = 0
         self._live_summary_logs: list[dict[str, object]] = []
+        self._script_log_run_id: str | None = None
+        self._script_log_streams: dict[tuple[str, str], dict[str, object]] = {}
         self._logger = logger or logging.getLogger("sequential-runner")
         self._config_lock = asyncio.Lock()
 
@@ -453,8 +457,9 @@ class RunnerEngine:
             return
         watcher: ExternalLogWatcher | None = None
         if task.log_path:
-            async def emit_external_log(text: str) -> None:
-                await self.events.publish("script_log", {"runId": record.id, "taskId": task.id, "text": text})
+            async def emit_external_log(path: Path, text: str) -> None:
+                source_id = "external-" + hashlib.sha256(str(path).casefold().encode("utf-8")).hexdigest()[:16]
+                await self._publish_script_log(record, task.id, source_id, path.name, "external", text)
 
             watcher = ExternalLogWatcher(
                 task.log_path, task.log_patterns,
@@ -508,7 +513,14 @@ class RunnerEngine:
         if self._owned_process and (task.preset_id == "march7th" or task.ui_log_region):
             async def emit_ui_log(text: str) -> None:
                 await self._publish_state()
-                await self.events.publish("script_log", {"runId": record.id, "taskId": task.id, "text": text})
+                await self._publish_script_log(
+                    record,
+                    task.id,
+                    "ocr-region" if task.ui_log_region else "window-log",
+                    "画面识别" if task.ui_log_region else "界面读取",
+                    "ocr" if task.ui_log_region else "window",
+                    text,
+                )
 
             if task.ui_log_region:
                 async def read_maa(process: OwnedProcess) -> str:
@@ -625,6 +637,10 @@ class RunnerEngine:
         }
         if watcher:
             signal_tasks[asyncio.create_task(watcher.wait_for_signal(self._stop_requested))] = "log"
+            if task.log_idle_timeout_seconds is not None and not task.allow_manual_confirmation:
+                signal_tasks[asyncio.create_task(
+                    watcher.wait_for_idle(task.log_idle_timeout_seconds, self._stop_requested)
+                )] = "idle"
         if task.allow_manual_confirmation:
             signal_tasks[asyncio.create_task(self._manual_confirmed.wait())] = "manual"
         try:
@@ -640,7 +656,7 @@ class RunnerEngine:
                         return 1
                     if kind == "log" and isinstance(value, LogSignal) and value.kind != "success":
                         return 2
-                    return {"manual": 3, "log": 4, "process": 5, "timeout": 6}[kind]
+                    return {"manual": 3, "log": 4, "process": 5, "idle": 6, "timeout": 7}[kind]
 
                 for completed in sorted(done, key=priority):
                     kind = signal_tasks.pop(completed)
@@ -668,6 +684,8 @@ class RunnerEngine:
                         return "failure", "目标进程退出，未获得完成信号", None
                     if kind == "timeout":
                         return "failure", f"运行超时（{task.timeout_seconds} 秒）", None
+                    if kind == "idle" and isinstance(value, LogSignal):
+                        return "failure", value.text, value.text
         finally:
             for pending in signal_tasks:
                 pending.cancel()
@@ -757,7 +775,9 @@ class RunnerEngine:
         await self._publish_state()
 
     async def _publish_state(self) -> None:
-        await self.events.publish("runtime", self.snapshot())
+        # 原文日志缓冲只需在初始快照或显式重同步时发送；普通状态事件避免
+        # 与正在传输的 script_log 增量相互覆盖。
+        await self.events.publish("runtime", self.snapshot(include_script_logs=False))
 
     async def _log(self, item: ItemRecord, text: str) -> None:
         if self.current_run:
@@ -789,6 +809,82 @@ class RunnerEngine:
         self._live_summary_run_id = record.id
         self._live_summary_sequence = 0
         self._live_summary_logs = []
+        self._script_log_run_id = record.id
+        self._script_log_streams = {}
+
+    def _trim_script_streams(self) -> list[dict[str, object]]:
+        """Keep realtime previews bounded without copying or changing external source files."""
+        changed: list[dict[str, object]] = []
+        total = sum(len(str(stream["text"])) for stream in self._script_log_streams.values())
+        while total > SCRIPT_LOG_BUFFER_LIMIT:
+            candidates = [stream for stream in self._script_log_streams.values() if stream["text"]]
+            if not candidates:
+                break
+            stream = min(candidates, key=lambda item: float(item["touched"]))
+            overflow = total - SCRIPT_LOG_BUFFER_LIMIT
+            current = str(stream["text"])
+            removed = min(len(current), max(1, overflow))
+            stream["text"] = current[removed:]
+            stream["truncated"] = True
+            total -= removed
+            if stream not in changed:
+                changed.append(stream)
+        return changed
+
+    @staticmethod
+    def _script_stream_payload(stream: dict[str, object], *, append: bool, text: str | None = None) -> dict[str, object]:
+        return {
+            "runId": stream["runId"],
+            "taskId": stream["taskId"],
+            "sourceId": stream["sourceId"],
+            "sourceName": stream["sourceName"],
+            "sourceType": stream["sourceType"],
+            "sequence": stream["sequence"],
+            "append": append,
+            "text": str(stream["text"]) if text is None else text,
+            "truncated": bool(stream["truncated"]),
+            "updatedAt": stream["updatedAt"],
+        }
+
+    async def _publish_script_log(
+        self,
+        record: RunRecord,
+        task_id: str,
+        source_id: str,
+        source_name: str,
+        source_type: str,
+        text: str,
+    ) -> None:
+        if not text:
+            return
+        if self._script_log_run_id != record.id:
+            self._script_log_run_id = record.id
+            self._script_log_streams = {}
+        key = (task_id, source_id)
+        stream = self._script_log_streams.get(key)
+        if stream is None:
+            stream = {
+                "runId": record.id, "taskId": task_id, "sourceId": source_id,
+                "sourceName": source_name, "sourceType": source_type,
+                "sequence": 0, "text": "", "truncated": False,
+                "touched": 0.0, "updatedAt": "",
+            }
+            self._script_log_streams[key] = stream
+        stream["text"] = str(stream["text"]) + text
+        stream["sequence"] = int(stream["sequence"]) + 1
+        stream["touched"] = asyncio.get_running_loop().time()
+        stream["updatedAt"] = datetime.now(UTC).isoformat()
+        trimmed = self._trim_script_streams()
+        await self.events.publish(
+            "script_log",
+            self._script_stream_payload(stream, append=int(stream["sequence"]) > 1 and stream not in trimmed, text=text),
+        )
+        for changed in trimmed:
+            if changed is stream:
+                continue
+            changed["sequence"] = int(changed["sequence"]) + 1
+            changed["updatedAt"] = datetime.now(UTC).isoformat()
+            await self.events.publish("script_log", self._script_stream_payload(changed, append=False))
 
     async def _run_log(
         self,
@@ -820,7 +916,7 @@ class RunnerEngine:
         self._live_summary_logs = [*self._live_summary_logs[-(SUMMARY_LOG_LIMIT - 1):], entry]
         await self.events.publish("log", entry)
 
-    def snapshot(self) -> dict:
+    def snapshot(self, *, include_script_logs: bool = True) -> dict:
         cooldown_seconds = 0
         if self._cooldown_until:
             cooldown_seconds = max(0, int((self._cooldown_until - datetime.now(UTC)).total_seconds()))
@@ -843,6 +939,10 @@ class RunnerEngine:
             "migrationNotice": self.migration_notice,
             "completionAction": dict(self._pending_completion) if self._pending_completion else None,
             "liveLogs": list(self._live_summary_logs) if self.current_run and self._live_summary_run_id == self.current_run.id else [],
+            "scriptLogs": [
+                self._script_stream_payload(stream, append=False)
+                for stream in self._script_log_streams.values()
+            ] if include_script_logs and self.current_run and self._script_log_run_id == self.current_run.id else [],
             "runCenter": {
                 "currentScriptId": active_item.script_id if active_item else None,
                 "currentScriptName": active_item.script_name if active_item else None,

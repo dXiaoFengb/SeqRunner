@@ -7,7 +7,7 @@ const {
   readDevelopmentVersion,
 } = require('./validation-package-paths.cjs');
 const { prepareValidationElectronCache } = require('./validation-electron-cache.cjs');
-const { prepareValidationBuilderCache } = require('./validation-builder-cache.cjs');
+const { prepareValidationBuilderCache, prepareValidationBuilderResourceCache, NSIS_RESOURCE_DIRECTORY } = require('./validation-builder-cache.cjs');
 
 const root = resolve(__dirname, '..');
 const version = readDevelopmentVersion(root);
@@ -26,6 +26,12 @@ if (validation) {
   builderCacheEvidence = prepareValidationBuilderCache({
     cacheRoot: resolve(paths.cacheDirectory, 'builder'),
     evidencePath: resolve(paths.workDirectory, 'builder-cache-preparation.json'),
+  });
+  // 仅从已通过验证的本地证据复制，并由固定清单指纹复核；缺失或不符时在 electron-builder 前失败，禁止运行期联网下载。
+  prepareValidationBuilderResourceCache({
+    cacheRoot: resolve(paths.cacheDirectory, 'builder'),
+    evidencePath: resolve(paths.workDirectory, 'builder-resource-cache-preparation.json'),
+    sourceDirectory: resolve(root, '产物', '验证', 'v0.12.3', 'Evidence', 'cache', 'builder', 'nsis', NSIS_RESOURCE_DIRECTORY),
   });
   const generatedConfig = resolve(root, 'build', 'electron-builder-validation-v' + paths.version + '.json');
   mkdirSync(dirname(generatedConfig), { recursive: true });

@@ -4,6 +4,8 @@ const { dirname, join, relative, resolve } = require('node:path');
 
 const NSIS_CACHE_DIRECTORY = '817365875';
 const EXPECTED_NSIS_MANIFEST_SHA256 = 'e56ddba6bda7ee3619b9183fbeaa6481a2f4c71919875f22c951a79808f4fae1';
+const NSIS_RESOURCE_DIRECTORY = 'nsis-resources-3.4.1';
+const EXPECTED_NSIS_RESOURCE_MANIFEST_SHA256 = 'aee6131fd7c0043fc27a6f87ac19481d7063a7ec368ac8b079f95365595383ee';
 
 function fail(message) {
   throw new Error('electron-builder 验证缓存准备失败：' + message);
@@ -93,4 +95,48 @@ function prepareValidationBuilderCache({ cacheRoot, evidencePath, sourceCacheRoo
   return evidence;
 }
 
-module.exports = { EXPECTED_NSIS_MANIFEST_SHA256, NSIS_CACHE_DIRECTORY, buildFileManifest, prepareValidationBuilderCache };
+function prepareValidationBuilderResourceCache({ cacheRoot, evidencePath, sourceDirectory, expectedManifestSha256 = EXPECTED_NSIS_RESOURCE_MANIFEST_SHA256 } = {}) {
+  if (!cacheRoot || !evidencePath || !sourceDirectory) fail('缺少 cacheRoot、evidencePath 或 NSIS 资源源目录。');
+  const targetDirectory = join(resolve(cacheRoot), 'nsis', NSIS_RESOURCE_DIRECTORY);
+
+  if (!existsSync(sourceDirectory)) fail('受信验证证据缺少 NSIS 资源目录：' + sourceDirectory);
+  if (existsSync(targetDirectory)) fail('隔离 NSIS 资源目标已存在，不允许覆盖：' + targetDirectory);
+  if (existsSync(evidencePath)) fail('NSIS 资源证据文件已存在，不允许覆盖：' + evidencePath);
+
+  const sourceManifest = buildFileManifest(sourceDirectory);
+  if (sourceManifest.sha256 !== String(expectedManifestSha256).toLowerCase()) fail('受信 NSIS 资源文件清单与预期指纹不一致。');
+
+  try {
+    copyDirectoryByBytes(sourceDirectory, targetDirectory);
+  } catch (error) {
+    fail('无法写入隔离 NSIS 资源缓存：' + error.message);
+  }
+  const targetManifest = buildFileManifest(targetDirectory);
+  if (targetManifest.sha256 !== sourceManifest.sha256 || targetManifest.fileCount !== sourceManifest.fileCount || targetManifest.byteCount !== sourceManifest.byteCount) {
+    fail('复制后的隔离 NSIS 资源缓存校验失败。');
+  }
+
+  const evidence = {
+    schemaVersion: 1,
+    source: 'previously-verified-validation-evidence',
+    artifact: NSIS_RESOURCE_DIRECTORY,
+    expectedManifestSha256: String(expectedManifestSha256).toLowerCase(),
+    sourceDirectory,
+    targetDirectory,
+    sourceManifest,
+    targetManifest,
+  };
+  mkdirSync(dirname(evidencePath), { recursive: true });
+  writeFileSync(evidencePath, JSON.stringify(evidence, null, 2) + '\n', 'utf8');
+  return evidence;
+}
+
+module.exports = {
+  EXPECTED_NSIS_MANIFEST_SHA256,
+  EXPECTED_NSIS_RESOURCE_MANIFEST_SHA256,
+  NSIS_CACHE_DIRECTORY,
+  NSIS_RESOURCE_DIRECTORY,
+  buildFileManifest,
+  prepareValidationBuilderCache,
+  prepareValidationBuilderResourceCache,
+};

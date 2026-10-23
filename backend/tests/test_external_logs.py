@@ -67,6 +67,56 @@ async def test_external_log_watcher_recovers_from_truncation(tmp_path):
     assert signal and signal.kind == "success"
 
 
+@pytest.mark.asyncio
+async def test_idle_guard_only_starts_after_a_source_is_discovered_and_resets_on_progress(tmp_path):
+    source = tmp_path / "logs"; source.mkdir()
+    watcher = ExternalLogWatcher(
+        str(source), "*.log", None, MatchMode.KEYWORD, None, MatchMode.KEYWORD,
+        success_rules=[], failure_rules=[], monitor_success=True,
+    )
+    cancel = asyncio.Event()
+    before_source = asyncio.create_task(watcher.wait_for_idle(1, cancel))
+    await asyncio.sleep(.05)
+    assert not before_source.done()
+    cancel.set()
+    assert await before_source is None
+    cancel = asyncio.Event()
+    target = source / "part.log"; target.write_text("first", encoding="utf-8")
+    await watcher._discover_new()
+    target.write_text("first\nsecond", encoding="utf-8")
+    inner = next(iter(watcher.watchers.values()))
+    await asyncio.to_thread(inner._read_new)
+    assert inner.last_progress
+    assert await asyncio.wait_for(watcher.wait_for_idle(1, cancel), timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_transient_read_errors_are_retried_before_a_terminal_failure(tmp_path, monkeypatch):
+    target = tmp_path / "current.log"; target.write_text("old", encoding="utf-8")
+    watcher = ExternalLogWatcher(
+        str(target), "*.log", None, MatchMode.KEYWORD, None, MatchMode.KEYWORD,
+        success_rules=[], failure_rules=[], monitor_success=True,
+    )
+    await watcher.start_at_end()
+    inner = next(iter(watcher.watchers.values()))
+    attempts = 0
+    original = inner._read_new
+    def intermittent():
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise OSError("temporary lock")
+        return original()
+    monkeypatch.setattr(inner, "_read_new", intermittent)
+    target.write_text("old\nnew", encoding="utf-8")
+    cancel = asyncio.Event()
+    pending = asyncio.create_task(watcher.wait_for_signal(cancel))
+    await asyncio.sleep(2.2)
+    cancel.set()
+    assert await pending is None
+    assert attempts >= 3
+
+
 def test_external_log_api_only_reads_paths_recorded_in_history(tmp_path):
     from fastapi.testclient import TestClient
 

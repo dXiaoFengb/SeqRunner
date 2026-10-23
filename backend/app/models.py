@@ -128,8 +128,16 @@ class TaskDefinition(BaseModel):
     success_log_rules: list[LogRule] = Field(default_factory=list)
     failure_log_rules: list[LogRule] = Field(default_factory=list)
     timeout_seconds: int = Field(default=600, ge=1, le=86_400)
+    # 空值表示关闭。仅外部文件日志的自动模式使用，避免改变旧脚本和人工确认语义。
+    log_idle_timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
     maa_adapter: MAAAdapterConfig | None = None
     maaend_adapter: MaaEndAdapterConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_log_idle_timeout(self) -> TaskDefinition:
+        if self.log_idle_timeout_seconds is not None and self.log_idle_timeout_seconds > self.timeout_seconds:
+            raise ValueError("日志无新增保护不能超过总超时")
+        return self
 
     def has_success_log(self) -> bool:
         return bool(self.log_path and (self.success_log or self.success_log_rules))

@@ -27,7 +27,7 @@ function finalizeValidationPackage(paths) {
   const evidenceDirectory = join(paths.verificationDirectory, 'Evidence');
   mkdirSync(evidenceDirectory);
   renameSync(packagedDirectory, join(evidenceDirectory, 'package-output'));
-  for (const name of ['backend', 'cache', '.validation-health.json', 'electron-cache-preparation.json', 'builder-cache-preparation.json']) {
+  for (const name of ['backend', 'cache', '.validation-health.json', 'electron-cache-preparation.json', 'builder-cache-preparation.json', 'builder-resource-cache-preparation.json']) {
     const source = join(paths.verificationDirectory, name);
     if (existsSync(source)) renameSync(source, join(evidenceDirectory, name));
   }

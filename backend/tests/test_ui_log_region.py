@@ -36,8 +36,17 @@ def region(**overrides):
 def test_region_round_trip_and_legacy_task():
     old = TaskDefinition(name="旧任务")
     assert old.ui_log_region is None
+    assert old.log_idle_timeout_seconds is None
     task = TaskDefinition(name="MAA", ui_log_region=region())
     assert TaskDefinition.model_validate_json(task.model_dump_json()).ui_log_region == task.ui_log_region
+
+
+def test_log_idle_timeout_must_be_positive_and_within_total_timeout():
+    assert TaskDefinition(name="外部日志", timeout_seconds=20, log_idle_timeout_seconds=10).log_idle_timeout_seconds == 10
+    with pytest.raises(ValidationError):
+        TaskDefinition(name="无效", log_idle_timeout_seconds=0)
+    with pytest.raises(ValidationError, match="日志无新增保护不能超过总超时"):
+        TaskDefinition(name="无效", timeout_seconds=10, log_idle_timeout_seconds=11)
 
 
 @pytest.mark.parametrize("changes", [{"x": -1}, {"width": 0}, {"x": 1000, "width": 300}, {"y": 790, "height": 11}])

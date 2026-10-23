@@ -197,6 +197,25 @@ async def test_live_summary_keeps_recent_entries_and_survives_detail_log_failure
 
 
 @pytest.mark.asyncio
+async def test_script_log_snapshot_is_source_scoped_and_bounded(tmp_path: Path) -> None:
+    task = python_task("来源日志", "pass")
+    engine, _ = build_engine(tmp_path, [task])
+    record = RunRecord(queue_id="q", queue_name="q", trigger_source="manual")
+    engine.current_run = record
+    engine._reset_live_summary(record)
+
+    await engine._publish_script_log(record, task.id, "external-a", "first.log", "external", "first\n")
+    await engine._publish_script_log(record, task.id, "window-log", "界面读取", "window", "window\n")
+    await engine._publish_script_log(record, task.id, "external-a", "first.log", "external", "second\n")
+
+    streams = {entry["sourceId"]: entry for entry in engine.snapshot()["scriptLogs"]}
+    assert streams["external-a"]["text"] == "first\nsecond\n"
+    assert streams["external-a"]["sequence"] == 2
+    assert streams["window-log"]["sourceType"] == "window"
+    assert engine.snapshot(include_script_logs=False)["scriptLogs"] == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("allow_exit", [False, True])
 async def test_manual_waits_after_success_log_and_zero_exit(tmp_path: Path, allow_exit: bool) -> None:
     log = tmp_path / "success.log"
@@ -339,6 +358,24 @@ async def test_timeout_marks_failure_and_continues(tmp_path: Path) -> None:
 
     assert "运行超时" in (engine.history.runs[0].items[0].error_summary or "")
     assert output.exists()
+
+
+@pytest.mark.asyncio
+async def test_log_idle_timeout_fails_only_for_an_existing_automatic_external_log(tmp_path: Path) -> None:
+    log = tmp_path / "idle.log"
+    log.write_text("baseline\n", encoding="utf-8")
+    task = python_task("无日志推进", "import time; time.sleep(10)")
+    task.log_path = str(log)
+    task.log_idle_timeout_seconds = 1
+    task.timeout_seconds = 5
+    task.allow_manual_confirmation = False
+    engine, _ = build_engine(tmp_path, [task])
+
+    await engine.start_all()
+    await engine.wait_until_idle()
+
+    item = engine.history.runs[0].items[0]
+    assert "日志超过 1 秒无新增" in (item.error_summary or "")
 
 
 @pytest.mark.asyncio

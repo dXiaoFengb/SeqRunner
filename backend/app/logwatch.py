@@ -44,6 +44,8 @@ class LogWatcher:
         self._context = ""
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self.last_text = ""
+        # 与 last_text 分开：即使新字节暂未构成可显示文本，也算日志仍在推进。
+        self.last_progress = False
 
     def _reset_stream(self) -> None:
         self._context = ""
@@ -80,15 +82,27 @@ class LogWatcher:
 
     def _read_new(self) -> LogSignal | None:
         self.last_text = ""
+        self.last_progress = False
         try:
             stat = self.path.stat()
         except FileNotFoundError:
             return None
         identity = (stat.st_dev, stat.st_ino)
         # 文件截断或替换后，新文件的内容都发生在本次运行期间，重新从头读取。
-        if self._identity is None or identity != self._identity or stat.st_size < self._offset:
+        if self._identity is None:
             self._offset = 0
             self._identity = identity
+            self._reset_stream()
+        elif identity != self._identity:
+            # 常见轮转会把旧文件改名后新建同名文件。先按旧 identity 排空尾部，
+            # 再切换，避免刚写出的完成或失败标记落在两次轮询之间。
+            if signal := self._drain_renamed_tail(self._identity):
+                return signal
+            self._offset = 0
+            self._identity = identity
+            self._reset_stream()
+        elif stat.st_size < self._offset:
+            self._offset = 0
             self._reset_stream()
         elif self._anchor and self._anchor_changed():
             # 有些程序用覆盖写快速完成“截断再写入”，轮询可能看不到短暂的小文件。
@@ -99,10 +113,35 @@ class LogWatcher:
             data = handle.read()
             self._offset = handle.tell()
         self._refresh_anchor()
+        return self._consume(data)
+
+    def _drain_renamed_tail(self, previous_identity: tuple[int, int]) -> LogSignal | None:
+        """Read unread bytes from a renamed predecessor when the filesystem still exposes it."""
+        try:
+            candidates = tuple(self.path.parent.iterdir())
+        except FileNotFoundError:
+            return None
+        for candidate in candidates:
+            if not candidate.is_file() or candidate == self.path:
+                continue
+            try:
+                stat = candidate.stat()
+            except FileNotFoundError:
+                continue
+            if (stat.st_dev, stat.st_ino) != previous_identity:
+                continue
+            with candidate.open("rb") as handle:
+                handle.seek(self._offset)
+                return self._consume(handle.read())
+        return None
+
+    def _consume(self, data: bytes) -> LogSignal | None:
+        if data:
+            self.last_progress = True
         text = self._decoder.decode(data, final=False).replace("\r\n", "\n").replace("\r", "\n")
         if not text:
             return None
-        self.last_text = text
+        self.last_text += text
         previous = self._context
         combined = previous + text
         for kind, rules in (("failure", self.failure), ("success", self.success)):

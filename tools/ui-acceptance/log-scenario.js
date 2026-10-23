@@ -87,7 +87,7 @@ async page => {
   await click(page.getByRole('button',{name:'重置',exact:true}))
   check(await page.getByText('今日验收记录').isVisible(),'重置未显示今日记录')
   check(await page.getByText('旧验收记录').count() === 0,'重置后仍显示旧记录')
-  await page.context().addInitScript({content:`
+  await page.addInitScript({content:`
     class FixtureSocket {
       static CONNECTING = 0; static OPEN = 1; readyState = 1
       constructor() { window.__fixtureSocket = this; setTimeout(() => this.onopen?.(), 0) }
@@ -122,14 +122,15 @@ async page => {
     const socket = window.__fixtureSocket
     const send = (type, data) => socket.onmessage({data: JSON.stringify({type, data})})
     send('runtime', { busy: true, activeTaskId: 'fixture', cooldownSeconds: 0, run: { id: 'fixture-run', queue_name: '受控运行', state: 'running', items: [{ task_id:'fixture', task_name:'MAA', state:'waiting_manual', ui_log_status:'已连接受控日志' }] }, runCenter: { currentScriptName:'受控脚本', currentTaskName:'MAA', currentState:'waiting_manual', currentIndex:1, totalPrograms:1 } })
-    send('script_log', {runId:'fixture-run', taskId:'fixture', text:'受控脚本实时日志'})
+    send('script_log', {runId:'fixture-run', taskId:'fixture', sourceId:'fixture-external', sourceName:'fixture.log', sourceType:'external', sequence:1, append:false, text:'受控脚本实时日志', truncated:false, updatedAt:'2026-10-23T00:00:00Z'})
   })
   check(await page.locator('.side-live-list').getByText('受控脚本实时日志').isVisible(), '脚本实时日志不可见')
+  check(await page.locator('.script-source-tabs').getByText('fixture.log').isVisible(), '脚本日志来源标签不可见')
   check(await page.locator('.scheduler-live-list').getByText('受控消息 41').isVisible(), '脚本运行时本软件日志不可见')
   await page.evaluate(() => {
     const socket = window.__fixtureSocket
     const emit = (type, data) => socket.onmessage({data: JSON.stringify({type, data})})
-    emit('script_log', {runId:'fixture-run', taskId:'fixture', text:Array.from({length:60}, (_, index) => `受控脚本实时日志 ${index + 1}`).join('\n')})
+    emit('script_log', {runId:'fixture-run', taskId:'fixture', sourceId:'fixture-external', sourceName:'fixture.log', sourceType:'external', sequence:2, append:true, text:'\n' + Array.from({length:60}, (_, index) => `受控脚本实时日志 ${index + 1}`).join('\n'), truncated:false, updatedAt:'2026-10-23T00:00:01Z'})
   })
   await page.locator('.script-live-list').getByText('受控脚本实时日志 60').waitFor({timeout:15000})
   await page.evaluate(() => {
@@ -137,13 +138,13 @@ async page => {
     document.querySelector('.script-live-list').scrollTop = 0
     const socket = window.__fixtureSocket
     socket.onmessage({data: JSON.stringify({type:'log', data:{message:'受控消息 42'}})})
-    socket.onmessage({data: JSON.stringify({type:'script_log', data:{runId:'fixture-run', taskId:'fixture', text:Array.from({length:61}, (_, index) => `受控脚本实时日志 ${index + 1}`).join('\n')}})})
+    socket.onmessage({data: JSON.stringify({type:'script_log', data:{runId:'fixture-run', taskId:'fixture', sourceId:'fixture-external', sourceName:'fixture.log', sourceType:'external', sequence:3, append:true, text:'\n受控脚本实时日志 61', truncated:false, updatedAt:'2026-10-23T00:00:02Z'}})})
   })
   await page.locator('.script-live-list').getByText('受控脚本实时日志 61').waitFor({timeout:15000})
   for (const selector of ['.scheduler-live-list', '.script-live-list']) {
     check(await page.locator(selector).evaluate(el => el.scrollTop + el.clientHeight >= el.scrollHeight - 1), `${selector} 新日志后未自动滚至末尾`)
   }
-  check(await page.locator('.side-live-log button').count() === 0, '实时日志仍显示手动回到底部按钮')
+  check(await page.locator('.side-live-log button').filter({hasText:/回到最新|回到底部|未读/}).count() === 0, '实时日志仍显示手动回到底部按钮')
   const before = await page.locator('.scheduler-live-list').boundingBox()
   const scriptBox = await page.locator('.script-live-list').boundingBox()
   check(before && scriptBox && before.y + before.height <= scriptBox.y, '摘要未位于脚本日志上方')

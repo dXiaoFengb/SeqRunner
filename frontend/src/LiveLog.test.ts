@@ -122,3 +122,21 @@ test('only shows messages for the active run and task', async () => {
   await wrapper.setProps({ scriptLog: { runId: 'r', taskId: 't', text: '脚本日志' } })
   expect(wrapper.text()).toContain('脚本日志')
 })
+
+test('keeps a manually selected source while other script sources update', async () => {
+  const run = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: '程序', state: 'monitoring', log_source_configured: true }] }
+  const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }
+  const sources = [
+    { runId: 'r', taskId: 't', sourceId: 'first', sourceName: 'first.log', sourceType: 'external', sequence: 1, append: false, text: '第一份', truncated: false, updatedAt: '2026-01-01T00:00:00Z' },
+    { runId: 'r', taskId: 't', sourceId: 'second', sourceName: 'second.log', sourceType: 'external', sequence: 1, append: false, text: '第二份', truncated: false, updatedAt: '2026-01-01T00:01:00Z' },
+  ]
+  const wrapper = mount(LiveLog, { props: { logs: [], runtime, scriptLogs: sources } })
+  expect(wrapper.get('.script-source-tabs').text()).toContain('first.log')
+  await wrapper.findAll('.script-source-tabs button').find((button) => button.text().includes('first.log'))!.trigger('click')
+  await wrapper.setProps({ scriptLogs: [{ ...sources[0], sequence: 2, text: '第一份更新', updatedAt: '2026-01-01T00:02:00Z' }, sources[1]] })
+  expect(wrapper.get('.script-live-list').text()).toContain('第一份更新')
+  expect(wrapper.get('.script-source-tabs button.active').text()).toContain('first.log')
+  await wrapper.setProps({ scriptLogs: [sources[0], { ...sources[1], sequence: 2, text: '第二份更新', updatedAt: '2026-01-01T00:03:00Z' }] })
+  expect(wrapper.get('.script-live-list').text()).toContain('第一份')
+  expect(wrapper.get('.script-source-tabs button.active').text()).toContain('first.log')
+})

@@ -135,3 +135,17 @@ async def test_ignores_existing_content_and_follows_truncation(tmp_path: Path) -
     path.write_text("DONE new\n", encoding="utf-8")
     result = await asyncio.wait_for(wait, 1)
     assert result and result.kind == "success" and result.text == "DONE"
+
+
+@pytest.mark.asyncio
+async def test_rotation_drains_the_renamed_predecessor_before_switching(tmp_path: Path) -> None:
+    path = tmp_path / "job.log"
+    path.write_bytes(b"old\n")
+    watcher = LogWatcher(str(path), "DONE")
+    await watcher.start_at_end()
+    append(path, b"tail DONE\n")
+    rotated = tmp_path / "job.log.1"
+    path.replace(rotated)
+    path.write_bytes(b"new generation\n")
+    signal = watcher._read_new()
+    assert signal and signal.kind == "success"

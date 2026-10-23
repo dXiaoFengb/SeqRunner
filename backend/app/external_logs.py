@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -49,7 +50,7 @@ class ExternalLogWatcher:
         self, source: str, patterns: str, success: str | None, success_mode: MatchMode,
         failure: str | None, failure_mode: MatchMode, *, success_rules: list[LogRule],
         failure_rules: list[LogRule], monitor_success: bool,
-        on_text: Callable[[str], Awaitable[None]] | None = None,
+        on_text: Callable[[Path, str], Awaitable[None]] | None = None,
     ) -> None:
         self.source, self.patterns = source, patterns
         self.success, self.success_mode = success, success_mode
@@ -59,10 +60,16 @@ class ExternalLogWatcher:
         self.on_text = on_text
         self.watchers: dict[Path, LogWatcher] = {}
         self.last_text = ""
+        self._last_progress_at: float | None = None
+        self._consecutive_read_failures = 0
 
     @property
     def paths(self) -> list[str]:
         return [str(path) for path in self.watchers]
+
+    @property
+    def has_sources(self) -> bool:
+        return bool(self.watchers)
 
     async def start_at_end(self) -> None:
         await self._discover_new(at_end=True)
@@ -79,20 +86,44 @@ class ExternalLogWatcher:
             if at_end:
                 await watcher.start_at_end()
             self.watchers[path] = watcher
+            # 已发现来源才开始静默计时；目录尚未生成任何文件时仍交由总超时管理。
+            self._last_progress_at = time.monotonic()
 
     async def wait_for_signal(self, cancel: asyncio.Event) -> LogSignal | None:
         while not cancel.is_set():
             try:
                 await self._discover_new()
-                for watcher in tuple(self.watchers.values()):
+                for path, watcher in tuple(self.watchers.items()):
                     signal = await asyncio.to_thread(watcher._read_new)
+                    if watcher.last_progress:
+                        self._last_progress_at = time.monotonic()
                     if watcher.last_text:
                         self.last_text += watcher.last_text
                         if self.on_text:
-                            await self.on_text(watcher.last_text)
+                            await self.on_text(path, watcher.last_text)
                     if signal:
                         return signal
             except (OSError, UnicodeError) as error:
-                return LogSignal("error", f"日志读取失败：{error}")
+                self._consecutive_read_failures += 1
+                if self._consecutive_read_failures >= 5:
+                    return LogSignal("error", f"日志连续读取失败（已重试 5 次）：{error}")
+                try:
+                    await asyncio.wait_for(cancel.wait(), timeout=1)
+                except TimeoutError:
+                    pass
+                continue
+            self._consecutive_read_failures = 0
             await asyncio.sleep(0.15)
+        return None
+
+    async def wait_for_idle(self, timeout_seconds: int, cancel: asyncio.Event) -> LogSignal | None:
+        """Return only after an active external source has stopped making byte-level progress."""
+        while not cancel.is_set():
+            last_progress = self._last_progress_at
+            if self.has_sources and last_progress is not None and time.monotonic() - last_progress >= timeout_seconds:
+                return LogSignal("idle", f"日志超过 {timeout_seconds} 秒无新增")
+            try:
+                await asyncio.wait_for(cancel.wait(), timeout=0.25)
+            except TimeoutError:
+                pass
         return None
