@@ -50,7 +50,7 @@ function New-ValidationHealthResult {
         processTreeError = $ProcessTreeError
     }
     if ($Error) { $result.error = $Error }
-    return $result
+    return [pscustomobject]$result
 }
 
 Export-ModuleMember -Function Get-ValidationProcessTree, New-ValidationHealthResult
