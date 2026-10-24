@@ -1,13 +1,16 @@
 import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import LogPage from './LogPage.vue'
-import type { RunItem } from './types'
+import type { ReadableReport, RunItem } from './types'
 
-type TestRun = { id: string; queue_name: string; trigger_source: string; state: string; started_at: string; items: RunItem[]; scheduler_skips: string[] }
+type TestRun = { id: string; queue_name: string; trigger_source: string; state: string; started_at: string; items: RunItem[]; scheduler_skips: string[]; readable_report?: ReadableReport }
 
 const run = (id: string, started_at: string): TestRun => ({ id, queue_name: id, trigger_source: 'manual', state: 'completed', started_at, items: [], scheduler_skips: [] })
 const fixture = [run('新年', '2026-01-01T12:00:00'), run('边界', '2025-12-26T12:00:00'), run('旧记录', '2025-12-25T12:00:00')]
-const setup = (history: TestRun[] = fixture, selectedId: string | null = null) => mount(LogPage, { props: { history, selectedId, expanded: new Set<string>() } })
+const setup = (history: TestRun[] = fixture, selectedId: string | null = null) => mount(LogPage, {
+  props: { history, selectedId, expanded: new Set<string>() },
+  global: { stubs: { VueMonacoEditor: { props: ['value'], template: '<pre class="monaco-stub">{{ value }}</pre>' } } },
+})
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date(2026, 0, 1, 12)) })
 afterEach(() => { vi.useRealTimers() })
 
@@ -57,6 +60,17 @@ test('shows the run log entry and distinguishes failure', async () => {
   expect(wrapper.text()).toContain('存在失败')
   await wrapper.findAll('button').find(button => button.text() === '查看本轮运行日志')!.trigger('click')
   expect(wrapper.text()).toContain('旧记录没有保存完整的本轮运行日志')
+})
+
+test('renders a local readable report in the detail pane and keeps legacy fallback visible', () => {
+  const report: ReadableReport = { generator_version: 'local-rules-v1', conclusion: '本轮全部完成', completion_basis: '所有任务均获得完成依据', duration_seconds: 63, risk_count: 1, risks: ['检测到 1 条错误级脚本日志，但未构成终态失败'], events: [] }
+  const record: TestRun = { ...run('可读报告', '2026-01-01T12:00:00'), readable_report: report, items: [{ task_id: 't', task_name: '程序', state: 'succeeded', readable_report: { ...report, conclusion: '任务已完成', completion_basis: '人工确认', events: [{ timestamp: '2026-01-01T12:00:00Z', source: 'runner', phase: 'confirmation', severity: 'info', event_type: 'manual.confirmation', message: '等待人工确认', rule_id: 'lifecycle.manual.confirmation' }] } }] }
+  const wrapper = setup([record])
+  expect(wrapper.get('[aria-label="运行报告"]').text()).toContain('本轮全部完成')
+  expect(wrapper.text()).toContain('0 小时 1 分 3 秒')
+  expect(wrapper.text()).toContain('检测到 1 条错误级脚本日志，但未构成终态失败')
+  expect(wrapper.text()).toContain('等待人工确认')
+  expect(wrapper.find('.history-workspace').exists()).toBe(true)
 })
 
 test('custom range includes both end dates and groups multiple runs on one day', async () => {
@@ -156,7 +170,7 @@ test('shows captured interface logs separately from raw logs', async () => {
 test('shows a compact task name and distinguishes interface and raw log status', async () => {
   const record = { ...run('样例', '2026-01-01T12:00:00'), items: [{ task_id: 't', task_name: 'MAA', script_name: 'MAA', state: 'succeeded', ui_log_status: '未设置区域', detail_log_status: '已采集' }] }
   const wrapper = setup([record]); await wrapper.setProps({ expanded: new Set(['样例']) })
-  const item = wrapper.get('.run-record li')
+  const item = wrapper.get('.history-report-panel li')
   expect(item.get('b').text()).toBe('MAA')
   expect(item.text()).toContain('界面日志：未设置区域')
   expect(item.text()).toContain('原始日志：已采集')

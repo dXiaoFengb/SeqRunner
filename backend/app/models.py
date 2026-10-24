@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Literal
 from uuid import uuid4
@@ -187,6 +187,30 @@ class AppConfig(BaseModel):
     startup_fired_dates: dict[str, str] = Field(default_factory=dict)
 
 
+class ReadableEvent(BaseModel):
+    """A bounded lifecycle fact rendered for people, never an external raw line."""
+
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    task_id: str | None = None
+    task_name: str | None = None
+    source: Literal["runner"] = "runner"
+    phase: str
+    severity: Literal["info", "warning", "error"] = "info"
+    event_type: str = "legacy"
+    message: str
+    rule_id: str | None = None
+
+
+class ReadableReport(BaseModel):
+    generator_version: str
+    conclusion: str
+    completion_basis: str
+    duration_seconds: int | None = None
+    risk_count: int = 0
+    risks: list[str] = Field(default_factory=list)
+    events: list[ReadableEvent] = Field(default_factory=list)
+
+
 class ItemRecord(BaseModel):
     task_id: str
     task_name: str
@@ -209,6 +233,11 @@ class ItemRecord(BaseModel):
     external_log_status: str | None = None
     log_source_configured: bool = False
     ui_log_source_configured: bool = False
+    # v0.14+ writes local runner facts only; old history without these remains readable.
+    readable_events: list[ReadableEvent] = Field(default_factory=list)
+    readable_report: ReadableReport | None = None
+    external_log_level_counts: dict[str, int] = Field(default_factory=dict)
+    unrecognized_log_count: int = 0
 
 
 class RunRecord(BaseModel):
@@ -229,6 +258,7 @@ class RunRecord(BaseModel):
     run_log_status: str | None = None
     completion_action: CompletionAction = CompletionAction.NONE
     completion_action_status: str | None = None
+    readable_report: ReadableReport | None = None
 
 
 class HistoryDocument(BaseModel):

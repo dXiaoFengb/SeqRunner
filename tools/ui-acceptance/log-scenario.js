@@ -1,5 +1,6 @@
 async page => {
   const check = (ok, message) => { if (!ok) throw new Error(message) }
+  const record = name => page.locator('.history-navigator .run-record').filter({hasText:name})
   // Electron 在持续刷新状态时会使 Playwright 的“稳定”探测长期不收敛；定位、可见性和每次操作后的结果断言仍由本场景覆盖。
   const click = locator => locator.click({force:true})
   // 界面请求使用受控响应；真实框选及 OCR 由独立的 Windows 夹具验证。
@@ -33,15 +34,18 @@ async page => {
   await click(page.getByRole('button',{name:'编辑脚本'}).last())
   check(await page.getByPlaceholder('请选择含 MAA.exe 的目录').isVisible(), '新脚本 MAA 预设没有保存')
   await click(page.getByRole('button', { name: '日志', exact: true }))
-  await page.getByText('今日验收记录').waitFor({timeout:15000})
+  await record('今日验收记录').waitFor({timeout:15000})
   check(await page.getByText('验收计划跳过').isVisible(), '计划跳过信息缺失')
-  check(await page.getByText('旧验收记录').count() === 0, '默认范围显示旧记录')
+  check(await record('旧验收记录').count() === 0, '默认范围显示旧记录')
   await click(page.getByRole('button', { name: '最近三个月' }))
   await click(page.getByRole('button', { name: '搜索', exact: true }))
-  check(await page.getByText('旧验收记录').isVisible(), '日期筛选未显示旧记录')
-  const oldRecord = page.locator('.run-record').filter({hasText:'旧验收记录'})
+  check(await record('旧验收记录').isVisible(), '日期筛选未显示旧记录')
+  const oldRecord = record('旧验收记录')
   check((await oldRecord.textContent()).includes('存在失败'), '运行结果未区分失败')
-  await click(oldRecord.getByRole('button',{name:'查看本轮运行日志'}))
+  await click(oldRecord)
+  check(await page.getByLabel('运行报告').getByText('本轮结束，存在失败或未执行项').isVisible(), '可读运行报告未显示最终结论')
+  check(await page.getByLabel('运行报告').getByText('失败规则命中：受控失败').isVisible(), '可读运行报告未显示任务时间线')
+  await click(page.getByRole('button',{name:'查看本轮运行日志'}))
   await page.getByText('受控本轮日志：总耗时 12 秒').waitFor({timeout:15000})
   await click(page.getByRole('dialog', {name:'详细日志'}).getByRole('button',{name:'关闭'}))
   await page.getByLabel('合并模式').selectOption('week')
@@ -49,9 +53,9 @@ async page => {
   await page.getByLabel('合并模式').selectOption('month')
   check((await page.locator('.log-group h2').allTextContents()).every(text => /\d{4}-\d{2}/.test(text)), '按月分组错误')
   await page.getByLabel('合并模式').selectOption('day')
-  await click(page.locator('.run-record').filter({hasText:'旧验收记录'}).getByRole('button',{name:'查看失败详情'}))
-  check(await page.getByText('受控失败').isVisible(), '失败详情不可见')
-  check(await page.getByText('受控摘要').isVisible(), '日志摘要不可见')
+  await click(record('旧验收记录'))
+  check(await page.getByLabel('运行报告').getByText('受控失败', {exact:false}).count() >= 1, '失败详情不可见')
+  check(await page.getByLabel('运行报告').getByText('受控摘要', {exact:false}).count() >= 1, '日志摘要不可见')
   await click(page.getByRole('button', {name:'查看详细日志'}))
   await page.getByText('受控界面日志').waitFor({timeout:15000})
   check(await page.getByText('受控界面日志').isVisible(), '脚本界面日志不可见')
@@ -74,8 +78,8 @@ async page => {
   await click(page.getByRole('button',{name:'清理详细日志'}))
   await click(page.getByRole('alertdialog').getByRole('button',{name:'确认清理'}))
   await page.getByText('已清理 1 条详细日志。').waitFor({timeout:15000})
-  check(await page.getByText('旧验收记录').isVisible(), '清理明细后运行记录丢失')
-  await click(oldRecord.getByRole('button',{name:'查看本轮运行日志'}))
+  check(await record('旧验收记录').isVisible(), '清理明细后运行记录丢失')
+  await click(page.getByRole('button',{name:'查看本轮运行日志'}))
   await page.getByText('受控本轮日志：总耗时 12 秒').waitFor({timeout:15000})
   await click(page.getByRole('dialog', {name:'详细日志'}).getByRole('button',{name:'关闭'}))
   check(await page.getByText('本轮日志摘要').isVisible(), '实时摘要区域不可见')
@@ -83,10 +87,10 @@ async page => {
   await page.getByLabel('结束日期').fill('2099-01-01')
   await click(page.getByRole('button',{name:'搜索',exact:true}))
   check(await page.getByText('开始日期不能晚于结束日期。').isVisible(),'无效日期未提示')
-  check(await page.getByText('旧验收记录').isVisible(),'无效筛选改变了结果')
+  check(await record('旧验收记录').isVisible(),'无效筛选改变了结果')
   await click(page.getByRole('button',{name:'重置',exact:true}))
-  check(await page.getByText('今日验收记录').isVisible(),'重置未显示今日记录')
-  check(await page.getByText('旧验收记录').count() === 0,'重置后仍显示旧记录')
+  check(await record('今日验收记录').isVisible(),'重置未显示今日记录')
+  check(await record('旧验收记录').count() === 0,'重置后仍显示旧记录')
   await page.addInitScript({content:`
     class FixtureSocket {
       static CONNECTING = 0; static OPEN = 1; readyState = 1
@@ -100,7 +104,7 @@ async page => {
   await page.evaluate(() => {
     const socket = window.__fixtureSocket
     const emit = (type, data) => socket.onmessage({data: JSON.stringify({type, data})})
-    emit('runtime', { busy: true, activeTaskId: 'fixture', cooldownSeconds: 0, run: { id: 'fixture-run', queue_name: '受控运行', state: 'running', items: [{ task_id:'fixture', task_name:'MAA', state:'waiting_manual' }] }, runCenter: { currentScriptName: '受控脚本', currentTaskName: '受控任务', currentState: 'waiting_manual', currentIndex: 1, totalPrograms: 1 }, liveLogs: [
+    emit('runtime', { busy: true, activeTaskId: 'fixture', cooldownSeconds: 0, run: { id: 'fixture-run', queue_name: '受控运行', state: 'running', items: [{ task_id:'fixture', task_name:'MAA', state:'waiting_manual' }] }, runCenter: { currentScriptName: '受控脚本', currentTaskName: '受控任务', currentState: 'waiting_manual', currentIndex: 1, totalPrograms: 1, readableProgress:'正在等待人工确认' }, liveLogs: [
       { runId:'fixture-run', sequence:1, taskId:'fixture', message:'开始校验任务配置', phase:'validation' },
       { runId:'fixture-run', sequence:2, taskId:'fixture', message:'已启动受管进程 PID 123', phase:'running' },
       { runId:'fixture-run', sequence:3, taskId:'fixture', message:'等待人工确认当前程序完成', phase:'waiting' },
@@ -109,6 +113,7 @@ async page => {
   check(await page.locator('.side-live-list').getByText('等待人工确认当前程序完成').isVisible(), '确认完成前未从运行快照恢复等待摘要')
   check(await page.locator('.side-live-list .log-phase-validation').count() > 0, '运行快照未保留校验阶段')
   check(await page.locator('.side-live-list .log-phase-waiting').count() > 0, '运行快照未保留等待确认阶段')
+  check(await page.getByText('正在等待人工确认').isVisible(), '运行中的可读进度未显示')
   await page.evaluate(() => {
     const socket = window.__fixtureSocket
     for (let i = 1; i <= 41; i++) socket.onmessage({data: JSON.stringify({type:'log', data:{message:`受控消息 ${i}`}})})

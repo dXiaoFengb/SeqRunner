@@ -37,6 +37,7 @@ from .processes import (
     process_tree_alive,
     request_graceful_close,
 )
+from .readable_reports import local_report_provider
 from .storage import JsonStore
 from .ui_logs import WindowLogCapture, ocr_appended
 
@@ -209,6 +210,7 @@ class RunnerEngine:
             record.state = RunState.COMPLETED
             record.ended_at = datetime.now(UTC)
             record.message = "计划尚未添加软件脚本，已跳过本次执行"
+            self._refresh_readable_reports(record)
             self._reset_live_summary(record)
             self.history.runs.insert(0, record)
             self._save_new_history()
@@ -239,6 +241,7 @@ class RunnerEngine:
             record.state = RunState.COMPLETED
             record.ended_at = datetime.now(UTC)
             record.message = "当天没有匹配“运行周几”的软件任务"
+            self._refresh_readable_reports(record)
             self._reset_live_summary(record)
             self.history.runs.insert(0, record)
             self._save_new_history()
@@ -352,6 +355,7 @@ class RunnerEngine:
             self._manual_accepting_task_id = None
             self._owned_process = None
             self._auxiliary_owned_processes = []
+            self._refresh_readable_reports(record)
             self.history.runs.insert(0, record)
             self._save_new_history()
             await self._publish_state()
@@ -459,6 +463,10 @@ class RunnerEngine:
         if task.log_path:
             async def emit_external_log(path: Path, text: str) -> None:
                 source_id = "external-" + hashlib.sha256(str(path).casefold().encode("utf-8")).hexdigest()[:16]
+                try:
+                    local_report_provider.note_external_levels(item, text)
+                except Exception:
+                    self._logger.exception("生成可读日志报告时失败；继续传递原始日志")
                 await self._publish_script_log(record, task.id, source_id, path.name, "external", text)
 
             watcher = ExternalLogWatcher(
@@ -780,6 +788,10 @@ class RunnerEngine:
         await self.events.publish("runtime", self.snapshot(include_script_logs=False))
 
     async def _log(self, item: ItemRecord, text: str) -> None:
+        try:
+            local_report_provider.append_item_event(item, text)
+        except Exception:
+            self._logger.exception("生成可读日志事件时失败；继续运行")
         if self.current_run:
             await self._run_log(
                 self.current_run,
@@ -789,6 +801,15 @@ class RunnerEngine:
                 phase=self._summary_phase(item.state),
             )
         self._logger.info("任务 %s (%s): %s", item.task_name, item.task_id, text)
+
+    def _refresh_readable_reports(self, record: RunRecord) -> None:
+        """Report rendering is observational: it must never block a run or history save."""
+        try:
+            for item in record.items:
+                item.readable_report = local_report_provider.build_item_report(item)
+            record.readable_report = local_report_provider.build_run_report(record)
+        except Exception:
+            self._logger.exception("生成可读运行报告时失败；保留原有运行与历史记录")
 
     @staticmethod
     def _summary_phase(state: ItemState) -> str:
@@ -952,6 +973,7 @@ class RunnerEngine:
                 "completionSource": active_item.completion_source.value if active_item and active_item.completion_source else None,
                 "currentIndex": current_index,
                 "totalPrograms": total,
+                "readableProgress": active_item.readable_report.conclusion if active_item and active_item.readable_report else None,
             },
             "run": self.current_run.model_dump(mode="json") if self.current_run else None,
         }

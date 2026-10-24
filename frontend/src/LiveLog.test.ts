@@ -2,6 +2,7 @@ import { mount } from '@vue/test-utils'
 import { expect, test } from 'vitest'
 import { nextTick } from 'vue'
 import LiveLog from './LiveLog.vue'
+import type { Runtime } from './types'
 
 test('always follows new summary logs even after manual scrolling', async () => {
   const wrapper = mount(LiveLog, { props: { logs: ['第一条'] } })
@@ -35,6 +36,12 @@ test('labels stages with color classes while always following', async () => {
   expect(list.scrollTop).toBe(500)
   expect(wrapper.find('button').exists()).toBe(false)
   expect(wrapper.get('.log-phase-closing').text()).toContain('收尾')
+})
+
+test('shows only the engine-confirmed readable progress above the summary', () => {
+  const runtime: Runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, runCenter: { currentScriptId: null, currentScriptName: null, currentTaskId: 't', currentTaskName: '程序', currentState: 'waiting_manual', completionSource: null, currentIndex: 1, totalPrograms: 1, readableProgress: '正在等待人工确认' }, run: { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: '程序', state: 'waiting_manual' }] } }
+  const wrapper = mount(LiveLog, { props: { logs: ['等待人工确认'], runtime } })
+  expect(wrapper.get('.readable-progress').text()).toBe('正在等待人工确认')
 })
 
 test('distinguishes a script with a configured log source and shows the final elapsed time', async () => {

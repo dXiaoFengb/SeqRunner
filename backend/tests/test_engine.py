@@ -74,6 +74,22 @@ async def test_process_exit_runs_tasks_in_strict_order(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_report_generation_failure_does_not_block_history_save(tmp_path: Path, monkeypatch) -> None:
+    task = python_task("报告回退", "pass")
+    engine, queue = build_engine(tmp_path, [task])
+
+    def reject_report(*_args, **_kwargs) -> None:
+        raise RuntimeError("受控报告生成失败")
+
+    monkeypatch.setattr("app.engine.local_report_provider.build_run_report", reject_report)
+    await engine.start(queue.id, "manual")
+    await engine.wait_until_idle()
+
+    assert engine.history.runs[0].items[0].state.value == "succeeded"
+    assert engine.history.runs[0].readable_report is None
+
+
+@pytest.mark.asyncio
 async def test_success_log_locks_success_before_process_exit(tmp_path: Path) -> None:
     log = tmp_path / "target.log"
     source = "from pathlib import Path; import sys,time; Path(sys.argv[1]).write_text('DONE\\n'); time.sleep(10)"
@@ -156,9 +172,13 @@ async def test_runtime_snapshot_restores_summary_before_manual_confirmation(tmp_
     assert any(entry["phase"] == "running" for entry in entries)
     assert any(entry["phase"] == "waiting" for entry in entries)
     assert {entry["runId"] for entry in entries} == {snapshot["run"]["id"]}
+    assert snapshot["runCenter"]["readableProgress"] == "正在等待人工确认"
+    assert snapshot["run"]["items"][0]["readable_report"]["events"]
 
     await engine.confirm(task.id)
     await engine.wait_until_idle()
+    assert engine.history.runs[0].readable_report is not None
+    assert engine.history.runs[0].readable_report.generator_version == "local-rules-v1"
 
 
 @pytest.mark.asyncio

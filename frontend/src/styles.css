@@ -237,6 +237,10 @@ dd { margin: 0; }
 .settings-section:last-child { border-bottom: 0; }
 .settings-section-heading h3 { position: relative; margin: 0; padding-left: 12px; font-size: 18px; }
 .settings-section-heading h3::before { position: absolute; top: 1px; bottom: 1px; left: 0; width: 3px; border-radius: 2px; background: var(--teal); content: ''; }
+.settings-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ai-reserved { background: linear-gradient(90deg, rgba(20, 68, 87, .28), transparent); }
+.ai-reserved .settings-section-heading > span { padding: 3px 8px; border: 1px solid #44677a; border-radius: 999px; color: #9eb8c5; font-size: 12px; }
+.ai-reserved p { max-width: 760px; margin: 0; color: #a8c0cb; line-height: 1.65; }
 .settings-actions { margin: 2px 0 0; }
 .connection-diagnostics { max-width: 760px; border: 1px solid #2d4a5d; border-radius: 8px; background: #0a1722; color: #d8e5ed; }
 .connection-diagnostics summary { padding: 10px 12px; cursor: pointer; color: #c6d8e2; }

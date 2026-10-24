@@ -1,0 +1,33 @@
+[
+  {
+    "name": "正常完成但有错误级原文",
+    "state": "succeeded",
+    "completion_source": "process_exit",
+    "raw": "[ERR] 可选模块未启用\n[INF] 主任务完成\n",
+    "conclusion": "任务已完成",
+    "risk": "检测到 1 条错误级脚本日志，但未构成终态失败"
+  },
+  {
+    "name": "人工确认",
+    "state": "succeeded",
+    "completion_source": "manual",
+    "raw": "[INF] 等待用户确认\n",
+    "conclusion": "任务已完成",
+    "risk": null
+  },
+  {
+    "name": "失败规则终态",
+    "state": "failed",
+    "error_summary": "失败规则命中：FATAL",
+    "raw": "[ERR] FATAL\n",
+    "conclusion": "任务未完成",
+    "risk": "检测到 1 条错误级脚本日志"
+  },
+  {
+    "name": "未知原文不解释",
+    "state": "monitoring",
+    "raw": "vendor message without level\n",
+    "conclusion": "正在监控程序运行",
+    "risk": null
+  }
+]

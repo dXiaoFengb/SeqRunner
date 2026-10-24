@@ -22,6 +22,7 @@ const selectedSourceId = ref<string | null>(null)
 const selectedSource = computed(() => availableSources.value.find((item) => item.sourceId === selectedSourceId.value) || availableSources.value[0] || null)
 const hasScriptLog = computed(() => Boolean(current.value && (current.value.log_source_configured || current.value.ui_log_source_configured || availableSources.value.length)))
 const sourceTypeLabel = (source: ScriptLogSource) => source.sourceType === 'ocr' ? '画面识别' : source.sourceType === 'window' ? '界面读取' : source.sourceName
+const readableProgress = computed(() => props.runtime?.runCenter?.readableProgress || '')
 const summary = computed(() => { const run = props.runtime?.run; if (!run || !['completed', 'stopped'].includes(run.state) || !run.started_at || !run.ended_at) return ''; const seconds = Math.max(0, Math.floor((Date.parse(run.ended_at) - Date.parse(run.started_at)) / 1000)); if (!Number.isFinite(seconds)) return ''; const state = run.state === 'stopped' ? '本轮已停止' : run.items.some(item => item.state === 'failed') ? '本轮完成，存在失败项' : '本轮执行完成'; return `${state}，总耗时 ${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds % 3600 / 60)} 分 ${seconds % 60} 秒` })
 const list = ref<HTMLElement | null>(null)
 const scriptList = ref<HTMLElement | null>(null)
@@ -38,7 +39,7 @@ watch(() => [selectedSource.value?.sequence, current.value?.task_id] as const, s
 
 <template>
   <section class="side-live-log" :class="{ 'has-script-log': runtime?.busy && hasScriptLog }" aria-label="本轮日志摘要">
-    <div class="side-live-header scheduler-header"><b>本轮日志摘要</b></div>
+    <div class="side-live-header scheduler-header"><b>本轮日志摘要</b><small v-if="readableProgress" class="readable-progress">{{ readableProgress }}</small></div>
     <div ref="list" class="side-live-list scheduler-live-list" tabindex="0"><span v-if="!entries.length" class="side-live-empty">暂无实时日志</span><ol v-else><li v-for="(entry, index) in entries" :key="index" :class="'log-phase-' + entry.phase"><b class="log-phase">{{ phaseLabels[entry.phase] }}</b><span>{{ logLabel(entry.message) }}</span></li></ol><span v-if="summary" class="side-live-summary">{{ summary }}</span></div>
     <template v-if="runtime?.busy && hasScriptLog">
       <div class="side-live-header script-header"><b>{{ current ? `${current.task_name} · 脚本日志` : '脚本日志' }}</b></div>
@@ -52,6 +53,7 @@ watch(() => [selectedSource.value?.sequence, current.value?.task_id] as const, s
 
 <style scoped>
 .script-live-list { background: #10241f; border-color: #327d65; }
+.readable-progress{display:block;margin-top:4px;color:#8ce0bf;font-size:12px;font-weight:400;line-height:1.35}
 .has-script-log .script-live-list { flex: 2 1 0; }
 .has-script-log .scheduler-live-list { flex: 1 1 0; }
 .has-script-log .script-header { margin-top: 8px; }

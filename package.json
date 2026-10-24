@@ -19,12 +19,14 @@
     "package:validation": "npm run package:validation:prepare && npm run validation:health && npm run validation:finalize"
   },
   "devDependencies": {
+    "@guolao/vue-monaco-editor": "1.6.0",
     "@vitejs/plugin-vue": "6.0.1",
     "@vue/test-utils": "2.4.6",
     "concurrently": "9.2.1",
     "cross-env": "10.0.0",
     "electron": "37.2.5",
     "happy-dom": "18.0.1",
+    "monaco-editor": "0.54.0",
     "typescript": "5.9.2",
     "vite": "7.0.4",
     "vitest": "4.1.9",
