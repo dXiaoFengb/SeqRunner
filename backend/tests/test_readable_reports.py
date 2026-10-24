@@ -56,6 +56,7 @@ def test_report_fixture_cases_are_deterministic(case: dict[str, object]) -> None
         state=ItemState(str(case["state"])),
         completion_source=CompletionSource(str(case["completion_source"])) if case.get("completion_source") else None,
         error_summary=str(case["error_summary"]) if case.get("error_summary") else None,
+        external_log_status=str(case["external_log_status"]) if case.get("external_log_status") else None,
     )
     append_item_event(item, "开始校验任务配置")
     note_external_levels(item, str(case["raw"]))
@@ -65,6 +66,6 @@ def test_report_fixture_cases_are_deterministic(case: dict[str, object]) -> None
     assert (str(case["risk"]) if case["risk"] else None) in (report.risks or [None])
     assert report.events[-1].event_type == "validation.started"
     assert report.events[-1].rule_id == "lifecycle.validation.started"
-    if case["name"] == "未知原文不解释":
-        assert item.unrecognized_log_count == 1
+    if case.get("unrecognized_count"):
+        assert item.unrecognized_log_count == case["unrecognized_count"]
         assert not report.risks

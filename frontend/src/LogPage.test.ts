@@ -221,6 +221,25 @@ test('shows a compact task tab then distinguishes interface and raw log status i
   expect(wrapper.get('[aria-label="脚本详情"]').text()).toContain('查看界面采集日志')
 })
 
+test('stacks task choices vertically while keeping each whole choice keyboard-accessible', async () => {
+  const record = { ...run('纵向运行', '2026-01-01T12:00:00'), items: [
+    { task_id: 'first', task_name: '第一项', state: 'succeeded' },
+    { task_id: 'second', task_name: '第二项', state: 'failed', error_summary: '受控失败' },
+    { task_id: 'third', task_name: '第三项', state: 'stopped' },
+  ] }
+  const wrapper = setup([record]); await wrapper.setProps({ expanded: new Set(['纵向运行']) })
+  const choices = wrapper.findAll('.task-tabs > .task-tab')
+  expect(choices).toHaveLength(3)
+  expect(choices.every((choice) => choice.element.tagName === 'BUTTON')).toBe(true)
+  expect(choices[1].get('.task-tab-main').text()).toContain('第二项')
+  expect(choices[1].get('.task-tab-meta').text()).toContain('查看详情')
+  await choices[1].trigger('click')
+  expect(wrapper.get('[aria-label="脚本详情"]').text()).toContain('第二项')
+  await wrapper.get('button.text-button').trigger('click')
+  expect(wrapper.findAll('.task-tabs > .task-tab')).toHaveLength(3)
+  expect(wrapper.findAll('.task-tab.selected')).toHaveLength(1)
+})
+
 test('lists and pages only external log files recorded by the history item', async () => {
   const exportFile = vi.fn(async () => ({ canceled: false }))
   const showInFolder = vi.fn(async () => ({ accepted: true }))

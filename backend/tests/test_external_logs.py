@@ -54,6 +54,29 @@ async def test_multiple_direct_files_contribute_to_the_same_completion_rules(tmp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("success_name", "failure_name"), [
+    ("a-success.log", "z-failure.log"),
+    ("z-success.log", "a-failure.log"),
+])
+async def test_multiple_sources_choose_failure_over_success_regardless_discovery_order(tmp_path, success_name, failure_name):
+    source = tmp_path / "logs"; source.mkdir()
+    success = source / success_name; failure = source / failure_name
+    success.write_bytes(b""); failure.write_bytes(b"")
+    watcher = ExternalLogWatcher(
+        str(source), "*.log", "DONE", MatchMode.KEYWORD, "FAILED", MatchMode.KEYWORD,
+        success_rules=[], failure_rules=[], monitor_success=True,
+    )
+    await watcher.start_at_end()
+    success.write_text("DONE\n", encoding="utf-8")
+    failure.write_text("FAILED\n", encoding="utf-8")
+
+    signal = await asyncio.wait_for(watcher.wait_for_signal(asyncio.Event()), timeout=2)
+
+    assert signal and signal.kind == "failure"
+    assert signal.text == "FAILED"
+
+
+@pytest.mark.asyncio
 async def test_external_log_watcher_recovers_from_truncation(tmp_path):
     source = tmp_path / "current.log"
     source.write_bytes(b"a long old line that will be replaced")

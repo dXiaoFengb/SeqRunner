@@ -147,3 +147,40 @@ test('keeps a manually selected source while other script sources update', async
   expect(wrapper.get('.script-live-list').text()).toContain('第一份')
   expect(wrapper.get('.script-source-tabs button.active').text()).toContain('first.log')
 })
+
+test('marks every unselected source that advanced after it was last viewed and clears stale marks on a new task', async () => {
+  const firstRun = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: '程序', state: 'monitoring', log_source_configured: true }] }
+  const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run: firstRun }
+  const sources = [
+    { runId: 'r', taskId: 't', sourceId: 'one', sourceName: 'one.log', sourceType: 'external', sequence: 1, append: false, text: '一', truncated: false, updatedAt: '2026-01-01T00:00:00Z' },
+    { runId: 'r', taskId: 't', sourceId: 'two', sourceName: 'two.log', sourceType: 'external', sequence: 1, append: false, text: '二', truncated: false, updatedAt: '2026-01-01T00:01:00Z' },
+    { runId: 'r', taskId: 't', sourceId: 'three', sourceName: 'three.log', sourceType: 'external', sequence: 1, append: false, text: '三', truncated: false, updatedAt: '2026-01-01T00:02:00Z' },
+  ]
+  const wrapper = mount(LiveLog, { props: { logs: [], runtime, scriptLogs: sources } })
+  await nextTick()
+  expect(wrapper.findAll('.script-source-tabs i')).toHaveLength(0)
+  await wrapper.findAll('.script-source-tabs button').find((button) => button.text().includes('one.log'))!.trigger('click')
+  await wrapper.setProps({ scriptLogs: [sources[0], { ...sources[1], sequence: 2, text: '二更新', updatedAt: '2026-01-01T00:03:00Z' }, { ...sources[2], sequence: 2, text: '三更新', updatedAt: '2026-01-01T00:04:00Z' }] })
+  await nextTick()
+  expect(wrapper.findAll('.script-source-tabs i')).toHaveLength(2)
+  await wrapper.findAll('.script-source-tabs button').find((button) => button.text().includes('two.log'))!.trigger('click')
+  expect(wrapper.findAll('.script-source-tabs i')).toHaveLength(1)
+  const nextRun = { id: 'next', queue_name: '队列', state: 'running', items: [{ task_id: 'next-task', task_name: '下一程序', state: 'monitoring', log_source_configured: true }] }
+  await wrapper.setProps({ runtime: { ...runtime, activeTaskId: 'next-task', run: nextRun }, scriptLogs: [{ ...sources[2], runId: 'next', taskId: 'next-task', sequence: 1, text: '新来源' }] })
+  await nextTick()
+  expect(wrapper.findAll('.script-source-tabs i')).toHaveLength(0)
+})
+
+test('marks a source that appears after the current source and clears it when viewed', async () => {
+  const run = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: '程序', state: 'monitoring', log_source_configured: true }] }
+  const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }
+  const first = { runId: 'r', taskId: 't', sourceId: 'first', sourceName: 'first.log', sourceType: 'external', sequence: 1, append: false, text: '第一份', truncated: false, updatedAt: '2026-01-01T00:00:00Z' }
+  const later = { runId: 'r', taskId: 't', sourceId: 'later', sourceName: 'later.log', sourceType: 'external', sequence: 1, append: false, text: '后来出现', truncated: false, updatedAt: '2026-01-01T00:01:00Z' }
+  const wrapper = mount(LiveLog, { props: { logs: [], runtime, scriptLogs: [first] } })
+  await nextTick()
+  await wrapper.setProps({ scriptLogs: [first, later] })
+  await nextTick()
+  expect(wrapper.findAll('.script-source-tabs i')).toHaveLength(1)
+  await wrapper.findAll('.script-source-tabs button').find((button) => button.text().includes('later.log'))!.trigger('click')
+  expect(wrapper.findAll('.script-source-tabs i')).toHaveLength(0)
+})

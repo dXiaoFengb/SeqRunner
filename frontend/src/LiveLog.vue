@@ -19,6 +19,8 @@ const availableSources = computed(() => {
   return [...streams].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
 })
 const selectedSourceId = ref<string | null>(null)
+const sourceScope = ref('')
+const seenSourceSequences = ref<Record<string, number>>({})
 const selectedSource = computed(() => availableSources.value.find((item) => item.sourceId === selectedSourceId.value) || availableSources.value[0] || null)
 const hasScriptLog = computed(() => Boolean(current.value && (current.value.log_source_configured || current.value.ui_log_source_configured || availableSources.value.length)))
 const sourceTypeLabel = (source: ScriptLogSource) => source.sourceType === 'ocr' ? '画面识别' : source.sourceType === 'window' ? '界面读取' : source.sourceName
@@ -29,11 +31,29 @@ const scriptList = ref<HTMLElement | null>(null)
 function scrollToEnd(element: HTMLElement | null) { if (element) element.scrollTop = element.scrollHeight }
 async function scrollSummaryToEnd() { await nextTick(); scrollToEnd(list.value) }
 async function scrollScriptToEnd() { await nextTick(); scrollToEnd(scriptList.value) }
-function sourceIsActive(source: ScriptLogSource) { return source.sourceId !== selectedSourceId.value && source.updatedAt === availableSources.value[0]?.updatedAt }
+function sourceIsActive(source: ScriptLogSource) { return source.sourceId !== selectedSourceId.value && source.sequence > (seenSourceSequences.value[source.sourceId] ?? 0) }
+function selectSource(source: ScriptLogSource) {
+  selectedSourceId.value = source.sourceId
+  seenSourceSequences.value = { ...seenSourceSequences.value, [source.sourceId]: source.sequence }
+}
 onMounted(async () => { await scrollSummaryToEnd(); await scrollScriptToEnd() })
 watch(() => [props.logs, summary.value] as const, scrollSummaryToEnd, { flush: 'pre' })
 watch(() => props.runtime?.run?.id, scrollSummaryToEnd)
-watch(availableSources, (sources) => { if (!sources.some((item) => item.sourceId === selectedSourceId.value)) selectedSourceId.value = sources[0]?.sourceId || null }, { immediate: true })
+watch(availableSources, (sources) => {
+  const scope = `${props.runtime?.run?.id || ''}:${current.value?.task_id || ''}`
+  if (scope !== sourceScope.value) {
+    sourceScope.value = scope
+    selectedSourceId.value = sources[0]?.sourceId || null
+    seenSourceSequences.value = Object.fromEntries(sources.map((source) => [source.sourceId, source.sequence]))
+    return
+  }
+  const available = new Set(sources.map((source) => source.sourceId))
+  const retained = Object.fromEntries(Object.entries(seenSourceSequences.value).filter(([sourceId]) => available.has(sourceId)))
+  if (!sources.some((item) => item.sourceId === selectedSourceId.value)) selectedSourceId.value = sources[0]?.sourceId || null
+  const selected = sources.find((source) => source.sourceId === selectedSourceId.value)
+  if (selected) retained[selected.sourceId] = selected.sequence
+  seenSourceSequences.value = retained
+}, { immediate: true })
 watch(() => [selectedSource.value?.sequence, current.value?.task_id] as const, scrollScriptToEnd, { flush: 'pre' })
 </script>
 
@@ -44,7 +64,7 @@ watch(() => [selectedSource.value?.sequence, current.value?.task_id] as const, s
     <template v-if="runtime?.busy && hasScriptLog">
       <div class="side-live-header script-header"><b>{{ current ? `${current.task_name} · 脚本日志` : '脚本日志' }}</b></div>
       <div v-if="availableSources.length" class="script-source-tabs" aria-label="日志来源">
-        <button v-for="source in availableSources" :key="source.sourceId" :class="{ active: selectedSource?.sourceId === source.sourceId }" :aria-pressed="selectedSource?.sourceId === source.sourceId" @click="selectedSourceId = source.sourceId"><span>{{ sourceTypeLabel(source) }}</span><i v-if="sourceIsActive(source)" title="有新内容" /></button>
+        <button v-for="source in availableSources" :key="source.sourceId" :class="{ active: selectedSource?.sourceId === source.sourceId }" :aria-pressed="selectedSource?.sourceId === source.sourceId" @click="selectSource(source)"><span>{{ sourceTypeLabel(source) }}</span><i v-if="sourceIsActive(source)" title="有新内容" /></button>
       </div>
       <div ref="scriptList" class="side-live-list script-live-list" tabindex="0"><span v-if="selectedSource?.truncated" class="script-truncated">实时缓冲已截断，可在历史页读取原文件。</span><span v-if="!selectedSource?.text" class="side-live-empty">{{ current ? (current.ui_log_status || '暂无法可靠获取该脚本的界面日志。') : '等待脚本运行' }}</span><pre v-else class="script-text">{{ selectedSource.text }}</pre></div>
     </template>

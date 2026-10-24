@@ -44,7 +44,17 @@ async page => {
   check((await oldRecord.textContent()).includes('存在失败'), '运行结果未区分失败')
   await click(oldRecord)
   check(await page.getByLabel('运行报告').getByText('本轮结束，存在失败或未执行项').isVisible(), '可读运行报告未显示最终结论')
-  check(await page.locator('.task-tab').count() === 1, '一级运行报告未收敛为脚本详情选项卡')
+  const taskTabs = page.locator('.task-tabs')
+  check(await page.locator('.task-tab').count() === 6, '受控多任务运行没有完整呈现为任务选择列表')
+  const taskRows = await page.locator('.task-tab').evaluateAll(nodes => nodes.map(node => {
+    const box = node.getBoundingClientRect()
+    return { top: box.top, bottom: box.bottom, left: box.left, right: box.right }
+  }))
+  check(taskRows.every((row, index) => index === 0 || row.top >= taskRows[index - 1].bottom), '任务选择项没有从上至下纵向排列')
+  check(await taskTabs.evaluate(node => {
+    const style = getComputedStyle(node)
+    return style.overflowX === 'hidden' && node.scrollWidth <= node.clientWidth + 1 && node.scrollHeight > node.clientHeight
+  }), '任务列表没有限制在自身纵向滚动区域内')
   check(await page.getByRole('button', {name:'查看 验收任务 的脚本详情'}).isVisible(), '脚本选项卡没有可访问详情入口')
   await click(page.getByRole('button', {name:'查看 验收任务 的脚本详情'}))
   check(await page.getByLabel('脚本详情').isVisible(), '未进入脚本详情页面')
@@ -135,9 +145,16 @@ async page => {
     const send = (type, data) => socket.onmessage({data: JSON.stringify({type, data})})
     send('runtime', { busy: true, activeTaskId: 'fixture', cooldownSeconds: 0, run: { id: 'fixture-run', queue_name: '受控运行', state: 'running', items: [{ task_id:'fixture', task_name:'MAA', state:'waiting_manual', ui_log_status:'已连接受控日志' }] }, runCenter: { currentScriptName:'受控脚本', currentTaskName:'MAA', currentState:'waiting_manual', currentIndex:1, totalPrograms:1 } })
     send('script_log', {runId:'fixture-run', taskId:'fixture', sourceId:'fixture-external', sourceName:'fixture.log', sourceType:'external', sequence:1, append:false, text:'受控脚本实时日志', truncated:false, updatedAt:'2026-10-23T00:00:00Z'})
+    send('script_log', {runId:'fixture-run', taskId:'fixture', sourceId:'fixture-window', sourceName:'界面读取', sourceType:'window', sequence:1, append:false, text:'受控界面来源日志', truncated:false, updatedAt:'2026-10-23T00:00:01Z'})
   })
   check(await page.locator('.side-live-list').getByText('受控脚本实时日志').isVisible(), '脚本实时日志不可见')
   check(await page.locator('.script-source-tabs').getByText('fixture.log').isVisible(), '脚本日志来源标签不可见')
+  await click(page.locator('.script-source-tabs').getByText('fixture.log'))
+  await page.evaluate(() => window.__fixtureSocket.onmessage({data: JSON.stringify({type:'script_log', data:{runId:'fixture-run', taskId:'fixture', sourceId:'fixture-window', sourceName:'界面读取', sourceType:'window', sequence:2, append:true, text:'\n受控界面来源新增日志', truncated:false, updatedAt:'2026-10-23T00:00:02Z'}})}))
+  check(await page.locator('.script-source-tabs button').filter({hasText:'界面读取'}).locator('i').count() === 1, '未选中来源新增内容后没有活动标记')
+  await click(page.locator('.script-source-tabs').getByText('界面读取'))
+  check(await page.locator('.script-source-tabs button').filter({hasText:'界面读取'}).locator('i').count() === 0, '查看来源后活动标记没有清除')
+  await click(page.locator('.script-source-tabs').getByText('fixture.log'))
   check(await page.locator('.scheduler-live-list').getByText('受控消息 41').isVisible(), '脚本运行时本软件日志不可见')
   await page.evaluate(() => {
     const socket = window.__fixtureSocket

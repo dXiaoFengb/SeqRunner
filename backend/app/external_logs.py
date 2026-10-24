@@ -93,6 +93,7 @@ class ExternalLogWatcher:
         while not cancel.is_set():
             try:
                 await self._discover_new()
+                signals: list[LogSignal] = []
                 for path, watcher in tuple(self.watchers.items()):
                     signal = await asyncio.to_thread(watcher._read_new)
                     if watcher.last_progress:
@@ -102,7 +103,12 @@ class ExternalLogWatcher:
                         if self.on_text:
                             await self.on_text(path, watcher.last_text)
                     if signal:
-                        return signal
+                        signals.append(signal)
+                # A directory may advance several files during one scan.  Do
+                # not let discovery order turn a simultaneous failure into a
+                # success: terminal failure evidence always wins this pass.
+                if signals:
+                    return next((signal for signal in signals if signal.kind != "success"), signals[0])
             except (OSError, UnicodeError) as error:
                 self._consecutive_read_failures += 1
                 if self._consecutive_read_failures >= 5:

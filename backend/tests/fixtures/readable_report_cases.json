@@ -16,6 +16,14 @@
     "risk": null
   },
   {
+    "name": "成功规则命中",
+    "state": "succeeded",
+    "completion_source": "success_log",
+    "raw": "[INF] DONE\\n",
+    "conclusion": "任务已完成",
+    "risk": null
+  },
+  {
     "name": "失败规则终态",
     "state": "failed",
     "error_summary": "失败规则命中：FATAL",
@@ -24,10 +32,35 @@
     "risk": "检测到 1 条错误级脚本日志"
   },
   {
+    "name": "非零退出",
+    "state": "failed",
+    "error_summary": "进程以退出码 2 结束",
+    "raw": "[ERR] process terminated\\n",
+    "conclusion": "任务未完成",
+    "risk": "检测到 1 条错误级脚本日志"
+  },
+  {
+    "name": "未发现外部来源",
+    "state": "monitoring",
+    "external_log_status": "运行期间未发现匹配的外部日志",
+    "raw": "[INF] waiting\\n",
+    "conclusion": "正在监控程序运行",
+    "risk": "运行期间未发现匹配的脚本内部日志"
+  },
+  {
+    "name": "乱码和不完整时间戳不解释",
+    "state": "monitoring",
+    "raw": "[2026-10-24 12:0� [ER partial\\n",
+    "conclusion": "正在监控程序运行",
+    "risk": null,
+    "unrecognized_count": 1
+  },
+  {
     "name": "未知原文不解释",
     "state": "monitoring",
     "raw": "vendor message without level\n",
     "conclusion": "正在监控程序运行",
-    "risk": null
+    "risk": null,
+    "unrecognized_count": 1
   }
 ]
