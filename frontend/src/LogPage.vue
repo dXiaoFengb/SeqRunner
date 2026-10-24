@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { CalendarDays, FolderOpen, RotateCcw, Search } from '@lucide/vue'
 import { VueMonacoEditor } from './monaco'
 import type { RunItem, ReadableReport } from './types'
@@ -26,10 +26,12 @@ const initial = rangeFor('week')
 const start = ref(initial.start), end = ref(initial.end), applied = ref<Range>({ ...initial })
 const selected = ref<Preset | null>('week'), error = ref('')
 const groupMode = ref<'day' | 'week' | 'month'>('day')
+const keyword = ref('')
+const triggerSource = ref<'all' | 'manual' | 'scheduled' | 'startup'>('all')
 function selectPreset(key: Preset) { const range = rangeFor(key); start.value = range.start; end.value = range.end; selected.value = key; error.value = '' }
 function editDates() { selected.value = null; error.value = '' }
-function search() { if (!start.value || !end.value) { error.value = '请选择开始和结束日期。'; return }; if (start.value > end.value) { error.value = '开始日期不能晚于结束日期。'; return }; error.value = ''; applied.value = { start: start.value, end: end.value } }
-function reset() { groupMode.value = 'day'; selectPreset('week'); search() }
+function search() { if (!start.value || !end.value) { error.value = '请选择开始和结束日期。'; return }; if (start.value > end.value) { error.value = '开始日期不能晚于结束日期。'; return }; error.value = ''; taskDetailOpen.value = false; applied.value = { start: start.value, end: end.value } }
+function reset() { groupMode.value = 'day'; keyword.value = ''; triggerSource.value = 'all'; selectPreset('week'); search() }
 function recordDate(run: HistoryRun) { const date = new Date(run.started_at); return Number.isNaN(date.getTime()) ? '' : dateKey(date) }
 function groupKey(day: string) {
   if (groupMode.value === 'day') return day
@@ -40,15 +42,39 @@ function groupKey(day: string) {
   const week = Math.ceil(((thursday.getTime() - Date.UTC(thursday.getUTCFullYear(), 0, 1)) / 86400000 + 1) / 7)
   return `${thursday.getUTCFullYear()}-W${String(week).padStart(2, '0')}`
 }
+function matchesRun(run: HistoryRun) {
+  if (triggerSource.value !== 'all' && run.trigger_source !== triggerSource.value) return false
+  const query = keyword.value.trim().toLocaleLowerCase()
+  if (!query) return true
+  const report = reportFor(run)
+  const fields = [
+    run.queue_name, run.state, run.trigger_source, ...(run.scheduler_skips || []),
+    report?.conclusion, report?.completion_basis, ...(report?.risks || []), ...(report?.events || []).map(event => `${event.message} ${event.rule_id || ''}`),
+    ...run.items.flatMap(item => [itemName(item), item.error_summary, item.completion_source, ...(item.log_summary || []), item.external_log_status, item.ui_log_status, item.detail_log_status, reportFor(run, item)?.conclusion, reportFor(run, item)?.completion_basis, ...(reportFor(run, item)?.risks || []), ...(reportFor(run, item)?.events || []).map(event => `${event.message} ${event.rule_id || ''}`)]),
+  ]
+  return fields.some(value => String(value || '').toLocaleLowerCase().includes(query))
+}
 const groups = computed(() => {
   const entries = new Map<string, HistoryRun[]>()
-  for (const run of props.history) { const day = recordDate(run); if (!day || day < applied.value.start || day > applied.value.end) continue; const key = groupKey(day); const group = entries.get(key) || []; group.push(run); entries.set(key, group) }
+  for (const run of props.history) { const day = recordDate(run); if (!day || day < applied.value.start || day > applied.value.end || !matchesRun(run)) continue; const key = groupKey(day); const group = entries.get(key) || []; group.push(run); entries.set(key, group) }
   return [...entries.entries()].sort(([a], [b]) => b.localeCompare(a)).map(([date, runs]) => ({ date, runs: runs.sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime()) }))
 })
 const selectedRunId = ref<string | null>(props.selectedId)
+const selectedTaskId = ref<string | null>(null)
+const taskDetailOpen = ref(false)
+const lastTaskCard = ref<HTMLElement | null>(null)
+const taskDetailPanel = ref<HTMLElement | null>(null)
 const visibleRuns = computed(() => groups.value.flatMap((group) => group.runs))
 const activeRun = computed(() => visibleRuns.value.find((run) => run.id === selectedRunId.value) || visibleRuns.value[0] || null)
-function selectRun(run: HistoryRun) { selectedRunId.value = run.id }
+const activeItem = computed(() => activeRun.value?.items.find((item) => item.task_id === selectedTaskId.value) || activeRun.value?.items[0] || null)
+function selectRun(run: HistoryRun) { selectedRunId.value = run.id; selectedTaskId.value = null; taskDetailOpen.value = false }
+function openTaskDetail(item: RunItem, event?: Event) {
+  selectedTaskId.value = item.task_id
+  taskDetailOpen.value = true
+  lastTaskCard.value = event?.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  nextTick(() => taskDetailPanel.value?.focus())
+}
+function returnToRunReport() { taskDetailOpen.value = false; nextTick(() => lastTaskCard.value?.focus()) }
 watch(() => [props.selectedId, props.history] as const, ([id]) => {
   if (!id) return
   const run = props.history.find((item) => item.id === id)
@@ -60,6 +86,10 @@ watch(() => [props.selectedId, props.history] as const, ([id]) => {
 watch(visibleRuns, (runs) => {
   if (runs.length && !runs.some((run) => run.id === selectedRunId.value)) selectedRunId.value = runs[0].id
 }, { immediate: true })
+watch(activeRun, (run) => {
+  if (!run) { selectedTaskId.value = null; taskDetailOpen.value = false; return }
+  if (!run.items.some((item) => item.task_id === selectedTaskId.value)) selectedTaskId.value = run.items[0]?.task_id || null
+})
 function itemOutcome(item: RunItem) { const reason = item.error_summary || (item.exit_code !== null && item.exit_code !== undefined ? `退出码 ${item.exit_code}` : item.completion_source || '未提供摘要'); return item.state === 'failed' ? `失败：${reason}` : item.state === 'succeeded' ? `成功：${sourceLabel(item.completion_source || '已完成')}` : stateLabel(item.state) }
 function itemName(item: RunItem) { return item.script_name && item.script_name !== item.task_name ? `${item.script_name} / ${item.task_name}` : item.task_name }
 function uiLogStatus(item: RunItem) { return item.ui_log_status || (item.ui_log_id ? '已采集' : '暂无界面日志') }
@@ -167,6 +197,17 @@ function runHasFailures(run: HistoryRun) { return run.items.some((item) => item.
 function runOutcome(run: HistoryRun) { if (run.state === 'stopped') return '已停止'; if (run.state !== 'completed') return stateLabel(run.state); if (runHasFailures(run)) return '已完成（存在失败）'; return run.items.length && run.items.every(item => item.state === 'succeeded') ? '已完成（全部成功）' : '已完成（存在未执行项）' }
 function reportFor(run: HistoryRun, item?: RunItem) { return item?.readable_report || run.readable_report || null }
 function durationLabel(seconds: number | null | undefined) { if (seconds === null || seconds === undefined) return ''; return `${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds % 3600 / 60)} 分 ${seconds % 60} 秒` }
+function itemHasRisk(run: HistoryRun, item: RunItem) { const report = reportFor(run, item); return item.state === 'failed' || Boolean(report?.risk_count || report?.risks.length || item.unrecognized_log_count) }
+function eventLevel(event: NonNullable<ReadableReport>['events'][number]) { return event.severity === 'error' ? 'ERROR' : event.severity === 'warning' ? 'WARN' : 'INFO' }
+function readableEventText(run: HistoryRun, item: RunItem) {
+  const report = reportFor(run, item)
+  if (!report?.events.length) return '此历史项没有保存可读事件流。\n\n该区域只展示本软件根据已确认运行事实生成的事件，不是脚本原文，也不会参与成功、失败或停止的终态判断。'
+  return report.events.map((event, index) => {
+    const time = new Date(event.timestamp)
+    const timestamp = Number.isNaN(time.getTime()) ? event.timestamp : time.toLocaleString('zh-CN', { hour12: false })
+    return `${String(index + 1).padStart(4, ' ')}  [${timestamp}] [${eventLevel(event)}] [${event.phase}] [${itemName(item)}]${event.rule_id ? ` [${event.rule_id}]` : ''} ${event.message}`
+  }).join('\n')
+}
 </script>
 
 <template>
@@ -178,6 +219,8 @@ function durationLabel(seconds: number | null | undefined) { if (seconds === nul
         <label class="group-mode">合并模式<select v-model="groupMode" aria-label="合并模式"><option value="day">按日合并</option><option value="week">按周合并</option><option value="month">按月合并</option></select></label>
         <label>开始日期<input v-model="start" type="date" aria-label="开始日期" @input="editDates"></label>
         <label>结束日期<input v-model="end" type="date" aria-label="结束日期" @input="editDates"></label>
+        <label>关键词<input v-model="keyword" type="search" aria-label="关键词" placeholder="名称、错误、摘要或跳过原因"></label>
+        <label>触发来源<select v-model="triggerSource" aria-label="触发来源"><option value="all">全部触发来源</option><option value="manual">手动</option><option value="scheduled">定时</option><option value="startup">启动时</option></select></label>
         <div class="cleanup"><label>清理明细截止日期<input v-model="cleanupDate" type="date" aria-label="清理明细截止日期" @input="cleanupCount = null"></label><button type="button" @click="previewCleanup">清理详细日志</button></div>
         <div class="filter-actions"><button class="primary" type="button" @click="search"><Search aria-hidden="true" />搜索</button><button type="button" @click="reset"><RotateCcw aria-hidden="true" />重置</button></div>
       </div>
@@ -192,7 +235,28 @@ function durationLabel(seconds: number | null | undefined) { if (seconds === nul
       </aside>
       <article v-if="activeRun" class="history-report-panel" aria-label="运行报告">
         <header class="run-record-head"><div><b>{{ activeRun.run_mode === 'plan' ? `计划：${activeRun.queue_name}` : activeRun.run_mode === 'all_scripts' ? '全部软件脚本' : activeRun.queue_name }}</b><small>{{ recordDate(activeRun) }} {{ runTime(activeRun) }} · {{ triggerLabel(activeRun.trigger_source) }} · {{ runOutcome(activeRun) }}</small><p v-if="reportFor(activeRun)" class="run-conclusion">{{ reportFor(activeRun)?.conclusion }}<span v-if="reportFor(activeRun)?.duration_seconds !== null && reportFor(activeRun)?.duration_seconds !== undefined"> · {{ durationLabel(reportFor(activeRun)?.duration_seconds) }}</span></p><small v-else class="legacy-report">此记录生成于可读报告功能启用前。</small></div><button type="button" @click="loadRunDetail(activeRun)">查看本轮运行日志</button></header>
-        <section class="run-report"><header><b>运行报告</b><span>{{ reportFor(activeRun)?.completion_basis || '该历史项未保存可读报告' }}</span></header><p v-for="risk in reportFor(activeRun)?.risks || []" :key="risk" class="report-risk">{{ risk }}</p><ul><li v-for="item in activeRun.items" :key="item.task_id" :class="{ 'history-item-failed': item.state === 'failed' }"><div class="history-item-info"><b>{{ itemName(item) }}</b><span>{{ reportFor(activeRun, item)?.conclusion || itemOutcome(item) }}</span><small>完成依据：{{ reportFor(activeRun, item)?.completion_basis || itemOutcome(item) }}</small><small v-for="event in reportFor(activeRun, item)?.events || []" :key="event.timestamp + event.message" :class="'report-event-' + event.severity">{{ event.message }}</small><small v-if="item.log_summary?.length">日志：{{ item.log_summary.map(logLabel).join('；') }}</small><small>界面日志：{{ uiLogStatus(item) }}</small><small>原始日志：{{ rawLogStatus(item) }}</small><small v-if="item.external_log_status">外部日志：{{ item.external_log_status }}</small></div><div class="detail-buttons"><button v-if="item.external_log_files?.length" type="button" @click="openExternalLogs(activeRun, item)">查看脚本内部日志</button><button type="button" @click="loadDetail(activeRun, item)">查看详细日志</button></div></li></ul></section><p v-if="activeRun.scheduler_skips?.length" class="schedule-skips"><b>计划跳过</b><span v-for="skip in activeRun.scheduler_skips" :key="skip">{{ skip }}</span></p>
+        <section v-if="!taskDetailOpen" class="run-report run-report-overview">
+          <header><b>运行报告</b><span>{{ reportFor(activeRun)?.completion_basis || '该历史项未保存可读报告' }}</span></header>
+          <p v-for="risk in reportFor(activeRun)?.risks || []" :key="risk" class="report-risk">{{ risk }}</p>
+          <p class="report-guidance">选择一个脚本查看本软件生成的可读事件流、界面采集状态和原文入口。脚本内部日志不会在此处直接展开。</p>
+          <div class="task-tabs" aria-label="脚本详情选择">
+            <button v-for="item in activeRun.items" :key="item.task_id" type="button" class="task-tab" :class="{ selected: selectedTaskId === item.task_id, failed: item.state === 'failed', stopped: item.state === 'stopped', risk: itemHasRisk(activeRun, item) }" :aria-label="`查看 ${itemName(item)} 的脚本详情`" @click="openTaskDetail(item, $event)">
+              <span class="task-tab-state">{{ item.state === 'failed' ? '失败' : item.state === 'stopped' ? '已停止' : item.state === 'succeeded' ? '成功' : stateLabel(item.state) }}</span>
+              <b>{{ itemName(item) }}</b>
+              <small>{{ reportFor(activeRun, item)?.conclusion || itemOutcome(item) }}</small>
+              <span v-if="itemHasRisk(activeRun, item)" class="task-tab-risk">存在需查看项</span>
+              <span class="task-tab-action">查看详情 →</span>
+            </button>
+          </div>
+        </section>
+        <section v-else-if="activeItem" ref="taskDetailPanel" class="task-detail-panel" tabindex="-1" aria-label="脚本详情">
+          <header class="task-detail-head"><div><button type="button" class="text-button" @click="returnToRunReport">← 返回运行报告</button><h2>{{ itemName(activeItem) }}</h2><p>{{ reportFor(activeRun, activeItem)?.conclusion || itemOutcome(activeItem) }}</p></div><div class="task-detail-actions"><button v-if="activeItem.external_log_files?.length" type="button" class="primary" @click="openExternalLogs(activeRun, activeItem)">查看脚本内部日志</button><button type="button" @click="loadDetail(activeRun, activeItem)">查看界面采集日志</button></div></header>
+          <section class="task-facts" aria-label="脚本运行事实"><div><span>最终状态</span><b>{{ itemOutcome(activeItem) }}</b></div><div><span>完成依据</span><b>{{ reportFor(activeRun, activeItem)?.completion_basis || '未保存可读报告' }}</b></div><div><span>耗时</span><b>{{ durationLabel(reportFor(activeRun, activeItem)?.duration_seconds) || '未记录' }}</b></div><div><span>来源状态</span><b>{{ activeItem.external_log_status || rawLogStatus(activeItem) }}</b></div></section>
+          <p v-for="risk in reportFor(activeRun, activeItem)?.risks || []" :key="risk" class="report-risk">{{ risk }}</p>
+          <section class="derived-events"><header><div><h3>本软件事件流</h3><p>根据已确认运行事实生成，不是脚本原文，不参与终态仲裁。</p></div><span>{{ reportFor(activeRun, activeItem)?.generator_version || '旧记录' }}</span></header><div class="monaco-host derived-event-editor"><VueMonacoEditor :value="visibleLog(readableEventText(activeRun, activeItem))" language="runner-logfile" theme="runner-log-dark" :options="editorOptions" height="100%" @before-mount="registerLogLanguage" /></div></section>
+          <section class="task-source-status"><h3>日志来源与历史入口</h3><p>界面采集：{{ uiLogStatus(activeItem) }}</p><p>旧本地详细日志：{{ rawLogStatus(activeItem) }}</p><p v-if="activeItem.external_log_status">脚本内部日志：{{ activeItem.external_log_status }}</p><p v-if="activeItem.log_summary?.length">本轮摘要：{{ activeItem.log_summary.map(logLabel).join('；') }}</p><p v-if="activeItem.unrecognized_log_count">未识别的外部原始记录：{{ activeItem.unrecognized_log_count }} 条（仅统计，不解释原文）</p></section>
+        </section>
+        <p v-if="activeRun.scheduler_skips?.length" class="schedule-skips"><b>计划跳过</b><span v-for="skip in activeRun.scheduler_skips" :key="skip">{{ skip }}</span></p>
       </article>
     </section>
     <div v-if="detail" class="detail-overlay" @click.self="detail = null"><section class="detail-dialog log-reader-dialog" role="dialog" aria-modal="true" aria-label="详细日志"><header><div><h2>{{ detail.title }} · 详细日志</h2><p>{{ rawDetail ? '显示采集时间；日志原文中的时间保持不变。' : detail.uiStatus }}</p></div><div class="reader-tools"><label>字号<select v-model.number="fontSize" aria-label="日志字号"><option :value="12">12 px</option><option :value="13">13 px</option><option :value="14">14 px</option><option :value="16">16 px</option></select></label><label><input v-model="stripBlankLines" type="checkbox"> 隐藏空行</label><button v-if="!runDetail" type="button" @click="toggleRawDetail">{{ rawDetail ? '返回脚本界面日志' : '查看原始日志' }}</button><button @click="detail = null">关闭</button></div></header><div class="detail-content monaco-host"><p v-if="detail.error" role="alert">{{ detail.error }}</p><p v-else-if="!detail.entries.length && !detail.loading">暂无详细日志。</p><VueMonacoEditor v-else :value="detailEditorText" language="runner-logfile" theme="runner-log-dark" :options="editorOptions" height="100%" @before-mount="registerLogLanguage" /></div><div class="detail-buttons external-actions"><span class="reader-range">当前已读取 {{ detail.entries.length }} 条记录</span><button v-if="detail.next !== null" :disabled="detail.loading" @click="moreDetail">{{ detail.loading ? '正在读取' : '加载更多' }}</button></div></section></div>
@@ -215,4 +279,8 @@ function durationLabel(seconds: number | null | undefined) { if (seconds === nul
 
 <style scoped>
 .history-workspace{display:grid;grid-template-columns:minmax(260px,360px) minmax(0,1fr);gap:18px;margin-top:24px;align-items:start}.history-navigator{min-width:0;max-height:calc(100vh - 250px);overflow:auto;padding:0 3px 8px}.history-navigator .log-group{margin-top:0}.history-navigator .log-group+.log-group{margin-top:18px}.history-navigator .log-group h2{font-size:15px;margin:0 0 8px}.history-navigator .run-record{display:grid;width:100%;gap:4px;margin:8px 0 0;text-align:left;cursor:pointer}.history-navigator .run-record:hover{border-color:#477995}.history-navigator .run-record b{color:var(--ink)}.history-navigator .run-record small{color:#77c5bc}.record-outcome{font-size:12px;color:#b9cad4}.history-navigator .run-record.failed .record-outcome{color:#ffb5bd}.history-report-panel{min-width:0;padding:18px;border:1px solid var(--line);border-radius:8px;background:var(--panel);box-shadow:inset 0 1px rgba(255,255,255,.04)}.history-report-panel>.run-record-head{align-items:flex-start}.history-report-panel>.run-record-head>div{display:grid;gap:4px}.history-report-panel>.run-record-head small{color:#73c9c0}.history-report-panel>.run-record-head>button{flex:none}.history-report-panel .run-report{margin-top:18px}.history-report-panel .run-report ul{display:grid;gap:9px;margin:14px 0 0;padding:0;list-style:none}.history-report-panel .run-report li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px;border-left:2px solid #355567;background:#101f2d;font-size:13px}.history-report-panel .run-report li span{color:#b8cbd7}.history-report-panel .run-report li small{color:#8ab4c3}.history-report-panel .run-report .history-item-failed{border-left-color:#db6d69;background:#2a1d25;color:#ffe0dc}@media(max-width:980px){.history-workspace{grid-template-columns:1fr}.history-navigator{display:flex;gap:12px;max-height:none;overflow:visible;padding:0}.history-navigator .log-group{flex:1;min-width:0}.history-navigator .run-record{min-height:0}.history-report-panel{min-width:0}}@media(max-width:620px){.history-navigator{display:block}.history-navigator .log-group+.log-group{margin-top:18px}.history-report-panel{padding:14px}.history-report-panel .run-report li{align-items:flex-start;flex-direction:column}}
+</style>
+
+<style scoped>
+.report-guidance{margin:0;color:#9ab4c2;font-size:13px}.task-tabs{display:flex;gap:10px;overflow-x:auto;padding:3px 1px 8px;scrollbar-color:#38627c transparent}.task-tab{position:relative;display:grid;align-content:start;gap:6px;min-width:210px;max-width:290px;flex:0 0 240px;padding:14px 15px 13px;border:1px solid #31576b;border-left:4px solid #4eb5d2;border-radius:7px;background:#102434;color:var(--ink);text-align:left;cursor:pointer;transition:border-color .16s ease,background .16s ease,transform .16s ease;overflow-wrap:anywhere}.task-tab:hover{border-color:#65cce7;background:#133044;transform:translateY(-1px)}.task-tab.selected{border-color:#62d8ed;background:#153549;box-shadow:inset 0 0 0 1px rgba(101,219,239,.45)}.task-tab:focus-visible{outline:2px solid #64d5e8;outline-offset:2px}.task-tab.failed{border-left-color:#ef7676;background:#2c1d26}.task-tab.stopped{border-left-color:#bc91d4;background:#271e31}.task-tab.risk:not(.failed){box-shadow:inset 0 0 0 1px rgba(218,169,76,.35)}.task-tab.selected.risk:not(.failed){box-shadow:inset 0 0 0 1px #62d8ed}.task-tab-state{width:max-content;padding:2px 6px;border:1px solid #3d8ea8;border-radius:4px;color:#8ee8ee;font-size:12px}.task-tab.failed .task-tab-state{border-color:#ba6268;color:#ffb4bc}.task-tab b{font-size:16px}.task-tab small{min-height:34px;color:#b8ccd8;line-height:1.4}.task-tab-risk{color:#ffd783;font-size:12px}.task-tab-action{margin-top:3px;color:#70d7ef;font-size:12px;font-weight:700}.task-detail-panel{display:grid;gap:16px;margin-top:18px;padding:18px;border:1px solid #356276;border-radius:8px;background:#0b1b27;outline:none}.task-detail-panel:focus-visible{box-shadow:0 0 0 2px rgba(100,213,232,.55)}.task-detail-head{display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #27465a;padding-bottom:14px}.task-detail-head>div:first-child{min-width:0}.task-detail-head h2{margin:8px 0 4px;font-size:22px}.task-detail-head p{margin:0;color:#8fe4d5}.task-detail-actions{display:flex;align-items:start;justify-content:flex-end;gap:8px;flex-wrap:wrap}.text-button{padding:0;border:0;background:transparent;color:#76cce3;text-decoration:underline;text-underline-offset:3px}.task-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}.task-facts div{display:grid;gap:5px;min-width:0;padding:10px;border:1px solid #29485b;border-radius:6px;background:#0d2534}.task-facts span{color:#88adbd;font-size:12px}.task-facts b{color:#d7ecf3;font-size:13px;overflow-wrap:anywhere}.derived-events{display:grid;gap:10px}.derived-events header{display:flex;align-items:start;justify-content:space-between;gap:12px}.derived-events h3,.task-source-status h3{margin:0;color:#dcecf2;font-size:16px}.derived-events p,.task-source-status p{margin:5px 0 0;color:#99b9c7;font-size:13px}.derived-events header>span{flex:none;color:#79c7d8;font-size:12px}.derived-event-editor{height:min(48vh,560px)}.task-source-status{padding:13px;border-left:3px solid #416e83;background:#0c202e}.task-source-status h3{margin-bottom:7px}.task-source-status p{overflow-wrap:anywhere}.schedule-skips{display:grid;gap:5px;margin:16px 0 0;padding:12px;border-left:3px solid #bc8e4c;background:#2c2417;color:#f4d59b}.schedule-skips span{font-size:13px}@media(max-width:980px){.task-tabs{overflow:visible;flex-wrap:wrap}.task-tab{flex:1 1 230px}.task-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:620px){.task-tabs{display:grid}.task-tab{min-width:0;max-width:none;width:100%}.task-detail-panel{padding:14px}.task-detail-head{flex-direction:column}.task-detail-actions{justify-content:flex-start}.task-facts{grid-template-columns:1fr}.derived-events header{flex-direction:column}.derived-event-editor{height:46vh}}
 </style>

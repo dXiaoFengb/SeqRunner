@@ -11,6 +11,7 @@ const setup = (history: TestRun[] = fixture, selectedId: string | null = null) =
   props: { history, selectedId, expanded: new Set<string>() },
   global: { stubs: { VueMonacoEditor: { props: ['value'], template: '<pre class="monaco-stub">{{ value }}</pre>' } } },
 })
+const openFirstTaskDetail = async (wrapper: ReturnType<typeof setup>) => { await wrapper.get('.task-tab').trigger('click') }
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date(2026, 0, 1, 12)) })
 afterEach(() => { vi.useRealTimers() })
 
@@ -46,7 +47,9 @@ test('focused failed record outside the range becomes visible, with skips and de
   const failed = { ...run('旧失败', '2025-01-01T12:00:00'), items: [{ task_id:'t', task_name:'任务', state:'failed', error_summary:'失败原因', log_summary:['摘要'] }], scheduler_skips: ['计划跳过信息'] }
   const wrapper = setup([failed], '旧失败')
   await wrapper.setProps({ expanded: new Set(['旧失败']) })
-  expect(wrapper.text()).toContain('旧失败'); expect(wrapper.text()).toContain('失败原因'); expect(wrapper.text()).toContain('计划跳过信息'); expect(wrapper.text()).toContain('摘要')
+  expect(wrapper.text()).toContain('旧失败'); expect(wrapper.text()).toContain('失败原因'); expect(wrapper.text()).toContain('计划跳过信息')
+  await openFirstTaskDetail(wrapper)
+  expect(wrapper.text()).toContain('摘要')
 })
 
 test('distinguishes no records from no matching records', () => {
@@ -62,15 +65,49 @@ test('shows the run log entry and distinguishes failure', async () => {
   expect(wrapper.text()).toContain('旧记录没有保存完整的本轮运行日志')
 })
 
-test('renders a local readable report in the detail pane and keeps legacy fallback visible', () => {
+test('renders a local readable report after opening the selected script detail and keeps legacy fallback visible', async () => {
   const report: ReadableReport = { generator_version: 'local-rules-v1', conclusion: '本轮全部完成', completion_basis: '所有任务均获得完成依据', duration_seconds: 63, risk_count: 1, risks: ['检测到 1 条错误级脚本日志，但未构成终态失败'], events: [] }
   const record: TestRun = { ...run('可读报告', '2026-01-01T12:00:00'), readable_report: report, items: [{ task_id: 't', task_name: '程序', state: 'succeeded', readable_report: { ...report, conclusion: '任务已完成', completion_basis: '人工确认', events: [{ timestamp: '2026-01-01T12:00:00Z', source: 'runner', phase: 'confirmation', severity: 'info', event_type: 'manual.confirmation', message: '等待人工确认', rule_id: 'lifecycle.manual.confirmation' }] } }] }
   const wrapper = setup([record])
   expect(wrapper.get('[aria-label="运行报告"]').text()).toContain('本轮全部完成')
   expect(wrapper.text()).toContain('0 小时 1 分 3 秒')
   expect(wrapper.text()).toContain('检测到 1 条错误级脚本日志，但未构成终态失败')
+  await openFirstTaskDetail(wrapper)
   expect(wrapper.text()).toContain('等待人工确认')
+  expect(wrapper.text()).toContain('根据已确认运行事实生成，不是脚本原文')
   expect(wrapper.find('.history-workspace').exists()).toBe(true)
+})
+
+test('filters records by keyword and trigger source together, resets defaults, and keeps script navigation explicit', async () => {
+  const report: ReadableReport = { generator_version: 'local-rules-v1', conclusion: '已完成', completion_basis: '成功规则', duration_seconds: 1, risk_count: 0, risks: [], events: [] }
+  const records = [
+    { ...run('定时命中', '2026-01-01T12:00:00'), trigger_source: 'scheduled', readable_report: report, items: [{ task_id: 'a', task_name: '甲', state: 'succeeded', error_summary: '网络重试', readable_report: report }] },
+    { ...run('手动命中', '2026-01-01T11:00:00'), trigger_source: 'manual', items: [{ task_id: 'b', task_name: '乙', state: 'succeeded', error_summary: '网络重试' }] },
+  ]
+  const wrapper = setup(records)
+  await wrapper.get('[aria-label="关键词"]').setValue('网络重试')
+  await wrapper.get('[aria-label="触发来源"]').setValue('scheduled')
+  await wrapper.findAll('.filter-actions button')[0].trigger('click')
+  expect(wrapper.text()).toContain('定时命中'); expect(wrapper.text()).not.toContain('手动命中')
+  const first = wrapper.get('.task-tab')
+  await first.trigger('mouseenter')
+  expect(wrapper.find('[aria-label="脚本详情"]').exists()).toBe(false)
+  await first.trigger('click')
+  expect(wrapper.get('[aria-label="脚本详情"]').text()).toContain('甲')
+  await wrapper.get('button.text-button').trigger('click')
+  expect(wrapper.find('.task-tab').exists()).toBe(true)
+  expect(wrapper.get('.task-tab').classes()).toContain('selected')
+  await wrapper.findAll('.filter-actions button')[1].trigger('click')
+  expect((wrapper.get('[aria-label="关键词"]').element as HTMLInputElement).value).toBe('')
+  expect((wrapper.get('[aria-label="触发来源"]').element as HTMLSelectElement).value).toBe('all')
+})
+
+test('shows unrecognized external record count only in the selected script detail', async () => {
+  const record = { ...run('样例', '2026-01-01T12:00:00'), items: [{ task_id: 't', task_name: '程序', state: 'succeeded', unrecognized_log_count: 4 }] }
+  const wrapper = setup([record])
+  expect(wrapper.text()).not.toContain('未识别的外部原始记录')
+  await openFirstTaskDetail(wrapper)
+  expect(wrapper.text()).toContain('未识别的外部原始记录：4 条（仅统计，不解释原文）')
 })
 
 test('custom range includes both end dates and groups multiple runs on one day', async () => {
@@ -86,7 +123,9 @@ test('custom range includes both end dates and groups multiple runs on one day',
 test('localizes known record labels without changing unknown values', async () => {
   const record = { ...run('样例', '2026-01-01T12:00:00'), trigger_source: 'scheduled', items: [{ task_id: 't', task_name: 'MAA', state: 'succeeded', completion_source: 'manual', log_summary: ['任务成功，来源：CompletionSource.MANUAL', '外部 manual'] }] }
   const wrapper = setup([record]); await wrapper.setProps({ expanded: new Set(['样例']) })
-  expect(wrapper.text()).toContain('定时触发 · 已完成'); expect(wrapper.text()).toContain('成功：人工确认'); expect(wrapper.text()).toContain('任务成功，来源：人工确认'); expect(wrapper.text()).toContain('外部 manual')
+  expect(wrapper.text()).toContain('定时触发 · 已完成'); expect(wrapper.text()).toContain('成功：人工确认')
+  await openFirstTaskDetail(wrapper)
+  expect(wrapper.text()).toContain('任务成功，来源：人工确认'); expect(wrapper.text()).toContain('外部 manual')
 })
 
 test('sorts records by start time within the same day', () => {
@@ -131,7 +170,8 @@ test('loads detailed log pages in order', async () => {
   const request = vi.fn(async (path: string) => path.endsWith('offset=0') ? { entries: [{ captured_at: '2026-01-01T01:00:00Z', text: '第一条' }], next_offset: 10 } : { entries: [{ captured_at: '2026-01-01T01:01:00Z', text: '第二条' }], next_offset: null })
   const record = { ...run('样例', '2026-01-01T12:00:00'), items: [{ task_id: 't', task_name: '程序', state: 'succeeded', detail_log_id: 'detail' }] }
   const wrapper = setup([record]); await wrapper.setProps({ request, expanded: new Set(['样例']) })
-  await wrapper.findAll('button').find(b => b.text() === '查看详细日志')!.trigger('click')
+  await openFirstTaskDetail(wrapper)
+  await wrapper.findAll('button').find(b => b.text() === '查看界面采集日志')!.trigger('click')
   expect(wrapper.get('[role="dialog"]').text()).toContain('暂无法可靠获取该脚本的界面日志')
   expect(wrapper.get('[role="dialog"]').text()).not.toContain('第一条')
   await wrapper.findAll('button').find(b => b.text() === '查看原始日志')!.trigger('click')
@@ -149,7 +189,8 @@ test('old records show why interface and raw logs are unavailable', async () => 
   const request = vi.fn()
   const record = { ...run('旧记录', '2026-01-01T12:00:00'), items: [{ task_id: 't', task_name: '程序', state: 'succeeded', detail_log_status: '未配置日志路径' }] }
   const wrapper = setup([record]); await wrapper.setProps({ request, expanded: new Set(['旧记录']) })
-  await wrapper.findAll('button').find(b => b.text() === '查看详细日志')!.trigger('click')
+  await openFirstTaskDetail(wrapper)
+  await wrapper.findAll('button').find(b => b.text() === '查看界面采集日志')!.trigger('click')
   expect(wrapper.get('[role="dialog"]').text()).toContain('暂无法可靠获取该脚本的界面日志')
   await wrapper.findAll('button').find(b => b.text() === '查看原始日志')!.trigger('click')
   expect(wrapper.get('[role="dialog"]').text()).toContain('未配置日志路径')
@@ -160,21 +201,24 @@ test('shows captured interface logs separately from raw logs', async () => {
   const request = vi.fn(async (path: string) => ({ entries: [{ captured_at: '2026-01-01T01:00:00Z', text: path.includes('/ui?') ? '界面消息' : '原始消息' }], next_offset: null }))
   const record = { ...run('样例', '2026-01-01T12:00:00'), items: [{ task_id: 't', task_name: '程序', state: 'succeeded', detail_log_id: 'raw', ui_log_id: 'ui', ui_log_status: '已采集界面日志' }] }
   const wrapper = setup([record]); await wrapper.setProps({ request, expanded: new Set(['样例']) })
-  await wrapper.findAll('button').find(b => b.text() === '查看详细日志')!.trigger('click')
+  await openFirstTaskDetail(wrapper)
+  await wrapper.findAll('button').find(b => b.text() === '查看界面采集日志')!.trigger('click')
   expect(wrapper.get('[role="dialog"]').text()).toContain('界面消息')
   await wrapper.findAll('button').find(b => b.text() === '查看原始日志')!.trigger('click')
   expect(wrapper.get('[role="dialog"]').text()).toContain('原始消息')
   expect(wrapper.get('[role="dialog"]').text()).not.toContain('界面消息')
 })
 
-test('shows a compact task name and distinguishes interface and raw log status', async () => {
+test('shows a compact task tab then distinguishes interface and raw log status in its detail', async () => {
   const record = { ...run('样例', '2026-01-01T12:00:00'), items: [{ task_id: 't', task_name: 'MAA', script_name: 'MAA', state: 'succeeded', ui_log_status: '未设置区域', detail_log_status: '已采集' }] }
   const wrapper = setup([record]); await wrapper.setProps({ expanded: new Set(['样例']) })
-  const item = wrapper.get('.history-report-panel li')
+  const item = wrapper.get('.task-tab')
   expect(item.get('b').text()).toBe('MAA')
-  expect(item.text()).toContain('界面日志：未设置区域')
-  expect(item.text()).toContain('原始日志：已采集')
-  expect(item.get('button').text()).toBe('查看详细日志')
+  expect(wrapper.text()).not.toContain('查看脚本内部日志')
+  await openFirstTaskDetail(wrapper)
+  expect(wrapper.text()).toContain('界面采集：未设置区域')
+  expect(wrapper.text()).toContain('旧本地详细日志：已采集')
+  expect(wrapper.get('[aria-label="脚本详情"]').text()).toContain('查看界面采集日志')
 })
 
 test('lists and pages only external log files recorded by the history item', async () => {
@@ -187,6 +231,7 @@ test('lists and pages only external log files recorded by the history item', asy
   })
   const record = { ...run('样例', '2026-01-01T12:00:00'), items: [{ task_id: 't', task_name: '程序', state: 'succeeded', external_log_files: ['C:/受控/part.log'], external_log_status: '已记录 1 个外部日志文件' }] }
   const wrapper = setup([record]); await wrapper.setProps({ request, expanded: new Set(['样例']) })
+  await openFirstTaskDetail(wrapper)
   await wrapper.findAll('button').find(button => button.text() === '查看脚本内部日志')!.trigger('click')
   expect(wrapper.get('[aria-label="脚本内部日志"]').text()).toContain('第一段')
   await wrapper.findAll('button').find(button => button.text() === '加载更多')!.trigger('click')
