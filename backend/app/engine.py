@@ -37,7 +37,7 @@ from .processes import (
     process_tree_alive,
     request_graceful_close,
 )
-from .readable_reports import local_report_provider
+from .readable_reports import SCRIPT_TRANSLATION_VERSION, local_report_provider
 from .storage import JsonStore
 from .ui_logs import WindowLogCapture, ocr_appended
 
@@ -65,6 +65,7 @@ class _CompletionCancelled(Exception):
 ConfigUpdateResult = TypeVar("ConfigUpdateResult")
 SUMMARY_LOG_LIMIT = 40
 SCRIPT_LOG_BUFFER_LIMIT = 200_000
+SCRIPT_EVENT_BUFFER_LIMIT = 240
 
 
 class RunnerEngine:
@@ -107,6 +108,9 @@ class RunnerEngine:
         self._live_summary_logs: list[dict[str, object]] = []
         self._script_log_run_id: str | None = None
         self._script_log_streams: dict[tuple[str, str], dict[str, object]] = {}
+        self._script_event_run_id: str | None = None
+        self._script_event_sequence = 0
+        self._script_event_logs: list[dict[str, object]] = []
         self._logger = logger or logging.getLogger("sequential-runner")
         self._config_lock = asyncio.Lock()
 
@@ -153,7 +157,8 @@ class RunnerEngine:
         record.items = [
             ItemRecord(task_id=item.id, task_name=item.name, script_id=queue.id, script_name=queue.name,
                        log_source_configured=bool(item.log_path),
-                       ui_log_source_configured=bool(item.ui_log_region) or item.preset_id == "march7th")
+                       ui_log_source_configured=bool(item.ui_log_region) or item.preset_id == "march7th",
+                       script_translation_version=SCRIPT_TRANSLATION_VERSION)
             for item in selected
         ]
         self._reset_live_summary(record)
@@ -283,7 +288,8 @@ class RunnerEngine:
             selected.append(task)
             items.append(ItemRecord(task_id=task.id, task_name=task.name, script_id=script.id, script_name=script.name,
                                     log_source_configured=bool(task.log_path),
-                                    ui_log_source_configured=bool(task.ui_log_region) or task.preset_id == "march7th"))
+                                    ui_log_source_configured=bool(task.ui_log_region) or task.preset_id == "march7th",
+                                    script_translation_version=SCRIPT_TRANSLATION_VERSION))
         return selected, items, problems
 
     async def record_schedule_skip(self, plan: SchedulePlan, due_at: datetime) -> None:
@@ -465,8 +471,10 @@ class RunnerEngine:
                 source_id = "external-" + hashlib.sha256(str(path).casefold().encode("utf-8")).hexdigest()[:16]
                 try:
                     local_report_provider.note_external_levels(item, text)
+                    translated = local_report_provider.append_script_events(item, text)
+                    await self._publish_script_events(record, item, translated)
                 except Exception:
-                    self._logger.exception("生成可读日志报告时失败；继续传递原始日志")
+                    self._logger.exception("生成脚本可读事件时失败；继续传递原始日志")
                 await self._publish_script_log(record, task.id, source_id, path.name, "external", text)
 
             watcher = ExternalLogWatcher(
@@ -832,6 +840,32 @@ class RunnerEngine:
         self._live_summary_logs = []
         self._script_log_run_id = record.id
         self._script_log_streams = {}
+        self._script_event_run_id = record.id
+        self._script_event_sequence = 0
+        self._script_event_logs = []
+
+    async def _publish_script_events(self, record: RunRecord, item: ItemRecord, events: list[object]) -> None:
+        """Publish translated script facts without exposing the raw external line."""
+        if not events:
+            return
+        if self._script_event_run_id != record.id:
+            self._script_event_run_id = record.id
+            self._script_event_sequence = 0
+            self._script_event_logs = []
+        for event in events:
+            self._script_event_sequence += 1
+            payload = {
+                "runId": record.id,
+                "taskId": item.task_id,
+                "sequence": self._script_event_sequence,
+                "event": event.model_dump(mode="json"),
+                "truncated": False,
+            }
+            self._script_event_logs.append(payload)
+            if len(self._script_event_logs) > SCRIPT_EVENT_BUFFER_LIMIT:
+                self._script_event_logs = self._script_event_logs[-SCRIPT_EVENT_BUFFER_LIMIT:]
+                item.script_event_truncated = True
+            await self.events.publish("script_event", payload)
 
     def _trim_script_streams(self) -> list[dict[str, object]]:
         """Keep realtime previews bounded without copying or changing external source files."""
@@ -964,6 +998,8 @@ class RunnerEngine:
                 self._script_stream_payload(stream, append=False)
                 for stream in self._script_log_streams.values()
             ] if include_script_logs and self.current_run and self._script_log_run_id == self.current_run.id else [],
+            "scriptEvents": list(self._script_event_logs)
+            if self.current_run and self._script_event_run_id == self.current_run.id else [],
             "runCenter": {
                 "currentScriptId": active_item.script_id if active_item else None,
                 "currentScriptName": active_item.script_name if active_item else None,

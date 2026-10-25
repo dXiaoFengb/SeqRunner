@@ -9,8 +9,8 @@ import type { DetailEntry } from './detailLogLabels'
 type HistoryRun = { id: string; queue_name: string; run_mode?: string; trigger_source: string; state: string; started_at: string; ended_at?: string | null; items: RunItem[]; scheduler_skips?: string[]; run_log_id?: string | null; run_log_status?: string | null; readable_report?: ReadableReport | null }
 type Preset = 'today' | 'yesterday' | 'week' | 'month' | 'twoMonths' | 'threeMonths' | 'halfYear'
 type Range = { start: string; end: string }
-const props = defineProps<{ history: HistoryRun[]; selectedId: string | null; expanded: Set<string>; request?: (path: string, options?: RequestInit) => Promise<unknown>; standalone?: boolean; detailRunId?: string | null; detailTaskId?: string | null }>()
-const emit = defineEmits<{ toggle: [string]; refresh: []; openDetail: [runId: string, taskId: string]; returnDetail: [] }>()
+const props = defineProps<{ history: HistoryRun[]; selectedId: string | null; expanded: Set<string>; request?: (path: string, options?: RequestInit) => Promise<unknown>; standalone?: boolean; detailRunId?: string | null; detailTaskId?: string | null; restoreTaskId?: string | null; restoreTaskListScrollTop?: number | null }>()
+const emit = defineEmits<{ toggle: [string]; refresh: []; openDetail: [runId: string, taskId: string, taskListScrollTop: number]; returnDetail: [] }>()
 const presets: { key: Preset; label: string }[] = [{ key: 'today', label: '今天' }, { key: 'yesterday', label: '昨天' }, { key: 'week', label: '最近一周' }, { key: 'month', label: '最近一个月' }, { key: 'twoMonths', label: '最近两个月' }, { key: 'threeMonths', label: '最近三个月' }, { key: 'halfYear', label: '最近半年' }]
 function dateKey(date: Date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` }
 function startMonthsBefore(date: Date, count: number) { const first = new Date(date.getFullYear(), date.getMonth() - count, 1); const last = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate(); first.setDate(Math.min(date.getDate(), last)); return first }
@@ -75,18 +75,12 @@ function openTaskDetail(item: RunItem) {
   selectedTaskId.value = item.task_id
   taskDetailOpen.value = true
   lastTaskId.value = item.task_id
-  if (activeRun.value) emit('openDetail', activeRun.value.id, item.task_id)
+  if (activeRun.value) emit('openDetail', activeRun.value.id, item.task_id, taskListScrollTop.value)
   nextTick(() => taskDetailPanel.value?.focus())
 }
 function returnToRunReport() {
   taskDetailOpen.value = false
   emit('returnDetail')
-  nextTick(() => {
-    if (!taskTabs.value) return
-    taskTabs.value.scrollTop = taskListScrollTop.value
-    const card = [...taskTabs.value.querySelectorAll<HTMLButtonElement>('.task-tab')].find((button) => button.dataset.taskId === lastTaskId.value)
-    card?.focus()
-  })
 }
 watch(() => [props.selectedId, props.history] as const, ([id]) => {
   if (!id) return
@@ -110,6 +104,16 @@ watch(() => [props.standalone, props.detailRunId, props.detailTaskId] as const, 
   taskDetailOpen.value = true
   nextTick(() => taskDetailPanel.value?.focus())
 }, { immediate: true })
+watch(() => [props.standalone, props.restoreTaskId, props.restoreTaskListScrollTop] as const, ([standalone, taskId, scrollTop]) => {
+  if (standalone || !taskId) return
+  selectedTaskId.value = taskId
+  nextTick(() => requestAnimationFrame(() => {
+    if (!taskTabs.value) return
+    taskTabs.value.scrollTop = scrollTop || 0
+    const card = [...taskTabs.value.querySelectorAll<HTMLButtonElement>('.task-tab')].find((button) => button.dataset.taskId === taskId)
+    card?.focus()
+  }))
+}, { immediate: true })
 function itemOutcome(item: RunItem) { const reason = item.error_summary || (item.exit_code !== null && item.exit_code !== undefined ? `退出码 ${item.exit_code}` : item.completion_source || '未提供摘要'); return item.state === 'failed' ? `失败：${reason}` : item.state === 'succeeded' ? `成功：${sourceLabel(item.completion_source || '已完成')}` : stateLabel(item.state) }
 function itemName(item: RunItem) { return item.script_name && item.script_name !== item.task_name ? `${item.script_name} / ${item.task_name}` : item.task_name }
 function uiLogStatus(item: RunItem) { return item.ui_log_status || (item.ui_log_id ? '已采集' : '暂无界面日志') }
@@ -130,8 +134,8 @@ const editorOptions = computed(() => ({ readOnly: true, fontSize: fontSize.value
 function registerLogLanguage(instance: any) {
   if (instance.languages.getLanguages().some((language: { id: string }) => language.id === 'runner-logfile')) return
   instance.languages.register({ id: 'runner-logfile' })
-  instance.languages.setMonarchTokensProvider('runner-logfile', { tokenizer: { root: [[/\[\d{4}-\d\d-\d\d[^\]]*\]/, 'timestamp'], [/\[(?:ERR|ERROR)\]/, 'error'], [/\[(?:WRN|WARN|WARNING)\]/, 'warning'], [/\[(?:INF|INFO)\]/, 'info'], [/https?:\/\/[^\s]+/, 'url'], [/[A-Za-z]:\\[^\s]+/, 'path'], [/\{.*\}|\[.*\]/, 'json'], [/\[[A-Za-z][\w.-]*\]/, 'module']] } })
-  instance.editor.defineTheme('runner-log-dark', { base: 'vs-dark', inherit: true, rules: [{ token: 'timestamp', foreground: '55c8ff' }, { token: 'error', foreground: 'ff7884' }, { token: 'warning', foreground: 'f6c85f' }, { token: 'info', foreground: '5eead4' }, { token: 'module', foreground: 'd3a7ff' }, { token: 'path', foreground: 'a5d6ff' }, { token: 'url', foreground: '83bfff' }, { token: 'json', foreground: 'd7e4ec' }], colors: { 'editor.background': '#091620', 'editorLineNumber.foreground': '#537083', 'editorLineNumber.activeForeground': '#a9c1cf' } })
+  instance.languages.setMonarchTokensProvider('runner-logfile', { tokenizer: { root: [[/\[\d{4}[/-]\d\d[/-]\d\d[^\]]*\]/, 'timestamp'], [/\[(?:ERR|ERROR|FATAL)\]/, 'error'], [/\[(?:WRN|WARN|WARNING)\]/, 'warning'], [/\[(?:INF|INFO|SUCCESS)\]/, 'info'], [/\[(?:脚本日志|校验|运行|等待确认|收尾|冷却|完成|失败)\]/, 'phase'], [/\[(?:script\.[\w.-]+|lifecycle\.[\w.-]+)\]/, 'rule'], [/https?:\/\/[^\s]+/, 'url'], [/[A-Za-z]:\\[^\s]+/, 'path'], [/\{.*\}|\[.*\]/, 'json'], [/\[[A-Za-z][\w.-]*\]/, 'module']] } })
+  instance.editor.defineTheme('runner-log-dark', { base: 'vs-dark', inherit: true, rules: [{ token: 'timestamp', foreground: '55c8ff' }, { token: 'error', foreground: 'ff7884' }, { token: 'warning', foreground: 'f6c85f' }, { token: 'info', foreground: '5eead4' }, { token: 'phase', foreground: 'a6d8ff' }, { token: 'rule', foreground: 'd3a7ff' }, { token: 'module', foreground: 'd3a7ff' }, { token: 'path', foreground: 'a5d6ff' }, { token: 'url', foreground: '83bfff' }, { token: 'json', foreground: 'd7e4ec' }], colors: { 'editor.background': '#091620', 'editorLineNumber.foreground': '#537083', 'editorLineNumber.activeForeground': '#a9c1cf' } })
 }
 async function loadDetail(run: HistoryRun, item: RunItem) {
   runDetail.value = false
@@ -219,13 +223,18 @@ function reportFor(run: HistoryRun, item?: RunItem) { return item?.readable_repo
 function durationLabel(seconds: number | null | undefined) { if (seconds === null || seconds === undefined) return ''; return `${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds % 3600 / 60)} 分 ${seconds % 60} 秒` }
 function itemHasRisk(run: HistoryRun, item: RunItem) { const report = reportFor(run, item); return item.state === 'failed' || Boolean(report?.risk_count || report?.risks.length || item.unrecognized_log_count) }
 function eventLevel(event: NonNullable<ReadableReport>['events'][number]) { return event.severity === 'error' ? 'ERROR' : event.severity === 'warning' ? 'WARN' : 'INFO' }
+function hasScriptTranslation(item: RunItem) { return Boolean(item.script_translation_version) }
+function eventStreamTitle(item: RunItem) { return hasScriptTranslation(item) ? '脚本可读事件流' : '历史运行状态记录' }
+function eventStreamDescription(item: RunItem) { return hasScriptTranslation(item) ? '由已授权脚本内部日志经本地固定规则转译生成；不保存原文，也不参与终态仲裁。' : '此记录生成于脚本转译启用前，保留的是本软件历史运行状态，不是脚本内部日志。' }
 function readableEventText(run: HistoryRun, item: RunItem) {
   const report = reportFor(run, item)
-  if (!report?.events.length) return '此历史项没有保存可读事件流。\n\n该区域只展示本软件根据已确认运行事实生成的事件，不是脚本原文，也不会参与成功、失败或停止的终态判断。'
-  return report.events.map((event, index) => {
+  if (!report?.events.length) return hasScriptTranslation(item)
+    ? '本轮没有收到可转译的脚本内部日志。\n\n本软件运行状态会显示在左侧；如已配置外部日志，可通过“查看脚本内部日志”读取原文件。'
+    : '此历史项没有保存脚本转译事件。\n\n下方仅保留本软件历史运行状态；原始脚本日志仍以原文件为准。'
+  return report.events.map((event) => {
     const time = new Date(event.timestamp)
     const timestamp = Number.isNaN(time.getTime()) ? event.timestamp : time.toLocaleString('zh-CN', { hour12: false })
-    return `${String(index + 1).padStart(4, ' ')}  [${timestamp}] [${eventLevel(event)}] [${event.phase}] [${itemName(item)}]${event.rule_id ? ` [${event.rule_id}]` : ''} ${event.message}`
+    return `[${timestamp}] [${eventLevel(event)}] [${event.phase}] [${itemName(item)}]${event.rule_id ? ` [${event.rule_id}]` : ''} ${event.message}`
   }).join('\n')
 }
 </script>
@@ -237,11 +246,11 @@ function readableEventText(run: HistoryRun, item: RunItem) {
       <div class="filter-label">快捷选择</div>
       <div class="quick-ranges"><button v-for="preset in presets" :key="preset.key" type="button" :class="{ primary: selected === preset.key }" :aria-pressed="selected === preset.key" @click="selectPreset(preset.key)">{{ preset.label }}</button></div>
       <div class="filter-row">
-        <label class="group-mode">合并模式<select v-model="groupMode" aria-label="合并模式"><option value="day">按日合并</option><option value="week">按周合并</option><option value="month">按月合并</option></select></label>
+        <label class="group-mode">合并模式<select v-model="groupMode" class="filter-select" aria-label="合并模式"><option value="day">按日合并</option><option value="week">按周合并</option><option value="month">按月合并</option></select></label>
         <label>开始日期<input v-model="start" type="date" aria-label="开始日期" @input="editDates"></label>
         <label>结束日期<input v-model="end" type="date" aria-label="结束日期" @input="editDates"></label>
         <label>关键词<input v-model="keyword" type="search" aria-label="关键词" placeholder="名称、错误、摘要或跳过原因"></label>
-        <label>触发来源<select v-model="triggerSource" aria-label="触发来源"><option value="all">全部触发来源</option><option value="manual">手动</option><option value="scheduled">定时</option><option value="startup">启动时</option></select></label>
+        <label>触发来源<select v-model="triggerSource" class="filter-select" aria-label="触发来源"><option value="all">全部触发来源</option><option value="manual">手动</option><option value="scheduled">定时</option><option value="startup">启动时</option></select></label>
         <div class="cleanup"><label>清理明细截止日期<input v-model="cleanupDate" type="date" aria-label="清理明细截止日期" @input="cleanupCount = null"></label><button type="button" @click="previewCleanup">清理详细日志</button></div>
         <div class="filter-actions"><button class="primary" type="button" @click="search"><Search aria-hidden="true" />搜索</button><button type="button" @click="reset"><RotateCcw aria-hidden="true" />重置</button></div>
       </div>
@@ -269,10 +278,10 @@ function readableEventText(run: HistoryRun, item: RunItem) {
           </div>
         </section>
         <section v-else-if="activeItem" ref="taskDetailPanel" class="task-detail-panel" tabindex="-1" aria-label="脚本详情">
-          <header class="task-detail-head"><div><button type="button" class="text-button" @click="returnToRunReport">← 返回运行报告</button><h2>{{ itemName(activeItem) }}</h2><p>{{ reportFor(activeRun, activeItem)?.conclusion || itemOutcome(activeItem) }}</p></div><div class="task-detail-actions"><button v-if="activeItem.external_log_files?.length" type="button" class="primary" @click="openExternalLogs(activeRun, activeItem)">查看脚本内部日志</button><button type="button" @click="loadDetail(activeRun, activeItem)">查看界面采集日志</button></div></header>
+          <header class="task-detail-head"><div><button type="button" class="return-report-button" @click="returnToRunReport">← 返回运行报告</button><h2>{{ itemName(activeItem) }}</h2><p>{{ reportFor(activeRun, activeItem)?.conclusion || itemOutcome(activeItem) }}</p></div><div class="task-detail-actions"><button v-if="activeItem.external_log_files?.length" type="button" class="primary" @click="openExternalLogs(activeRun, activeItem)">查看脚本内部日志</button><button type="button" @click="loadDetail(activeRun, activeItem)">查看界面采集日志</button></div></header>
           <section class="task-facts" aria-label="脚本运行事实"><div><span>最终状态</span><b>{{ itemOutcome(activeItem) }}</b></div><div><span>完成依据</span><b>{{ reportFor(activeRun, activeItem)?.completion_basis || '未保存可读报告' }}</b></div><div><span>耗时</span><b>{{ durationLabel(reportFor(activeRun, activeItem)?.duration_seconds) || '未记录' }}</b></div><div><span>来源状态</span><b>{{ activeItem.external_log_status || rawLogStatus(activeItem) }}</b></div></section>
           <p v-for="risk in reportFor(activeRun, activeItem)?.risks || []" :key="risk" class="report-risk">{{ risk }}</p>
-          <section class="derived-events"><header><div><h3>本软件事件流</h3><p>根据已确认运行事实生成，不是脚本原文，不参与终态仲裁。</p></div><span>{{ reportFor(activeRun, activeItem)?.generator_version || '旧记录' }}</span></header><div class="monaco-host derived-event-editor"><VueMonacoEditor :value="visibleLog(readableEventText(activeRun, activeItem))" language="runner-logfile" theme="runner-log-dark" :options="editorOptions" height="100%" @before-mount="registerLogLanguage" /></div></section>
+          <section class="derived-events"><header><div><h3>{{ eventStreamTitle(activeItem) }}</h3><p>{{ eventStreamDescription(activeItem) }}</p></div><span>{{ activeItem.script_translation_version || reportFor(activeRun, activeItem)?.generator_version || '旧记录' }}</span></header><div class="monaco-host derived-event-editor"><VueMonacoEditor :value="visibleLog(readableEventText(activeRun, activeItem))" language="runner-logfile" theme="runner-log-dark" :options="editorOptions" height="100%" @before-mount="registerLogLanguage" /></div></section>
           <section class="task-source-status"><h3>日志来源与历史入口</h3><p>界面采集：{{ uiLogStatus(activeItem) }}</p><p>旧本地详细日志：{{ rawLogStatus(activeItem) }}</p><p v-if="activeItem.external_log_status">脚本内部日志：{{ activeItem.external_log_status }}</p><p v-if="activeItem.log_summary?.length">本轮摘要：{{ activeItem.log_summary.map(logLabel).join('；') }}</p><p v-if="activeItem.unrecognized_log_count">未识别的外部原始记录：{{ activeItem.unrecognized_log_count }} 条（仅统计，不解释原文）</p></section>
         </section>
         <p v-if="activeRun.scheduler_skips?.length" class="schedule-skips"><b>计划跳过</b><span v-for="skip in activeRun.scheduler_skips" :key="skip">{{ skip }}</span></p>
@@ -280,10 +289,10 @@ function readableEventText(run: HistoryRun, item: RunItem) {
     </section>
     </template>
     <article v-else-if="activeRun && activeItem" ref="taskDetailPanel" class="task-detail-panel standalone-task-detail" tabindex="-1" aria-label="脚本运行详情">
-      <header class="task-detail-head"><div><button type="button" class="text-button" @click="returnToRunReport">← 返回运行报告</button><p class="detail-breadcrumb">日志 / 历史运行 / {{ itemName(activeItem) }}</p><h2>{{ itemName(activeItem) }}</h2><p>{{ reportFor(activeRun, activeItem)?.conclusion || itemOutcome(activeItem) }}</p></div><div class="task-detail-actions"><button v-if="activeItem.external_log_files?.length" type="button" class="primary" @click="openExternalLogs(activeRun, activeItem)">查看脚本内部日志</button><button type="button" @click="loadDetail(activeRun, activeItem)">查看界面采集日志</button></div></header>
+      <header class="task-detail-head"><div><button type="button" class="return-report-button" @click="returnToRunReport">← 返回运行报告</button><p class="detail-breadcrumb">日志 / 历史运行 / {{ itemName(activeItem) }}</p><h2>{{ itemName(activeItem) }}</h2><p>{{ reportFor(activeRun, activeItem)?.conclusion || itemOutcome(activeItem) }}</p></div><div class="task-detail-actions"><button v-if="activeItem.external_log_files?.length" type="button" class="primary" @click="openExternalLogs(activeRun, activeItem)">查看脚本内部日志</button><button type="button" @click="loadDetail(activeRun, activeItem)">查看界面采集日志</button></div></header>
       <section class="task-facts" aria-label="脚本运行事实"><div><span>最终状态</span><b>{{ itemOutcome(activeItem) }}</b></div><div><span>完成依据</span><b>{{ reportFor(activeRun, activeItem)?.completion_basis || '未保存可读报告' }}</b></div><div><span>耗时</span><b>{{ durationLabel(reportFor(activeRun, activeItem)?.duration_seconds) || '未记录' }}</b></div><div><span>来源状态</span><b>{{ activeItem.external_log_status || rawLogStatus(activeItem) }}</b></div></section>
       <p v-for="risk in reportFor(activeRun, activeItem)?.risks || []" :key="risk" class="report-risk">{{ risk }}</p>
-      <section class="derived-events"><header><div><h3>本软件事件流</h3><p>根据已确认运行事实生成，不是脚本原文，不参与终态仲裁。</p></div><span>{{ reportFor(activeRun, activeItem)?.generator_version || '旧记录' }}</span></header><div class="monaco-host derived-event-editor"><VueMonacoEditor :value="visibleLog(readableEventText(activeRun, activeItem))" language="runner-logfile" theme="runner-log-dark" :options="editorOptions" height="100%" @before-mount="registerLogLanguage" /></div></section>
+      <section class="derived-events"><header><div><h3>{{ eventStreamTitle(activeItem) }}</h3><p>{{ eventStreamDescription(activeItem) }}</p></div><span>{{ activeItem.script_translation_version || reportFor(activeRun, activeItem)?.generator_version || '旧记录' }}</span></header><div class="monaco-host derived-event-editor"><VueMonacoEditor :value="visibleLog(readableEventText(activeRun, activeItem))" language="runner-logfile" theme="runner-log-dark" :options="editorOptions" height="100%" @before-mount="registerLogLanguage" /></div></section>
       <section class="task-source-status"><h3>日志来源与历史入口</h3><p>界面采集：{{ uiLogStatus(activeItem) }}</p><p>旧本地详细日志：{{ rawLogStatus(activeItem) }}</p><p v-if="activeItem.external_log_status">脚本内部日志：{{ activeItem.external_log_status }}</p><p v-if="activeItem.log_summary?.length">本轮摘要：{{ activeItem.log_summary.map(logLabel).join('；') }}</p><p v-if="activeItem.unrecognized_log_count">未识别的外部原始记录：{{ activeItem.unrecognized_log_count }} 条（仅统计，不解释原文）</p></section>
     </article>
     <div v-if="detail" class="detail-overlay" @click.self="detail = null"><section class="detail-dialog log-reader-dialog" role="dialog" aria-modal="true" aria-label="详细日志"><header><div><h2>{{ detail.title }} · 详细日志</h2><p>{{ rawDetail ? '显示采集时间；日志原文中的时间保持不变。' : detail.uiStatus }}</p></div><div class="reader-tools"><label>字号<select v-model.number="fontSize" aria-label="日志字号"><option :value="12">12 px</option><option :value="13">13 px</option><option :value="14">14 px</option><option :value="16">16 px</option></select></label><label><input v-model="stripBlankLines" type="checkbox"> 隐藏空行</label><button v-if="!runDetail" type="button" @click="toggleRawDetail">{{ rawDetail ? '返回脚本界面日志' : '查看原始日志' }}</button><button @click="detail = null">关闭</button></div></header><div class="detail-content monaco-host"><p v-if="detail.error" role="alert">{{ detail.error }}</p><p v-else-if="!detail.entries.length && !detail.loading">暂无详细日志。</p><VueMonacoEditor v-else :value="detailEditorText" language="runner-logfile" theme="runner-log-dark" :options="editorOptions" height="100%" @before-mount="registerLogLanguage" /></div><div class="detail-buttons external-actions"><span class="reader-range">当前已读取 {{ detail.entries.length }} 条记录</span><button v-if="detail.next !== null" :disabled="detail.loading" @click="moreDetail">{{ detail.loading ? '正在读取' : '加载更多' }}</button></div></section></div>
@@ -296,6 +305,10 @@ function readableEventText(run: HistoryRun, item: RunItem) {
 </style>
 
 <style scoped>
+.return-report-button{min-height:36px;margin-bottom:10px;padding:7px 12px;border-color:#3c8db2;background:#123348;color:#c9f0ff;font-weight:700;box-shadow:inset 3px 0 #5bddda}.return-report-button:hover{border-color:#76d6ed;background:#16465f}.return-report-button:focus-visible{outline:2px solid #75e3f4;outline-offset:3px}
+</style>
+
+<style scoped>
 .task-detail-page{max-width:1280px;margin:0 auto;padding-top:20px}.standalone-task-detail{min-height:calc(100vh - 170px);margin-top:0;padding:24px}.detail-breadcrumb{margin:10px 0 8px!important;color:#75cbe1!important;font-size:13px}.standalone-task-detail .derived-event-editor{height:min(58vh,680px)}@media(max-width:620px){.task-detail-page{padding-top:8px}.standalone-task-detail{min-height:0;padding:14px}.standalone-task-detail .derived-event-editor{height:48vh}}
 </style>
 
@@ -304,7 +317,7 @@ function readableEventText(run: HistoryRun, item: RunItem) {
 </style>
 
 <style scoped>
-.log-filters{padding:18px}.quick-ranges{gap:7px;margin:8px 0 14px}.quick-ranges button{padding:6px 10px;font-size:14px}.filter-row{gap:10px;padding-top:14px}.filter-row input,.group-mode select{min-width:150px;min-height:36px;padding:6px 8px;border:1px solid var(--line-strong);border-radius:6px;background:var(--panel-deep);color:var(--ink);color-scheme:dark}.group-mode select{min-width:110px}.cleanup input{min-width:150px}.cleanup button,.filter-actions button{min-height:36px;padding:6px 10px;font-size:14px}@media(max-width:980px){.filter-actions{margin-left:0}}
+.log-filters{padding:18px}.quick-ranges{gap:7px;margin:8px 0 14px}.quick-ranges button{padding:6px 10px;font-size:14px}.filter-row{gap:10px;padding-top:14px}.filter-row input,.filter-select{min-width:150px;min-height:36px;padding:6px 32px 6px 8px;border:1px solid var(--line-strong);border-radius:6px;background:var(--panel-deep);color:var(--ink);color-scheme:dark;appearance:none;background-image:linear-gradient(45deg,transparent 50%,#90b9cd 50%),linear-gradient(135deg,#90b9cd 50%,transparent 50%);background-position:calc(100% - 15px) 15px,calc(100% - 10px) 15px;background-size:5px 5px,5px 5px;background-repeat:no-repeat}.filter-select:hover{border-color:#5b8198}.filter-select:focus-visible{border-color:var(--teal);outline:2px solid rgba(85,182,255,.3);outline-offset:2px}.group-mode .filter-select{min-width:110px}.cleanup input{min-width:150px}.cleanup button,.filter-actions button{min-height:36px;padding:6px 10px;font-size:14px}@media(max-width:980px){.filter-actions{margin-left:0}}
 .run-record li{display:flex;align-items:center;justify-content:space-between;gap:12px}.history-item-info{display:grid;min-width:0;gap:3px;overflow-wrap:anywhere}.run-record li button{flex:none}@media(max-width:620px){.run-record li{align-items:flex-start;flex-direction:column}}
 </style>
 

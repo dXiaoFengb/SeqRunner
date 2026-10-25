@@ -74,8 +74,39 @@ test('renders a local readable report after opening the selected script detail a
   expect(wrapper.text()).toContain('检测到 1 条错误级脚本日志，但未构成终态失败')
   await openFirstTaskDetail(wrapper)
   expect(wrapper.text()).toContain('等待人工确认')
-  expect(wrapper.text()).toContain('根据已确认运行事实生成，不是脚本原文')
+  expect(wrapper.text()).toContain('历史运行状态记录')
+  expect(wrapper.text()).toContain('脚本转译启用前')
   expect(wrapper.find('.history-workspace').exists()).toBe(true)
+})
+
+test('renders only translated script facts for new history and keeps the source filter styled', async () => {
+  const event = {
+    timestamp: '2026-01-01T12:00:00Z', source: 'script' as const, sequence: 1,
+    phase: '脚本日志', severity: 'warning' as const, event_type: 'script.log.translated',
+    task_id: 't', task_name: '程序', rule_id: 'script.level.warning',
+    message: '脚本记录了警告级信息；请查看脚本内部日志确认原文。',
+  }
+  const report: ReadableReport = { generator_version: 'local-rules-v2', conclusion: '任务已完成', completion_basis: '人工确认', duration_seconds: 1, risk_count: 0, risks: [], events: [event] }
+  const record = {
+    ...run('脚本转译', '2026-01-01T12:00:00'),
+    items: [{ task_id: 't', task_name: '程序', state: 'succeeded', script_translation_version: 'script-local-rules-v1', readable_report: report }],
+  }
+  const wrapper = setup([record])
+  expect(wrapper.get('[aria-label="触发来源"]').classes()).toContain('filter-select')
+  await openFirstTaskDetail(wrapper)
+  expect(wrapper.text()).toContain('脚本可读事件流')
+  expect(wrapper.text()).toContain(event.message)
+  expect(wrapper.text()).not.toContain('历史运行状态记录')
+})
+
+test('shows a truthful empty state when a translation-enabled task received no readable script event', async () => {
+  const record = {
+    ...run('无外部日志', '2026-01-01T12:00:00'),
+    items: [{ task_id: 't', task_name: '程序', state: 'succeeded', script_translation_version: 'script-local-rules-v1' }],
+  }
+  const wrapper = setup([record])
+  await openFirstTaskDetail(wrapper)
+  expect(wrapper.text()).toContain('本轮没有收到可转译的脚本内部日志')
 })
 
 test('renders a selected script as a standalone detail page and asks the app shell to restore the report', async () => {
@@ -91,8 +122,30 @@ test('renders a selected script as a standalone detail page and asks the app she
   expect(wrapper.find('.history-navigator').exists()).toBe(false)
   expect(wrapper.find('.task-tabs').exists()).toBe(false)
   expect(wrapper.get('[aria-label="脚本运行详情"]').text()).toContain('查看脚本内部日志')
-  await wrapper.get('button.text-button').trigger('click')
+  await wrapper.get('button.return-report-button').trigger('click')
   expect(wrapper.emitted('returnDetail')).toHaveLength(1)
+})
+
+test('restores the task-list scroll position and original task focus after the app shell returns', async () => {
+  const record: TestRun = { ...run('恢复运行', '2026-01-01T12:00:00'), items: [
+    { task_id: 'first', task_name: '第一项', state: 'succeeded' },
+    { task_id: 'returned', task_name: '返回目标', state: 'succeeded' },
+  ] }
+  const original = window.requestAnimationFrame
+  window.requestAnimationFrame = (callback) => { callback(0); return 1 }
+  try {
+    const wrapper = mount(LogPage, {
+      props: { history: [record], selectedId: '恢复运行', expanded: new Set<string>(), restoreTaskId: 'returned', restoreTaskListScrollTop: 36 },
+      attachTo: document.body,
+      global: { stubs: { VueMonacoEditor: { props: ['value'], template: '<pre class="monaco-stub">{{ value }}</pre>' } } },
+    })
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+    const list = wrapper.get('.task-tabs').element as HTMLElement
+    expect(list.scrollTop).toBe(36)
+    expect((document.activeElement as HTMLElement | null)?.dataset.taskId).toBe('returned')
+    wrapper.unmount()
+  } finally { window.requestAnimationFrame = original }
 })
 
 test('filters records by keyword and trigger source together, resets defaults, and keeps script navigation explicit', async () => {
@@ -111,7 +164,7 @@ test('filters records by keyword and trigger source together, resets defaults, a
   expect(wrapper.find('[aria-label="脚本详情"]').exists()).toBe(false)
   await first.trigger('click')
   expect(wrapper.get('[aria-label="脚本详情"]').text()).toContain('甲')
-  await wrapper.get('button.text-button').trigger('click')
+  await wrapper.get('button.return-report-button').trigger('click')
   expect(wrapper.find('.task-tab').exists()).toBe(true)
   expect(wrapper.get('.task-tab').classes()).toContain('selected')
   await wrapper.findAll('.filter-actions button')[1].trigger('click')
@@ -252,7 +305,7 @@ test('stacks task choices vertically while keeping each whole choice keyboard-ac
   expect(choices[1].get('.task-tab-meta').text()).toContain('查看详情')
   await choices[1].trigger('click')
   expect(wrapper.get('[aria-label="脚本详情"]').text()).toContain('第二项')
-  await wrapper.get('button.text-button').trigger('click')
+  await wrapper.get('button.return-report-button').trigger('click')
   expect(wrapper.findAll('.task-tabs > .task-tab')).toHaveLength(3)
   expect(wrapper.findAll('.task-tab.selected')).toHaveLength(1)
 })

@@ -135,7 +135,7 @@ test('opens history script detail as a separate application page and returns to 
   expect(wrapper.find('.history-navigator').exists()).toBe(false)
   expect(wrapper.find('.task-tabs').exists()).toBe(false)
   expect(wrapper.find('header h1').exists()).toBe(false)
-  await wrapper.get('button.text-button').trigger('click'); await flushPromises()
+  await wrapper.get('button.return-report-button').trigger('click'); await flushPromises()
   expect(wrapper.find('.task-tabs').exists()).toBe(true)
   expect(wrapper.find('.task-tab.selected').exists()).toBe(true)
 })

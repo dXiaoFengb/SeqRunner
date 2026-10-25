@@ -12,12 +12,14 @@ from app.models import (
     AppConfig,
     CompletionSource,
     ItemRecord,
+    ItemState,
     LogRule,
     MatchMode,
     QueueDefinition,
     RunRecord,
     TaskDefinition,
 )
+from app.readable_reports import append_script_events
 from app.storage import JsonStore
 
 
@@ -173,12 +175,14 @@ async def test_runtime_snapshot_restores_summary_before_manual_confirmation(tmp_
     assert any(entry["phase"] == "waiting" for entry in entries)
     assert {entry["runId"] for entry in entries} == {snapshot["run"]["id"]}
     assert snapshot["runCenter"]["readableProgress"] == "正在等待人工确认"
-    assert snapshot["run"]["items"][0]["readable_report"]["events"]
+    # 新记录的脚本可读事件仅来自已授权的外部脚本日志；运行器生命周期
+    # 仍在 liveLogs 中提供，不伪装成脚本转译结果。
+    assert snapshot["run"]["items"][0]["readable_report"]["events"] == []
 
     await engine.confirm(task.id)
     await engine.wait_until_idle()
     assert engine.history.runs[0].readable_report is not None
-    assert engine.history.runs[0].readable_report.generator_version == "local-rules-v1"
+    assert engine.history.runs[0].readable_report.generator_version == "local-rules-v2"
 
 
 @pytest.mark.asyncio
@@ -233,6 +237,41 @@ async def test_script_log_snapshot_is_source_scoped_and_bounded(tmp_path: Path) 
     assert streams["external-a"]["sequence"] == 2
     assert streams["window-log"]["sourceType"] == "window"
     assert engine.snapshot(include_script_logs=False)["scriptLogs"] == []
+
+
+@pytest.mark.asyncio
+async def test_script_translation_events_are_globally_ordered_and_recoverable_from_snapshot(tmp_path: Path) -> None:
+    task = python_task("转译日志", "pass")
+    engine, _ = build_engine(tmp_path, [task])
+    record = RunRecord(queue_id="q", queue_name="q", trigger_source="manual")
+    item = ItemRecord(task_id=task.id, task_name=task.name, state=ItemState.MONITORING)
+    record.items = [item]
+    engine.current_run = record
+    engine._reset_live_summary(record)
+
+    events = append_script_events(
+        item,
+        "[2026-10-25 12:00:00.000][INF][ConfigurationHelper] saved\n"
+        "[2026-10-25 12:00:01.000][ERR][Worker] failed\n",
+    )
+    subscription = engine.events.subscribe()
+    first_event = asyncio.create_task(anext(subscription))
+    await asyncio.sleep(0)
+    await engine._publish_script_events(record, item, events)
+    emitted = await first_event
+    await subscription.aclose()
+
+    assert emitted["type"] == "script_event"
+    snapshot = engine.snapshot()
+    assert [entry["sequence"] for entry in snapshot["scriptEvents"]] == [1, 2]
+    assert [entry["event"]["source"] for entry in snapshot["scriptEvents"]] == ["script", "script"]
+    assert "saved" not in str(snapshot["scriptEvents"])
+    assert snapshot["scriptEvents"][0]["event"]["message"] == "脚本正在更新配置。"
+
+    next_record = RunRecord(queue_id="next", queue_name="next", trigger_source="manual")
+    engine.current_run = next_record
+    engine._reset_live_summary(next_record)
+    assert engine.snapshot()["scriptEvents"] == []
 
 
 @pytest.mark.asyncio

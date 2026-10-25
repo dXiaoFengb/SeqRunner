@@ -25,7 +25,7 @@ $oldAppData = $env:APPDATA; $oldLocalAppData = $env:LOCALAPPDATA; $oldTemp = $en
 $oldNoProxy = $env:NO_PROXY; $oldNoProxyLower = $env:no_proxy; $oldHealth = $env:RUNNER_HEALTH_CHECK; $oldRunnerUserData = $env:RUNNER_USER_DATA_DIR
 $process = $null; $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 $trackedProcessIds = [System.Collections.Generic.HashSet[int]]::new()
-$processTreeStatus = 'checked'; $processTreeError = $null; $exitCode = $null; $failure = $null
+$processTreeStatus = 'checked'; $processTreeError = $null; $exitCode = $null; $failure = $null; $residualProcessIds = @()
 
 function Update-TrackedProcessTree {
     param([int]$RootProcessId)
@@ -36,6 +36,24 @@ function Update-TrackedProcessTree {
         return
     }
     foreach ($processId in $snapshot.processIds) { [void]$script:trackedProcessIds.Add([int]$processId) }
+}
+
+function Get-TrackedResidualProcessIds {
+    return @($trackedProcessIds | Where-Object {
+        $candidate = Get-Process -Id $_ -ErrorAction SilentlyContinue
+        $null -ne $candidate
+    } | Sort-Object)
+}
+
+function Wait-ForTrackedProcessExit {
+    param([int]$TimeoutMilliseconds = 5000)
+    $deadline = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        $remaining = Get-TrackedResidualProcessIds
+        if ($remaining.Count -eq 0) { return @() }
+        Start-Sleep -Milliseconds 100
+    } while ($deadline.ElapsedMilliseconds -lt $TimeoutMilliseconds)
+    return @(Get-TrackedResidualProcessIds)
 }
 
 try {
@@ -60,10 +78,10 @@ try {
     $exitCode = [int]$process.ExitCode
     Update-TrackedProcessTree -RootProcessId $process.Id
     if ($processTreeStatus -ne 'checked') { throw "无法确认健康检查进程树：$processTreeError" }
-    $residualProcessIds = @($trackedProcessIds | Where-Object {
-        $candidate = Get-Process -Id $_ -ErrorAction SilentlyContinue
-        $null -ne $candidate
-    } | Sort-Object)
+    # Electron may finish its main process a few milliseconds before renderer and
+    # utility children release. Wait only for the already tracked tree; a child
+    # that survives this bounded grace period remains a verification failure.
+    $residualProcessIds = @(Wait-ForTrackedProcessExit)
     if ($residualProcessIds.Count -gt 0) { throw ('隐藏健康检查留下进程：' + ($residualProcessIds -join ', ')) }
     if ($exitCode -ne 0) { throw "隐藏健康检查退出码：$exitCode" }
     $afterHash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash
@@ -74,10 +92,7 @@ try {
     $stopwatch.Stop()
     if ($process -and $null -eq $exitCode -and $process.HasExited) { $exitCode = [int]$process.ExitCode }
     if ($process -and $processTreeStatus -eq 'checked') { Update-TrackedProcessTree -RootProcessId $process.Id }
-    $residualProcessIds = @($trackedProcessIds | Where-Object {
-        $candidate = Get-Process -Id $_ -ErrorAction SilentlyContinue
-        $null -ne $candidate
-    } | Sort-Object)
+    if (-not $failure) { $residualProcessIds = @(Wait-ForTrackedProcessExit) }
     if ($failure -or $processTreeStatus -ne 'checked' -or $residualProcessIds.Count -gt 0) {
         if (-not $failure -and $processTreeStatus -ne 'checked') { $failure = [InvalidOperationException]::new("无法确认健康检查进程树：$processTreeError") }
         if (-not $failure -and $residualProcessIds.Count -gt 0) { $failure = [InvalidOperationException]::new('隐藏健康检查留下进程：' + ($residualProcessIds -join ', ')) }

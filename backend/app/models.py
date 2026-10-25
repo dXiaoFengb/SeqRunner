@@ -188,12 +188,13 @@ class AppConfig(BaseModel):
 
 
 class ReadableEvent(BaseModel):
-    """A bounded lifecycle fact rendered for people, never an external raw line."""
+    """A bounded, human-readable fact; never stores an external raw log line."""
 
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     task_id: str | None = None
     task_name: str | None = None
-    source: Literal["runner"] = "runner"
+    source: Literal["runner", "script"] = "runner"
+    sequence: int | None = None
     phase: str
     severity: Literal["info", "warning", "error"] = "info"
     event_type: str = "legacy"
@@ -233,8 +234,13 @@ class ItemRecord(BaseModel):
     external_log_status: str | None = None
     log_source_configured: bool = False
     ui_log_source_configured: bool = False
-    # v0.14+ writes local runner facts only; old history without these remains readable.
+    # 运行器事实保留为独立技术证据；新版本的脚本可读事件不混入这里。
     readable_events: list[ReadableEvent] = Field(default_factory=list)
+    # 仅保存外部脚本日志经本地固定规则转译后的中文事件，不保存原文或路径副本。
+    script_readable_events: list[ReadableEvent] = Field(default_factory=list)
+    script_translation_version: str | None = None
+    script_event_sequence: int = 0
+    script_event_truncated: bool = False
     readable_report: ReadableReport | None = None
     external_log_level_counts: dict[str, int] = Field(default_factory=dict)
     unrecognized_log_count: int = 0

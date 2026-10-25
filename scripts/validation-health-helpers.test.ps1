@@ -4,7 +4,7 @@ $passed = New-ValidationHealthResult -Status passed -Version '1.2.3' -Executable
 if ($passed.exitCode -ne 0 -or $passed.processTreeStatus -ne 'checked' -or $passed.residualProcessIds.Count -ne 0) { throw '成功结果缺少健康检查字段。' }
 $passedJson = $passed | ConvertTo-Json -Depth 5
 $passedFromJson = $passedJson | ConvertFrom-Json
-if ($passedFromJson.status -ne 'passed' -or $passedFromJson.version -ne '1.2.3' -or $passedFromJson.executableSha256 -ne 'ABC' -or $passedFromJson.exitCode -ne 0 -or $passedFromJson.processTreeStatus -ne 'checked' -or @($passedFromJson.residualProcessIds).Count -ne 0) { throw '成功结果未能以完整严格 JSON 保存。' }
+if ($passedFromJson.status -ne 'passed' -or $passedFromJson.version -ne '1.2.3' -or $passedFromJson.executableSha256 -ne 'ABC' -or $passedFromJson.exitCode -ne 0 -or $passedFromJson.processTreeStatus -ne 'checked' -or $passedJson -notmatch '"residualProcessIds"\s*:\s*\[\s*\]') { throw '成功结果未能以完整严格 JSON 保存。' }
 $failed = New-ValidationHealthResult -Status failed -Version '1.2.3' -Executable 'fixture.exe' -ExecutableSha256 'ABC' -ExitCode $null -DurationMs 12 -Evidence 'build/test' -ProcessTreeStatus unknown -ProcessTreeError 'denied' -Error 'timeout'
 if ($failed.status -ne 'failed' -or $null -ne $failed.exitCode -or $failed.processTreeStatus -ne 'unknown' -or $failed.error -ne 'timeout') { throw '失败结果没有保留完整状态。' }
 $failedJson = $failed | ConvertTo-Json -Depth 5

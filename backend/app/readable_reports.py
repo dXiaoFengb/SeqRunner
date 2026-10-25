@@ -7,8 +7,9 @@ at its authorised source.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Protocol
 
 from .models import (
@@ -21,7 +22,9 @@ from .models import (
     RunState,
 )
 
-REPORT_GENERATOR_VERSION = "local-rules-v1"
+REPORT_GENERATOR_VERSION = "local-rules-v2"
+SCRIPT_TRANSLATION_VERSION = "script-local-rules-v1"
+SCRIPT_EVENT_LIMIT = 240
 
 
 class ReadableReportProvider(Protocol):
@@ -30,6 +33,8 @@ class ReadableReportProvider(Protocol):
     generator_version: str
 
     def append_item_event(self, item: ItemRecord, message: str, *, rule_id: str | None = None) -> None: ...
+
+    def append_script_events(self, item: ItemRecord, text: str) -> list[ReadableEvent]: ...
 
     def note_external_levels(self, item: ItemRecord, text: str) -> None: ...
 
@@ -98,6 +103,102 @@ def append_item_event(item: ItemRecord, message: str, *, rule_id: str | None = N
     item.readable_report = build_item_report(item)
 
 
+_LEVELS = {
+    "ERR": "error", "ERROR": "error", "FATAL": "error",
+    "WRN": "warning", "WARN": "warning", "WARNING": "warning",
+    "INF": "info", "INFO": "info", "DEBUG": "info", "TRACE": "info",
+}
+_TIMESTAMP = re.compile(r"\[?(?P<stamp>\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d(?:\.\d+)?)\]?")
+_LEVEL = re.compile(r"\[(?P<level>ERR|ERROR|FATAL|WRN|WARN|WARNING|INF|INFO|DEBUG|TRACE)\]", re.IGNORECASE)
+_MODULE = re.compile(r"\[(?P<module>[A-Za-z][\w.-]{1,80})\]")
+_MODULE_MESSAGES = {
+    "bootstrapper": "脚本启动器正在初始化。",
+    "configurationhelper": "脚本正在更新配置。",
+    "configfactory": "脚本正在加载配置。",
+    "resourceintegritychecker": "脚本资源完整性校验完成。",
+    "httpresponseloggingextension": "脚本正在记录网络请求结果。",
+    "autostart": "脚本正在处理自动启动设置。",
+}
+
+
+def _script_timestamp(line: str):
+    matched = _TIMESTAMP.search(line)
+    if not matched:
+        return None
+    value = matched.group("stamp")
+    try:
+        return datetime.fromisoformat(value).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def translate_script_line(item: ItemRecord, line: str) -> ReadableEvent | None:
+    """Turn a recognised external script line into a bounded Chinese fact.
+
+    The input is intentionally discarded after this function. Unknown business
+    text is counted by the caller instead of being guessed or persisted.
+    """
+    level_match = _LEVEL.search(line)
+    modules = [candidate for candidate in _MODULE.findall(line) if candidate.upper() not in _LEVELS]
+    if not level_match and not modules:
+        return None
+    level = (level_match.group("level").upper() if level_match else "INFO")
+    severity = _LEVELS.get(level, "info")
+    module = modules[-1] if modules else "script"
+    known = _MODULE_MESSAGES.get(module.casefold())
+    if known:
+        message = known
+        rule_id = f"script.module.{module.casefold()}"
+    elif severity == "error":
+        message = "脚本记录了错误级信息；请查看脚本内部日志确认原文。"
+        rule_id = "script.level.error"
+    elif severity == "warning":
+        message = "脚本记录了警告级信息；请查看脚本内部日志确认原文。"
+        rule_id = "script.level.warning"
+    else:
+        # A known level alone is useful for statistics, but not enough to
+        # invent a business-level Chinese explanation for an unknown message.
+        return None
+    item.script_event_sequence += 1
+    return ReadableEvent(
+        timestamp=_script_timestamp(line) or datetime.now(UTC),
+        task_id=item.task_id,
+        task_name=item.task_name,
+        source="script",
+        sequence=item.script_event_sequence,
+        phase="脚本日志",
+        severity=severity,
+        event_type="script.log.translated",
+        message=message,
+        rule_id=rule_id,
+    )
+
+
+def append_script_events(item: ItemRecord, text: str) -> list[ReadableEvent]:
+    """Persist only translated facts. Raw text remains at its authorised file."""
+    item.script_translation_version = SCRIPT_TRANSLATION_VERSION
+    created: list[ReadableEvent] = []
+    unrecognised = 0
+    for line in text.splitlines():
+        normalized = line.strip()
+        event = translate_script_line(item, normalized)
+        if event is None:
+            # Plain free text is counted by note_external_levels for the whole
+            # received block. Structured-but-unknown lines need a per-line
+            # count, while still never retaining their raw body.
+            if _LEVEL.search(normalized) or _MODULE.search(normalized):
+                unrecognised += 1
+            continue
+        item.script_readable_events.append(event)
+        created.append(event)
+    item.unrecognized_log_count += unrecognised
+    if len(item.script_readable_events) > SCRIPT_EVENT_LIMIT:
+        item.script_readable_events = item.script_readable_events[-SCRIPT_EVENT_LIMIT:]
+        item.script_event_truncated = True
+    item.readable_report = build_item_report(item)
+    return created
+
+
 def count_external_levels(text: str) -> dict[str, int]:
     """Count common level tokens without retaining or interpreting raw content."""
     upper = text.upper()
@@ -161,6 +262,10 @@ def build_item_report(item: ItemRecord) -> ReadableReport:
             risks.append(f"检测到 {errors} 条错误级脚本日志")
     if warnings:
         risks.append(f"检测到 {warnings} 条警告级脚本日志")
+    if item.script_translation_version and item.unrecognized_log_count:
+        risks.append(
+            f"检测到 {item.unrecognized_log_count} 条未识别脚本日志；请查看脚本内部日志确认原文"
+        )
     if item.external_log_status and "未发现" in item.external_log_status:
         risks.append("运行期间未发现匹配的脚本内部日志")
     return ReadableReport(
@@ -169,7 +274,9 @@ def build_item_report(item: ItemRecord) -> ReadableReport:
         completion_basis=completion_basis(item),
         risk_count=len(risks),
         risks=risks,
-        events=list(item.readable_events),
+        # New records deliberately display script conversions only. Existing
+        # histories retain their lifecycle facts as a labelled legacy format.
+        events=list(item.script_readable_events if item.script_translation_version else item.readable_events),
     )
 
 
@@ -199,7 +306,7 @@ def build_run_report(record: RunRecord) -> ReadableReport:
         duration_seconds=duration,
         risk_count=len(risks),
         risks=risks[:12],
-        events=[event for item in record.items for event in item.readable_events][-160:],
+        events=[event for item in record.items for event in (item.script_readable_events if item.script_translation_version else item.readable_events)][-160:],
     )
 
 
@@ -209,6 +316,7 @@ class LocalRuleReportProvider:
     generator_version = REPORT_GENERATOR_VERSION
 
     append_item_event = staticmethod(append_item_event)
+    append_script_events = staticmethod(append_script_events)
     note_external_levels = staticmethod(note_external_levels)
     build_item_report = staticmethod(build_item_report)
     build_run_report = staticmethod(build_run_report)

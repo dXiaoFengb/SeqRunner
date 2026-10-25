@@ -70,14 +70,15 @@ test('shows and cancels a pending completion action countdown', async () => {
   expect(wrapper.emitted('cancelCompletionAction')).toHaveLength(1)
 })
 
-test('compacts after content scroll even when a run appears after mount', async () => {
+test('keeps one stable run-center layout while runtime state updates', async () => {
   const empty = { ...structuredClone(runtime), busy: false, run: null, runCenter: null }
-  const wrapper = mount(RunCenter, { props: { runtime: empty, countdown: 0, confirmationPending: false, scrolled: false } })
-  await wrapper.setProps({ runtime, scrolled: true })
-  expect(wrapper.find('.run-center').classes()).toContain('is-compact')
-  const expand = wrapper.get('.run-center-expand')
-  await expand.trigger('click')
-  expect(expand.attributes('aria-expanded')).toBe('true')
+  const wrapper = mount(RunCenter, { props: { runtime: empty, countdown: 0, confirmationPending: false } })
+  await wrapper.setProps({ runtime })
+  expect(wrapper.find('.run-center').classes()).not.toContain('is-compact')
+  expect(wrapper.find('.run-center-expand').exists()).toBe(false)
+  const waiting = structuredClone(runtime)
+  waiting.runCenter!.currentState = 'waiting_manual'
+  await wrapper.setProps({ runtime: waiting })
   expect(wrapper.find('.run-center').classes()).not.toContain('is-compact')
   await wrapper.setProps({ runtime: empty })
   expect(wrapper.find('.run-center').exists()).toBe(false)

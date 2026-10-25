@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 
 from app.models import CompletionSource, ItemRecord, ItemState, RunRecord, RunState
-from app.readable_reports import append_item_event, build_run_report, note_external_levels
+from app.readable_reports import (
+    SCRIPT_TRANSLATION_VERSION,
+    append_item_event,
+    append_script_events,
+    build_run_report,
+    note_external_levels,
+)
 
 
 def test_local_report_explains_success_without_changing_terminal_state() -> None:
@@ -28,6 +34,49 @@ def test_unknown_external_text_is_counted_without_persisting_text() -> None:
     note_external_levels(item, "未定义格式的一段第三方文本")
     assert item.unrecognized_log_count == 1
     assert item.readable_events == []
+
+
+def test_translation_reports_unrecognised_script_text_without_persisting_it() -> None:
+    item = ItemRecord(task_id="task", task_name="受控程序", state=ItemState.MONITORING)
+    note_external_levels(item, "未定义格式的一段第三方文本")
+    append_script_events(item, "未定义格式的一段第三方文本")
+
+    assert item.readable_report is not None
+    assert item.readable_report.risks == ["检测到 1 条未识别脚本日志；请查看脚本内部日志确认原文"]
+    assert item.readable_report.events == []
+
+
+def test_unknown_info_line_is_counted_but_never_given_a_guessed_chinese_meaning() -> None:
+    item = ItemRecord(task_id="task", task_name="受控程序", state=ItemState.MONITORING)
+    note_external_levels(item, "[INF][ThirdPartyWorker] opaque business message")
+    events = append_script_events(item, "[INF][ThirdPartyWorker] opaque business message")
+
+    assert events == []
+    assert item.unrecognized_log_count == 1
+    assert item.readable_report is not None
+    assert item.readable_report.events == []
+    assert "opaque business message" not in str(item.readable_report)
+
+
+def test_external_script_lines_become_chinese_events_without_storing_raw_text() -> None:
+    item = ItemRecord(task_id="task", task_name="受控程序", state=ItemState.MONITORING)
+    raw = "[2026-10-25 12:00:00.000][INF][ConfigurationHelper] config saved\n[2026-10-25 12:00:01.000][ERR][Worker] failed\n"
+    events = append_script_events(item, raw)
+    assert item.script_translation_version == SCRIPT_TRANSLATION_VERSION
+    assert [event.severity for event in events] == ["info", "error"]
+    assert events[0].message == "脚本正在更新配置。"
+    assert "config saved" not in events[0].message
+    assert "failed" not in events[1].message
+    assert item.readable_report is not None
+    assert item.readable_report.events == events
+
+
+def test_new_translation_enabled_record_keeps_lifecycle_events_out_of_script_stream() -> None:
+    item = ItemRecord(task_id="task", task_name="受控程序", state=ItemState.MONITORING, script_translation_version=SCRIPT_TRANSLATION_VERSION)
+    append_item_event(item, "开始校验任务配置")
+    assert item.readable_events
+    assert item.readable_report is not None
+    assert item.readable_report.events == []
 
 
 def test_run_report_summarises_item_outcomes() -> None:

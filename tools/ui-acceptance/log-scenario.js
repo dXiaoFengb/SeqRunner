@@ -58,7 +58,7 @@ async page => {
   check(await page.getByRole('button', {name:'查看 验收任务 的脚本详情'}).isVisible(), '脚本选项卡没有可访问详情入口')
   await click(page.getByRole('button', {name:'查看 验收任务 的脚本详情'}))
   check(await page.getByLabel('脚本详情').isVisible(), '未进入脚本详情页面')
-  check(await page.getByText('根据已确认运行事实生成，不是脚本原文').isVisible(), '可读事件流缺少来源说明')
+  check(await page.getByText('由脚本内部日志本地转译生成').isVisible(), '脚本转译事件流缺少来源说明')
   check(await page.locator('.derived-event-editor .monaco-editor').count() === 1, '可读事件流没有以只读代码式阅读器呈现')
   await click(page.getByRole('button',{name:'查看本轮运行日志'}))
   await page.getByText('受控本轮日志：总耗时 12 秒').waitFor({timeout:15000})
@@ -72,7 +72,7 @@ async page => {
   await click(page.getByRole('button', {name:'查看 验收任务 的脚本详情'}))
   check(await page.getByLabel('运行报告').getByText('受控失败', {exact:false}).count() >= 1, '失败详情不可见')
   check(await page.getByLabel('运行报告').getByText('受控摘要', {exact:false}).count() >= 1, '日志摘要不可见')
-  check(await page.getByText('根据已确认运行事实生成，不是脚本原文').isVisible(), '事件流缺少本软件派生说明')
+  check(await page.getByText('由脚本内部日志本地转译生成').isVisible(), '脚本转译事件流缺少来源说明')
   await click(page.getByRole('button', {name:'查看界面采集日志'}))
   await page.getByText('受控界面日志').waitFor({timeout:15000})
   check(await page.getByText('受控界面日志').isVisible(), '脚本界面日志不可见')
@@ -99,7 +99,7 @@ async page => {
   await click(page.getByRole('button',{name:'查看本轮运行日志'}))
   await page.getByText('受控本轮日志：总耗时 12 秒').waitFor({timeout:15000})
   await click(page.getByRole('dialog', {name:'详细日志'}).getByRole('button',{name:'关闭'}))
-  check(await page.getByText('本轮日志摘要').isVisible(), '实时摘要区域不可见')
+  check(await page.getByText('本软件运行状态').isVisible(), '实时状态区域不可见')
   await page.getByLabel('开始日期').fill('2099-12-31')
   await page.getByLabel('结束日期').fill('2099-01-01')
   await click(page.getByRole('button',{name:'搜索',exact:true}))
@@ -121,11 +121,11 @@ async page => {
   await page.evaluate(() => {
     const socket = window.__fixtureSocket
     const emit = (type, data) => socket.onmessage({data: JSON.stringify({type, data})})
-    emit('runtime', { busy: true, activeTaskId: 'fixture', cooldownSeconds: 0, run: { id: 'fixture-run', queue_name: '受控运行', state: 'running', items: [{ task_id:'fixture', task_name:'MAA', state:'waiting_manual' }] }, runCenter: { currentScriptName: '受控脚本', currentTaskName: '受控任务', currentState: 'waiting_manual', currentIndex: 1, totalPrograms: 1, readableProgress:'正在等待人工确认' }, liveLogs: [
+    emit('runtime', { busy: true, activeTaskId: 'fixture', cooldownSeconds: 0, run: { id: 'fixture-run', queue_name: '受控运行', state: 'running', items: [{ task_id:'fixture', task_name:'MAA', state:'waiting_manual', log_source_configured:true, script_translation_version:'script-local-rules-v1' }] }, runCenter: { currentScriptName: '受控脚本', currentTaskName: '受控任务', currentState: 'waiting_manual', currentIndex: 1, totalPrograms: 1, readableProgress:'正在等待人工确认' }, liveLogs: [
       { runId:'fixture-run', sequence:1, taskId:'fixture', message:'开始校验任务配置', phase:'validation' },
       { runId:'fixture-run', sequence:2, taskId:'fixture', message:'已启动受管进程 PID 123', phase:'running' },
       { runId:'fixture-run', sequence:3, taskId:'fixture', message:'等待人工确认当前程序完成', phase:'waiting' },
-    ] })
+    ], scriptEvents: [{runId:'fixture-run',taskId:'fixture',sequence:1,truncated:false,event:{timestamp:'2026-10-25T00:00:00Z',task_id:'fixture',task_name:'MAA',source:'script',sequence:1,phase:'脚本日志',severity:'info',event_type:'script.log.translated',message:'脚本正在更新配置。',rule_id:'script.module.configurationhelper'}}] })
   })
   check(await page.locator('.side-live-list').getByText('等待人工确认当前程序完成').isVisible(), '确认完成前未从运行快照恢复等待摘要')
   check(await page.locator('.side-live-list .log-phase-validation').count() > 0, '运行快照未保留校验阶段')
@@ -143,33 +143,27 @@ async page => {
   await page.evaluate(() => {
     const socket = window.__fixtureSocket
     const send = (type, data) => socket.onmessage({data: JSON.stringify({type, data})})
-    send('runtime', { busy: true, activeTaskId: 'fixture', cooldownSeconds: 0, run: { id: 'fixture-run', queue_name: '受控运行', state: 'running', items: [{ task_id:'fixture', task_name:'MAA', state:'waiting_manual', ui_log_status:'已连接受控日志' }] }, runCenter: { currentScriptName:'受控脚本', currentTaskName:'MAA', currentState:'waiting_manual', currentIndex:1, totalPrograms:1 } })
-    send('script_log', {runId:'fixture-run', taskId:'fixture', sourceId:'fixture-external', sourceName:'fixture.log', sourceType:'external', sequence:1, append:false, text:'受控脚本实时日志', truncated:false, updatedAt:'2026-10-23T00:00:00Z'})
-    send('script_log', {runId:'fixture-run', taskId:'fixture', sourceId:'fixture-window', sourceName:'界面读取', sourceType:'window', sequence:1, append:false, text:'受控界面来源日志', truncated:false, updatedAt:'2026-10-23T00:00:01Z'})
+    send('runtime', { busy: true, activeTaskId: 'fixture', cooldownSeconds: 0, run: { id: 'fixture-run', queue_name: '受控运行', state: 'running', items: [{ task_id:'fixture', task_name:'MAA', state:'waiting_manual', log_source_configured:true, script_translation_version:'script-local-rules-v1' }] }, runCenter: { currentScriptName:'受控脚本', currentTaskName:'MAA', currentState:'waiting_manual', currentIndex:1,totalPrograms:1 } })
+    send('script_event', {runId:'fixture-run',taskId:'fixture',sequence:2,truncated:false,event:{timestamp:'2026-10-25T00:00:01Z',task_id:'fixture',task_name:'MAA',source:'script',sequence:2,phase:'脚本日志',severity:'warning',event_type:'script.log.translated',message:'脚本记录了警告级信息；请查看脚本内部日志确认原文。',rule_id:'script.level.warning'}})
   })
-  check(await page.locator('.side-live-list').getByText('受控脚本实时日志').isVisible(), '脚本实时日志不可见')
-  check(await page.locator('.script-source-tabs').getByText('fixture.log').isVisible(), '脚本日志来源标签不可见')
-  await click(page.locator('.script-source-tabs').getByText('fixture.log'))
-  await page.evaluate(() => window.__fixtureSocket.onmessage({data: JSON.stringify({type:'script_log', data:{runId:'fixture-run', taskId:'fixture', sourceId:'fixture-window', sourceName:'界面读取', sourceType:'window', sequence:2, append:true, text:'\n受控界面来源新增日志', truncated:false, updatedAt:'2026-10-23T00:00:02Z'}})}))
-  check(await page.locator('.script-source-tabs button').filter({hasText:'界面读取'}).locator('i').count() === 1, '未选中来源新增内容后没有活动标记')
-  await click(page.locator('.script-source-tabs').getByText('界面读取'))
-  check(await page.locator('.script-source-tabs button').filter({hasText:'界面读取'}).locator('i').count() === 0, '查看来源后活动标记没有清除')
-  await click(page.locator('.script-source-tabs').getByText('fixture.log'))
+  check(await page.locator('.script-live-list').getByText('脚本正在更新配置。').isVisible(), '脚本实时转译不可见')
+  check(await page.locator('.script-live-list').getByText('脚本记录了警告级信息；请查看脚本内部日志确认原文。').isVisible(), '新增转译事件不可见')
+  check(await page.locator('.script-source-tabs').count() === 0, '脚本实时转译仍显示来源选择条')
   check(await page.locator('.scheduler-live-list').getByText('受控消息 41').isVisible(), '脚本运行时本软件日志不可见')
   await page.evaluate(() => {
     const socket = window.__fixtureSocket
     const emit = (type, data) => socket.onmessage({data: JSON.stringify({type, data})})
-    emit('script_log', {runId:'fixture-run', taskId:'fixture', sourceId:'fixture-external', sourceName:'fixture.log', sourceType:'external', sequence:2, append:true, text:'\n' + Array.from({length:60}, (_, index) => `受控脚本实时日志 ${index + 1}`).join('\n'), truncated:false, updatedAt:'2026-10-23T00:00:01Z'})
+    for (let index = 3; index <= 62; index++) emit('script_event', {runId:'fixture-run',taskId:'fixture',sequence:index,truncated:false,event:{timestamp:'2026-10-25T00:00:02Z',task_id:'fixture',task_name:'MAA',source:'script',sequence:index,phase:'脚本日志',severity:'info',event_type:'script.log.translated',message:`脚本转译事件 ${index - 2}`,rule_id:'script.module.fixture'}})
   })
-  await page.locator('.script-live-list').getByText('受控脚本实时日志 60').waitFor({timeout:15000})
+  await page.locator('.script-live-list').getByText('脚本转译事件 60').waitFor({timeout:15000})
   await page.evaluate(() => {
     document.querySelector('.scheduler-live-list').scrollTop = 0
     document.querySelector('.script-live-list').scrollTop = 0
     const socket = window.__fixtureSocket
     socket.onmessage({data: JSON.stringify({type:'log', data:{message:'受控消息 42'}})})
-    socket.onmessage({data: JSON.stringify({type:'script_log', data:{runId:'fixture-run', taskId:'fixture', sourceId:'fixture-external', sourceName:'fixture.log', sourceType:'external', sequence:3, append:true, text:'\n受控脚本实时日志 61', truncated:false, updatedAt:'2026-10-23T00:00:02Z'}})})
+    socket.onmessage({data: JSON.stringify({type:'script_event', data:{runId:'fixture-run',taskId:'fixture',sequence:63,truncated:false,event:{timestamp:'2026-10-25T00:00:03Z',task_id:'fixture',task_name:'MAA',source:'script',sequence:63,phase:'脚本日志',severity:'info',event_type:'script.log.translated',message:'脚本转译事件 61',rule_id:'script.module.fixture'}}})})
   })
-  await page.locator('.script-live-list').getByText('受控脚本实时日志 61').waitFor({timeout:15000})
+  await page.locator('.script-live-list').getByText('脚本转译事件 61').waitFor({timeout:15000})
   for (const selector of ['.scheduler-live-list', '.script-live-list']) {
     check(await page.locator(selector).evaluate(el => el.scrollTop + el.clientHeight >= el.scrollHeight - 1), `${selector} 新日志后未自动滚至末尾`)
   }
@@ -181,15 +175,18 @@ async page => {
   await page.locator('.script-live-list').waitFor({state:'detached'})
   const between = await page.locator('.scheduler-live-list').boundingBox()
   check(Boolean(between), '脚本切换后本软件日志摘要不可见')
-  await page.evaluate(() => window.__fixtureSocket.onmessage({data: JSON.stringify({type:'runtime', data:{busy:true,activeTaskId:'fixture',cooldownSeconds:0,run:{id:'fixture-run',queue_name:'受控运行',state:'running',items:[{task_id:'fixture',task_name:'MAA',state:'waiting_manual'}]},runCenter:{currentScriptName:'受控脚本',currentTaskName:'MAA',currentState:'waiting_manual',currentIndex:1,totalPrograms:1}}})}))
+  await page.evaluate(() => window.__fixtureSocket.onmessage({data: JSON.stringify({type:'runtime', data:{busy:true,activeTaskId:'fixture',cooldownSeconds:0,run:{id:'fixture-run',queue_name:'受控运行',state:'running',items:[{task_id:'fixture',task_name:'MAA',state:'waiting_manual',log_source_configured:true,script_translation_version:'script-local-rules-v1'}]},runCenter:{currentScriptName:'受控脚本',currentTaskName:'MAA',currentState:'waiting_manual',currentIndex:1,totalPrograms:1}}})}))
   await click(page.getByRole('button', {name:'脚本', exact:true}))
-  check(await page.locator('.side-live-list').getByText('受控脚本实时日志').isVisible(), '跨页面脚本实时日志丢失')
+  check(await page.locator('.script-live-list').getByText('脚本转译事件 61').isVisible(), '跨页面脚本实时转译丢失')
   await click(page.getByRole('button', {name:'日志', exact:true}))
-  await page.evaluate(() => window.__fixtureSocket.onmessage({data: JSON.stringify({type:'runtime', data:{ busy:true, activeTaskId:'fixture', cooldownSeconds:0, run:{id:'fixture-run',queue_name:'受控运行',state:'running',items:[{task_id:'fixture',task_name:'MAA',state:'running'}]},runCenter:{currentScriptName:'受控脚本',currentTaskName:'MAA',currentState:'waiting_manual',currentIndex:1,totalPrograms:1} }})}))
+  await page.evaluate(() => window.__fixtureSocket.onmessage({data: JSON.stringify({type:'runtime', data:{ busy:true, activeTaskId:'fixture', cooldownSeconds:0, run:{id:'fixture-run',queue_name:'受控运行',state:'running',items:[{task_id:'fixture',task_name:'MAA',state:'running',log_source_configured:true,script_translation_version:'script-local-rules-v1'}]},runCenter:{currentScriptName:'受控脚本',currentTaskName:'MAA',currentState:'waiting_manual',currentIndex:1,totalPrograms:1} }})}))
   await page.setViewportSize({width:1280,height:820})
+  const stableBefore = await page.locator('.run-center').boundingBox()
   await page.locator('.content-body').evaluate(el => { const spacer = document.createElement('div'); spacer.style.height = '1000px'; spacer.setAttribute('aria-hidden', 'true'); el.appendChild(spacer); el.scrollTop = 120 })
   await page.waitForTimeout(150)
-  check(await page.locator('.run-center').evaluate(el => el.classList.contains('is-compact')), '运行中心未进入紧凑状态')
+  const stableAfter = await page.locator('.run-center').boundingBox()
+  check(Boolean(stableBefore && stableAfter && Math.abs(stableBefore.height - stableAfter.height) < 1), '页面滚动改变了运行中心高度')
+  check(await page.locator('.run-center-expand').count() === 0, '运行中心仍存在滚动驱动的展开按钮')
   const centerBox = await page.locator('.run-center').boundingBox()
   const bodyBox = await page.locator('.content-body').boundingBox()
   check(centerBox && bodyBox && centerBox.y + centerBox.height <= bodyBox.y, '运行中心遮挡内容区域')
@@ -203,5 +200,5 @@ async page => {
     check(!(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)), `${width}px 页面发生横向溢出`)
     await page.screenshot({path:`log-viewport-${width}.png`})
   }
-  return 'PASS: 日志日期筛选、按日分组、失败详情、实时摘要、无效范围和重置'
+  return 'PASS: 日志日期筛选、按日分组、脚本转译详情、实时状态与实时转译、无效范围和运行中心稳定性'
 }

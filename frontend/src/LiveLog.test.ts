@@ -2,185 +2,61 @@ import { mount } from '@vue/test-utils'
 import { expect, test } from 'vitest'
 import { nextTick } from 'vue'
 import LiveLog from './LiveLog.vue'
-import type { Runtime } from './types'
+import type { Runtime, ScriptReadableEvent } from './types'
 
-test('always follows new summary logs even after manual scrolling', async () => {
+function runtime(taskId = 'task'): Runtime {
+  return { busy: true, activeTaskId: taskId, cooldownSeconds: 0, runCenter: { currentScriptId: null, currentScriptName: null, currentTaskId: taskId, currentTaskName: 'MAA', currentState: 'monitoring', completionSource: null, currentIndex: 1, totalPrograms: 1, readableProgress: '正在监控程序运行' }, run: { id: 'run', queue_name: '队列', state: 'running', items: [{ task_id: taskId, task_name: 'MAA', state: 'monitoring', log_source_configured: true, script_translation_version: 'script-local-rules-v1' }] } }
+}
+
+function scriptEvent(sequence: number, message = '脚本正在加载配置。'): ScriptReadableEvent {
+  return { runId: 'run', taskId: 'task', sequence, truncated: false, event: { timestamp: '2026-01-01T00:00:00Z', task_id: 'task', task_name: 'MAA', source: 'script', sequence, phase: '脚本日志', severity: sequence === 2 ? 'warning' : 'info', event_type: 'script.log.translated', message, rule_id: 'script.module.configurationhelper' } }
+}
+
+test('always follows new software-status logs even after manual scrolling', async () => {
   const wrapper = mount(LiveLog, { props: { logs: ['第一条'] } })
-  const list = wrapper.get('.side-live-list').element as HTMLElement
-  Object.defineProperties(list, { scrollHeight: { configurable: true, value: 500 }, clientHeight: { configurable: true, value: 100 } })
-  await nextTick(); await nextTick()
-  expect(list.scrollTop).toBe(500)
-  list.scrollTop = 100
-  await wrapper.setProps({ logs: ['第一条', '任务成功，来源：CompletionSource.MANUAL'] })
-  await nextTick()
-  expect(list.scrollTop).toBe(500); expect(wrapper.text()).toContain('来源：人工确认')
-  await wrapper.setProps({ logs: ['新消息'] }); expect(list.scrollTop).toBe(500)
-  expect(wrapper.text()).not.toContain('回到最新')
-  expect(wrapper.text()).not.toContain('回到底部')
-})
-
-test('labels stages with color classes while always following', async () => {
-  const wrapper = mount(LiveLog, { props: { logs: [{ message: '开始校验任务配置', phase: 'validation' }, { message: '正在启动程序', phase: 'running' }, { message: '等待人工确认', phase: 'waiting' }, { message: '准备收尾', phase: 'closing' }, { message: '固定冷却', phase: 'cooling' }, { message: '任务成功', phase: 'success' }, { message: '任务已停止', phase: 'failed' }] } })
   const list = wrapper.get('.scheduler-live-list').element as HTMLElement
   Object.defineProperties(list, { scrollHeight: { configurable: true, value: 500 }, clientHeight: { configurable: true, value: 100 } })
   await nextTick(); await nextTick()
-  expect(wrapper.get('.log-phase-validation').text()).toContain('校验')
-  expect(wrapper.get('.log-phase-running').text()).toContain('运行')
-  expect(wrapper.get('.log-phase-waiting').text()).toContain('等待确认')
-  expect(wrapper.get('.log-phase-cooling').text()).toContain('冷却')
-  expect(wrapper.get('.log-phase-success').text()).toContain('完成')
-  expect(wrapper.get('.log-phase-failed').text()).toContain('失败')
   list.scrollTop = 100
-  await wrapper.setProps({ logs: [...wrapper.props('logs'), { message: '收尾完成', phase: 'closing' }] })
+  await wrapper.setProps({ logs: ['第一条', '任务成功，来源：CompletionSource.MANUAL'] })
   await nextTick()
   expect(list.scrollTop).toBe(500)
-  expect(wrapper.find('button').exists()).toBe(false)
-  expect(wrapper.get('.log-phase-closing').text()).toContain('收尾')
+  expect(wrapper.get('[aria-label="本软件运行状态"]').text()).toContain('本软件运行状态')
+  expect(wrapper.text()).not.toContain('回到最新')
 })
 
-test('shows only the engine-confirmed readable progress above the summary', () => {
-  const runtime: Runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, runCenter: { currentScriptId: null, currentScriptName: null, currentTaskId: 't', currentTaskName: '程序', currentState: 'waiting_manual', completionSource: null, currentIndex: 1, totalPrograms: 1, readableProgress: '正在等待人工确认' }, run: { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: '程序', state: 'waiting_manual' }] } }
-  const wrapper = mount(LiveLog, { props: { logs: ['等待人工确认'], runtime } })
-  expect(wrapper.get('.readable-progress').text()).toBe('正在等待人工确认')
+test('renders the merged translated script stream without source selectors and follows new events', async () => {
+  const current = runtime()
+  const wrapper = mount(LiveLog, { props: { logs: ['正在启动程序'], runtime: current, scriptEvents: [scriptEvent(1)] } })
+  const list = wrapper.get('.script-live-list').element as HTMLElement
+  Object.defineProperties(list, { scrollHeight: { configurable: true, value: 500 }, clientHeight: { configurable: true, value: 100 } })
+  await nextTick(); await nextTick()
+  list.scrollTop = 100
+  await wrapper.setProps({ scriptEvents: [scriptEvent(1), scriptEvent(2, '脚本记录了警告级信息；请查看脚本内部日志确认原文。')] })
+  await nextTick()
+  expect(wrapper.get('.script-header').text()).toContain('脚本实时转译')
+  expect(wrapper.get('.script-live-list').text()).toContain('脚本记录了警告级信息')
+  expect(wrapper.find('.script-severity-warning').exists()).toBe(true)
+  expect(wrapper.find('.script-source-tabs').exists()).toBe(false)
+  expect(list.scrollTop).toBe(500)
 })
 
-test('distinguishes a script with a configured log source and shows the final elapsed time', async () => {
-  const run = { id: 'r', queue_name: '队列', state: 'running', started_at: '2026-01-01T00:00:00Z', ended_at: null, items: [{ task_id: 't', task_name: 'MAA', state: 'waiting_manual', log_source_configured: true }] }
-  const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }
-  const wrapper = mount(LiveLog, { props: { logs: ['检查完成'], runtime } })
-  expect(wrapper.text()).toContain('MAA · 脚本日志')
-  expect(wrapper.text()).toContain('暂无法可靠获取')
-  expect(wrapper.text()).toContain('检查完成')
-  await wrapper.setProps({ runtime: { ...runtime, busy: false, activeTaskId: null, run: { ...run, state: 'completed', ended_at: '2026-01-01T00:01:03Z' } } })
-  expect(wrapper.text()).toContain('检查完成')
-  expect(wrapper.text()).toContain('总耗时 0 小时 1 分 3 秒')
-  expect(wrapper.get('.scheduler-live-list').text().indexOf('检查完成')).toBeLessThan(wrapper.get('.scheduler-live-list').text().indexOf('总耗时'))
-})
-
-test('keeps the scheduler above a configured script log area throughout a run', async () => {
-  const run = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: 'MAA', state: 'monitoring', log_source_configured: true }] }
-  const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }
-  const wrapper = mount(LiveLog, { props: { logs: [], runtime } })
-  const scheduler = wrapper.get('.scheduler-live-list').element
-  const script = wrapper.get('.script-live-list').element
-  expect(scheduler.compareDocumentPosition(script) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-  await wrapper.setProps({ runtime: { ...runtime, activeTaskId: null } })
-  expect(wrapper.get('.scheduler-live-list').element).toBe(scheduler)
-  expect(wrapper.find('.script-live-list').exists()).toBe(false)
-})
-
-test('hides the script log panel with no configured source while keeping software logs', () => {
-  const run = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: '无日志脚本', state: 'monitoring' }] }
-  const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }
-  const wrapper = mount(LiveLog, { props: { logs: ['本软件仍在运行'], runtime } })
+test('keeps the script translation panel hidden without an external file source while software status remains', () => {
+  const current = runtime()
+  current.run!.items[0].log_source_configured = false
+  const wrapper = mount(LiveLog, { props: { logs: ['本软件仍在运行'], runtime: current } })
   expect(wrapper.find('.script-live-list').exists()).toBe(false)
   expect(wrapper.get('.scheduler-live-list').text()).toContain('本软件仍在运行')
 })
 
-test('shows the script log panel for an enabled manual region even when OCR is still locating', () => {
-  const run = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: '已框选脚本', state: 'monitoring', ui_log_source_configured: true, ui_log_status: '正在定位画面识别（可能有错字或遗漏）' }] }
-  const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }
-  const wrapper = mount(LiveLog, { props: { logs: ['本软件仍在运行'], runtime } })
-  expect(wrapper.get('.script-live-list').text()).toContain('正在定位画面识别')
-  expect(wrapper.get('.scheduler-live-list').text()).toContain('本软件仍在运行')
-})
-
-test('script and scheduler logs always return to their own latest content', async () => {
-  const run = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: '程序', state: 'monitoring' }] }
-  const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }
-  const wrapper = mount(LiveLog, { props: { logs: ['检查完成'], runtime, scriptLog: { runId: 'r', taskId: 't', text: '第一条' } } })
-  const script = wrapper.get('.script-live-list').element as HTMLElement
-  const scheduler = wrapper.get('.scheduler-live-list').element as HTMLElement
-  for (const el of [script, scheduler]) Object.defineProperties(el, { scrollHeight: { configurable: true, value: 500 }, clientHeight: { configurable: true, value: 100 } })
-  await nextTick(); await nextTick()
-  script.scrollTop = 100
-  scheduler.scrollTop = 100
-  await wrapper.setProps({ logs: ['检查完成', '新状态'], scriptLog: { runId: 'r', taskId: 't', text: '第一条\n第二条' } })
-  await nextTick()
-  expect(script.scrollTop).toBe(500)
-  expect(scheduler.scrollTop).toBe(500)
-  expect(wrapper.get('.script-live-list').text()).toContain('第二条')
-  expect(wrapper.get('.scheduler-live-list').text()).toContain('新状态')
-})
-
-test('returns both panels to latest content when a new run and task become active', async () => {
-  const firstRun = { id: 'r1', queue_name: '队列', state: 'running', items: [{ task_id: 't1', task_name: '程序一', state: 'monitoring', log_source_configured: true }] }
-  const runtime = { busy: true, activeTaskId: 't1', cooldownSeconds: 0, run: firstRun }
-  const wrapper = mount(LiveLog, { props: { logs: ['旧摘要'], runtime, scriptLog: { runId: 'r1', taskId: 't1', text: '旧脚本日志' } } })
-  const scheduler = wrapper.get('.scheduler-live-list').element as HTMLElement
-  const script = wrapper.get('.script-live-list').element as HTMLElement
-  for (const el of [scheduler, script]) Object.defineProperties(el, { scrollHeight: { configurable: true, value: 500 }, clientHeight: { configurable: true, value: 100 } })
-  await nextTick(); await nextTick()
-  scheduler.scrollTop = 100
-  script.scrollTop = 100
-  const secondRun = { id: 'r2', queue_name: '队列', state: 'running', items: [{ task_id: 't2', task_name: '程序二', state: 'monitoring', log_source_configured: true }] }
-  await wrapper.setProps({ logs: ['新摘要'], runtime: { ...runtime, activeTaskId: 't2', run: secondRun }, scriptLog: { runId: 'r2', taskId: 't2', text: '新脚本日志' } })
-  await nextTick(); await nextTick()
-  expect(scheduler.scrollTop).toBe(500)
-  expect(script.scrollTop).toBe(500)
-  expect(wrapper.text()).toContain('程序二 · 脚本日志')
-})
-
-test('only shows messages for the active run and task', async () => {
-  const run = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: '程序', state: 'monitoring' }] }
-  const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }
-  const wrapper = mount(LiveLog, { props: { logs: [], runtime, scriptLog: { runId: 'other', taskId: 't', text: '其他运行' } } })
-  expect(wrapper.text()).not.toContain('其他运行')
-  await wrapper.setProps({ scriptLog: { runId: 'r', taskId: 't', text: '脚本日志' } })
-  expect(wrapper.text()).toContain('脚本日志')
-})
-
-test('keeps a manually selected source while other script sources update', async () => {
-  const run = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: '程序', state: 'monitoring', log_source_configured: true }] }
-  const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }
-  const sources = [
-    { runId: 'r', taskId: 't', sourceId: 'first', sourceName: 'first.log', sourceType: 'external', sequence: 1, append: false, text: '第一份', truncated: false, updatedAt: '2026-01-01T00:00:00Z' },
-    { runId: 'r', taskId: 't', sourceId: 'second', sourceName: 'second.log', sourceType: 'external', sequence: 1, append: false, text: '第二份', truncated: false, updatedAt: '2026-01-01T00:01:00Z' },
-  ]
-  const wrapper = mount(LiveLog, { props: { logs: [], runtime, scriptLogs: sources } })
-  expect(wrapper.get('.script-source-tabs').text()).toContain('first.log')
-  await wrapper.findAll('.script-source-tabs button').find((button) => button.text().includes('first.log'))!.trigger('click')
-  await wrapper.setProps({ scriptLogs: [{ ...sources[0], sequence: 2, text: '第一份更新', updatedAt: '2026-01-01T00:02:00Z' }, sources[1]] })
-  expect(wrapper.get('.script-live-list').text()).toContain('第一份更新')
-  expect(wrapper.get('.script-source-tabs button.active').text()).toContain('first.log')
-  await wrapper.setProps({ scriptLogs: [sources[0], { ...sources[1], sequence: 2, text: '第二份更新', updatedAt: '2026-01-01T00:03:00Z' }] })
-  expect(wrapper.get('.script-live-list').text()).toContain('第一份')
-  expect(wrapper.get('.script-source-tabs button.active').text()).toContain('first.log')
-})
-
-test('marks every unselected source that advanced after it was last viewed and clears stale marks on a new task', async () => {
-  const firstRun = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: '程序', state: 'monitoring', log_source_configured: true }] }
-  const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run: firstRun }
-  const sources = [
-    { runId: 'r', taskId: 't', sourceId: 'one', sourceName: 'one.log', sourceType: 'external', sequence: 1, append: false, text: '一', truncated: false, updatedAt: '2026-01-01T00:00:00Z' },
-    { runId: 'r', taskId: 't', sourceId: 'two', sourceName: 'two.log', sourceType: 'external', sequence: 1, append: false, text: '二', truncated: false, updatedAt: '2026-01-01T00:01:00Z' },
-    { runId: 'r', taskId: 't', sourceId: 'three', sourceName: 'three.log', sourceType: 'external', sequence: 1, append: false, text: '三', truncated: false, updatedAt: '2026-01-01T00:02:00Z' },
-  ]
-  const wrapper = mount(LiveLog, { props: { logs: [], runtime, scriptLogs: sources } })
-  await nextTick()
-  expect(wrapper.findAll('.script-source-tabs i')).toHaveLength(0)
-  await wrapper.findAll('.script-source-tabs button').find((button) => button.text().includes('one.log'))!.trigger('click')
-  await wrapper.setProps({ scriptLogs: [sources[0], { ...sources[1], sequence: 2, text: '二更新', updatedAt: '2026-01-01T00:03:00Z' }, { ...sources[2], sequence: 2, text: '三更新', updatedAt: '2026-01-01T00:04:00Z' }] })
-  await nextTick()
-  expect(wrapper.findAll('.script-source-tabs i')).toHaveLength(2)
-  await wrapper.findAll('.script-source-tabs button').find((button) => button.text().includes('two.log'))!.trigger('click')
-  expect(wrapper.findAll('.script-source-tabs i')).toHaveLength(1)
-  const nextRun = { id: 'next', queue_name: '队列', state: 'running', items: [{ task_id: 'next-task', task_name: '下一程序', state: 'monitoring', log_source_configured: true }] }
-  await wrapper.setProps({ runtime: { ...runtime, activeTaskId: 'next-task', run: nextRun }, scriptLogs: [{ ...sources[2], runId: 'next', taskId: 'next-task', sequence: 1, text: '新来源' }] })
-  await nextTick()
-  expect(wrapper.findAll('.script-source-tabs i')).toHaveLength(0)
-})
-
-test('marks a source that appears after the current source and clears it when viewed', async () => {
-  const run = { id: 'r', queue_name: '队列', state: 'running', items: [{ task_id: 't', task_name: '程序', state: 'monitoring', log_source_configured: true }] }
-  const runtime = { busy: true, activeTaskId: 't', cooldownSeconds: 0, run }
-  const first = { runId: 'r', taskId: 't', sourceId: 'first', sourceName: 'first.log', sourceType: 'external', sequence: 1, append: false, text: '第一份', truncated: false, updatedAt: '2026-01-01T00:00:00Z' }
-  const later = { runId: 'r', taskId: 't', sourceId: 'later', sourceName: 'later.log', sourceType: 'external', sequence: 1, append: false, text: '后来出现', truncated: false, updatedAt: '2026-01-01T00:01:00Z' }
-  const wrapper = mount(LiveLog, { props: { logs: [], runtime, scriptLogs: [first] } })
-  await nextTick()
-  await wrapper.setProps({ scriptLogs: [first, later] })
-  await nextTick()
-  expect(wrapper.findAll('.script-source-tabs i')).toHaveLength(1)
-  await wrapper.findAll('.script-source-tabs button').find((button) => button.text().includes('later.log'))!.trigger('click')
-  expect(wrapper.findAll('.script-source-tabs i')).toHaveLength(0)
+test('shows only converted events for the active task and resets on task switch', async () => {
+  const current = runtime()
+  const otherBase = scriptEvent(2, '其他脚本事件')
+  const other = { ...otherBase, taskId: 'other', event: { ...otherBase.event, task_id: 'other' } }
+  const wrapper = mount(LiveLog, { props: { logs: [], runtime: current, scriptEvents: [scriptEvent(1), other] } })
+  expect(wrapper.get('.script-live-list').text()).not.toContain('其他脚本事件')
+  const next = runtime('other')
+  next.run!.items = [{ task_id: 'other', task_name: '下一程序', state: 'monitoring', log_source_configured: true, script_translation_version: 'script-local-rules-v1' }]
+  await wrapper.setProps({ runtime: next, scriptEvents: [other] })
+  expect(wrapper.get('.script-live-list').text()).toContain('其他脚本事件')
 })

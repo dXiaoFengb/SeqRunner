@@ -46,7 +46,7 @@ function New-ValidationHealthResult {
     $result = [ordered]@{
         status = $Status; version = $Version; executable = $Executable; executableSha256 = $ExecutableSha256
         exitCode = $ExitCode; durationMs = $DurationMs; evidence = $Evidence
-        processTreeStatus = $ProcessTreeStatus; residualProcessIds = @($ResidualProcessIds)
+        processTreeStatus = $ProcessTreeStatus; residualProcessIds = @($ResidualProcessIds | Where-Object { $null -ne $_ })
         processTreeError = $ProcessTreeError
     }
     if ($Error) { $result.error = $Error }
