@@ -67,6 +67,12 @@ async function logScenario(cdp) {
   await eventually(cdp, `document.querySelectorAll('.task-tabs .task-tab').length === 6`, '纵向任务列表没有呈现六项受控任务')
   const vertical = await evaluate(cdp, `(() => { const host = document.querySelector('.task-tabs'); const rows = [...host.querySelectorAll('.task-tab')].map(node => node.getBoundingClientRect()); return { count: rows.length, vertical: rows.every((row, index) => index === 0 || row.top >= rows[index - 1].bottom), internalScroll: host.scrollHeight > host.clientHeight && getComputedStyle(host).overflowX === 'hidden' && host.scrollWidth <= host.clientWidth + 1 } })()`)
   if (!vertical.vertical || !vertical.internalScroll) throw new Error('历史任务列表没有保持纵向内部滚动布局')
+  await evaluate(cdp, `(() => { const host = document.querySelector('.task-tabs'); host.scrollTop = 36; host.querySelectorAll('.task-tab')[2].click() })()`)
+  await eventually(cdp, `Boolean(document.querySelector('[aria-label="脚本运行详情"]')) && !document.querySelector('.log-filters') && !document.querySelector('.history-navigator') && !document.querySelector('.task-tabs')`, '脚本详情没有切换到独立页面，或一级日志页面元素仍然可见')
+  await eventually(cdp, `document.body.innerText.includes('日志 / 历史运行') && document.body.innerText.includes('本软件事件流')`, '独立详情页面没有呈现面包屑或本软件事件流')
+  await evaluate(cdp, click('← 返回运行报告'))
+  await eventually(cdp, `document.querySelectorAll('.task-tabs .task-tab').length === 6`, '返回运行报告后没有恢复任务列表')
+  await eventually(cdp, `(() => { const host = document.querySelector('.task-tabs'); return host.scrollTop >= 30 && document.activeElement?.dataset.taskId === 'task-3' })()`, '返回运行报告后没有恢复任务列表滚动位置或触发项焦点')
   const reloadUrl = await evaluate(cdp, 'location.href')
   await cdp.call('Page.enable')
   await cdp.call('Page.addScriptToEvaluateOnNewDocument', { source: `(() => { class FixtureWebSocket { static CONNECTING=0; static OPEN=1; readyState=1; constructor(){ globalThis.__fixtureSocket=this; queueMicrotask(() => this.onopen?.()) } send(){} close(){ this.readyState=3 } }; Object.defineProperty(globalThis, 'WebSocket', { value: FixtureWebSocket, configurable: true, writable: true }); globalThis.__fixtureSocketOverrideInstalled = true })();` })
@@ -88,7 +94,7 @@ async function logScenario(cdp) {
   }
   await evaluate(cdp, `[...document.querySelectorAll('.script-source-tabs button')].find(node => node.textContent.includes('界面读取')).click()`)
   if (await evaluate(cdp, `[...document.querySelectorAll('.script-source-tabs button')].find(node => node.textContent.includes('界面读取')).querySelector('i') !== null`)) throw new Error('查看来源后活动标记没有清除')
-  return 'PASS: 纵向历史任务列表、运行摘要与多来源活动标记'
+  return 'PASS: 独立脚本详情页、状态恢复、纵向历史任务列表、运行摘要与多来源活动标记'
 }
 
 async function main() {

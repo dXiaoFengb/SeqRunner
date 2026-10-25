@@ -78,6 +78,23 @@ test('renders a local readable report after opening the selected script detail a
   expect(wrapper.find('.history-workspace').exists()).toBe(true)
 })
 
+test('renders a selected script as a standalone detail page and asks the app shell to restore the report', async () => {
+  const report: ReadableReport = { generator_version: 'local-rules-v1', conclusion: '任务已完成', completion_basis: '人工确认', duration_seconds: 4, risk_count: 0, risks: [], events: [] }
+  const record: TestRun = { ...run('独立页面运行', '2026-01-01T12:00:00'), items: [{ task_id: 'detail', task_name: '独立脚本', state: 'succeeded', readable_report: report, external_log_files: ['C:/受控/runner.log'] }] }
+  const wrapper = mount(LogPage, {
+    props: { history: [record], selectedId: '独立页面运行', expanded: new Set<string>(), standalone: true, detailRunId: '独立页面运行', detailTaskId: 'detail' },
+    global: { stubs: { VueMonacoEditor: { props: ['value'], template: '<pre class="monaco-stub">{{ value }}</pre>' } } },
+  })
+  await wrapper.vm.$nextTick()
+  expect(wrapper.get('[aria-label="脚本运行详情"]').text()).toContain('日志 / 历史运行 / 独立脚本')
+  expect(wrapper.find('.log-filters').exists()).toBe(false)
+  expect(wrapper.find('.history-navigator').exists()).toBe(false)
+  expect(wrapper.find('.task-tabs').exists()).toBe(false)
+  expect(wrapper.get('[aria-label="脚本运行详情"]').text()).toContain('查看脚本内部日志')
+  await wrapper.get('button.text-button').trigger('click')
+  expect(wrapper.emitted('returnDetail')).toHaveLength(1)
+})
+
 test('filters records by keyword and trigger source together, resets defaults, and keeps script navigation explicit', async () => {
   const report: ReadableReport = { generator_version: 'local-rules-v1', conclusion: '已完成', completion_basis: '成功规则', duration_seconds: 1, risk_count: 0, risks: [], events: [] }
   const records = [

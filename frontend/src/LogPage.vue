@@ -9,8 +9,8 @@ import type { DetailEntry } from './detailLogLabels'
 type HistoryRun = { id: string; queue_name: string; run_mode?: string; trigger_source: string; state: string; started_at: string; ended_at?: string | null; items: RunItem[]; scheduler_skips?: string[]; run_log_id?: string | null; run_log_status?: string | null; readable_report?: ReadableReport | null }
 type Preset = 'today' | 'yesterday' | 'week' | 'month' | 'twoMonths' | 'threeMonths' | 'halfYear'
 type Range = { start: string; end: string }
-const props = defineProps<{ history: HistoryRun[]; selectedId: string | null; expanded: Set<string>; request?: (path: string, options?: RequestInit) => Promise<unknown> }>()
-const emit = defineEmits<{ toggle: [string]; refresh: [] }>()
+const props = defineProps<{ history: HistoryRun[]; selectedId: string | null; expanded: Set<string>; request?: (path: string, options?: RequestInit) => Promise<unknown>; standalone?: boolean; detailRunId?: string | null; detailTaskId?: string | null }>()
+const emit = defineEmits<{ toggle: [string]; refresh: []; openDetail: [runId: string, taskId: string]; returnDetail: [] }>()
 const presets: { key: Preset; label: string }[] = [{ key: 'today', label: '今天' }, { key: 'yesterday', label: '昨天' }, { key: 'week', label: '最近一周' }, { key: 'month', label: '最近一个月' }, { key: 'twoMonths', label: '最近两个月' }, { key: 'threeMonths', label: '最近三个月' }, { key: 'halfYear', label: '最近半年' }]
 function dateKey(date: Date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` }
 function startMonthsBefore(date: Date, count: number) { const first = new Date(date.getFullYear(), date.getMonth() - count, 1); const last = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate(); first.setDate(Math.min(date.getDate(), last)); return first }
@@ -62,19 +62,32 @@ const groups = computed(() => {
 const selectedRunId = ref<string | null>(props.selectedId)
 const selectedTaskId = ref<string | null>(null)
 const taskDetailOpen = ref(false)
-const lastTaskCard = ref<HTMLElement | null>(null)
+const lastTaskId = ref<string | null>(null)
 const taskDetailPanel = ref<HTMLElement | null>(null)
+const taskTabs = ref<HTMLElement | null>(null)
+const taskListScrollTop = ref(0)
 const visibleRuns = computed(() => groups.value.flatMap((group) => group.runs))
 const activeRun = computed(() => visibleRuns.value.find((run) => run.id === selectedRunId.value) || visibleRuns.value[0] || null)
 const activeItem = computed(() => activeRun.value?.items.find((item) => item.task_id === selectedTaskId.value) || activeRun.value?.items[0] || null)
 function selectRun(run: HistoryRun) { selectedRunId.value = run.id; selectedTaskId.value = null; taskDetailOpen.value = false }
-function openTaskDetail(item: RunItem, event?: Event) {
+function openTaskDetail(item: RunItem) {
+  taskListScrollTop.value = taskTabs.value?.scrollTop || 0
   selectedTaskId.value = item.task_id
   taskDetailOpen.value = true
-  lastTaskCard.value = event?.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  lastTaskId.value = item.task_id
+  if (activeRun.value) emit('openDetail', activeRun.value.id, item.task_id)
   nextTick(() => taskDetailPanel.value?.focus())
 }
-function returnToRunReport() { taskDetailOpen.value = false; nextTick(() => lastTaskCard.value?.focus()) }
+function returnToRunReport() {
+  taskDetailOpen.value = false
+  emit('returnDetail')
+  nextTick(() => {
+    if (!taskTabs.value) return
+    taskTabs.value.scrollTop = taskListScrollTop.value
+    const card = [...taskTabs.value.querySelectorAll<HTMLButtonElement>('.task-tab')].find((button) => button.dataset.taskId === lastTaskId.value)
+    card?.focus()
+  })
+}
 watch(() => [props.selectedId, props.history] as const, ([id]) => {
   if (!id) return
   const run = props.history.find((item) => item.id === id)
@@ -90,6 +103,13 @@ watch(activeRun, (run) => {
   if (!run) { selectedTaskId.value = null; taskDetailOpen.value = false; return }
   if (!run.items.some((item) => item.task_id === selectedTaskId.value)) selectedTaskId.value = run.items[0]?.task_id || null
 })
+watch(() => [props.standalone, props.detailRunId, props.detailTaskId] as const, ([standalone, runId, taskId]) => {
+  if (!standalone) { taskDetailOpen.value = false; return }
+  if (runId) selectedRunId.value = runId
+  if (taskId) selectedTaskId.value = taskId
+  taskDetailOpen.value = true
+  nextTick(() => taskDetailPanel.value?.focus())
+}, { immediate: true })
 function itemOutcome(item: RunItem) { const reason = item.error_summary || (item.exit_code !== null && item.exit_code !== undefined ? `退出码 ${item.exit_code}` : item.completion_source || '未提供摘要'); return item.state === 'failed' ? `失败：${reason}` : item.state === 'succeeded' ? `成功：${sourceLabel(item.completion_source || '已完成')}` : stateLabel(item.state) }
 function itemName(item: RunItem) { return item.script_name && item.script_name !== item.task_name ? `${item.script_name} / ${item.task_name}` : item.task_name }
 function uiLogStatus(item: RunItem) { return item.ui_log_status || (item.ui_log_id ? '已采集' : '暂无界面日志') }
@@ -211,7 +231,8 @@ function readableEventText(run: HistoryRun, item: RunItem) {
 </script>
 
 <template>
-  <section class="log-page" aria-label="日志">
+  <section class="log-page" :class="{ 'task-detail-page': standalone }" :aria-label="standalone ? '脚本运行详情' : '日志'">
+    <template v-if="!standalone">
     <div class="log-filters">
       <div class="filter-label">快捷选择</div>
       <div class="quick-ranges"><button v-for="preset in presets" :key="preset.key" type="button" :class="{ primary: selected === preset.key }" :aria-pressed="selected === preset.key" @click="selectPreset(preset.key)">{{ preset.label }}</button></div>
@@ -239,8 +260,8 @@ function readableEventText(run: HistoryRun, item: RunItem) {
           <header><b>运行报告</b><span>{{ reportFor(activeRun)?.completion_basis || '该历史项未保存可读报告' }}</span></header>
           <p v-for="risk in reportFor(activeRun)?.risks || []" :key="risk" class="report-risk">{{ risk }}</p>
           <p class="report-guidance">选择一个脚本查看本软件生成的可读事件流、界面采集状态和原文入口。脚本内部日志不会在此处直接展开。</p>
-          <div class="task-tabs" aria-label="脚本详情选择">
-            <button v-for="item in activeRun.items" :key="item.task_id" type="button" class="task-tab" :class="{ selected: selectedTaskId === item.task_id, failed: item.state === 'failed', stopped: item.state === 'stopped', risk: itemHasRisk(activeRun, item) }" :aria-label="`查看 ${itemName(item)} 的脚本详情`" @click="openTaskDetail(item, $event)">
+          <div ref="taskTabs" class="task-tabs" aria-label="脚本详情选择">
+            <button v-for="item in activeRun.items" :key="item.task_id" type="button" class="task-tab" :data-task-id="item.task_id" :class="{ selected: selectedTaskId === item.task_id, failed: item.state === 'failed', stopped: item.state === 'stopped', risk: itemHasRisk(activeRun, item) }" :aria-label="`查看 ${itemName(item)} 的脚本详情`" @click="openTaskDetail(item)">
               <span class="task-tab-state">{{ item.state === 'failed' ? '失败' : item.state === 'stopped' ? '已停止' : item.state === 'succeeded' ? '成功' : stateLabel(item.state) }}</span>
               <span class="task-tab-main"><b>{{ itemName(item) }}</b><small>{{ reportFor(activeRun, item)?.conclusion || itemOutcome(item) }}</small></span>
               <span class="task-tab-meta"><span v-if="itemHasRisk(activeRun, item)" class="task-tab-risk">存在需查看项</span><span class="task-tab-action">查看详情</span></span>
@@ -257,6 +278,14 @@ function readableEventText(run: HistoryRun, item: RunItem) {
         <p v-if="activeRun.scheduler_skips?.length" class="schedule-skips"><b>计划跳过</b><span v-for="skip in activeRun.scheduler_skips" :key="skip">{{ skip }}</span></p>
       </article>
     </section>
+    </template>
+    <article v-else-if="activeRun && activeItem" ref="taskDetailPanel" class="task-detail-panel standalone-task-detail" tabindex="-1" aria-label="脚本运行详情">
+      <header class="task-detail-head"><div><button type="button" class="text-button" @click="returnToRunReport">← 返回运行报告</button><p class="detail-breadcrumb">日志 / 历史运行 / {{ itemName(activeItem) }}</p><h2>{{ itemName(activeItem) }}</h2><p>{{ reportFor(activeRun, activeItem)?.conclusion || itemOutcome(activeItem) }}</p></div><div class="task-detail-actions"><button v-if="activeItem.external_log_files?.length" type="button" class="primary" @click="openExternalLogs(activeRun, activeItem)">查看脚本内部日志</button><button type="button" @click="loadDetail(activeRun, activeItem)">查看界面采集日志</button></div></header>
+      <section class="task-facts" aria-label="脚本运行事实"><div><span>最终状态</span><b>{{ itemOutcome(activeItem) }}</b></div><div><span>完成依据</span><b>{{ reportFor(activeRun, activeItem)?.completion_basis || '未保存可读报告' }}</b></div><div><span>耗时</span><b>{{ durationLabel(reportFor(activeRun, activeItem)?.duration_seconds) || '未记录' }}</b></div><div><span>来源状态</span><b>{{ activeItem.external_log_status || rawLogStatus(activeItem) }}</b></div></section>
+      <p v-for="risk in reportFor(activeRun, activeItem)?.risks || []" :key="risk" class="report-risk">{{ risk }}</p>
+      <section class="derived-events"><header><div><h3>本软件事件流</h3><p>根据已确认运行事实生成，不是脚本原文，不参与终态仲裁。</p></div><span>{{ reportFor(activeRun, activeItem)?.generator_version || '旧记录' }}</span></header><div class="monaco-host derived-event-editor"><VueMonacoEditor :value="visibleLog(readableEventText(activeRun, activeItem))" language="runner-logfile" theme="runner-log-dark" :options="editorOptions" height="100%" @before-mount="registerLogLanguage" /></div></section>
+      <section class="task-source-status"><h3>日志来源与历史入口</h3><p>界面采集：{{ uiLogStatus(activeItem) }}</p><p>旧本地详细日志：{{ rawLogStatus(activeItem) }}</p><p v-if="activeItem.external_log_status">脚本内部日志：{{ activeItem.external_log_status }}</p><p v-if="activeItem.log_summary?.length">本轮摘要：{{ activeItem.log_summary.map(logLabel).join('；') }}</p><p v-if="activeItem.unrecognized_log_count">未识别的外部原始记录：{{ activeItem.unrecognized_log_count }} 条（仅统计，不解释原文）</p></section>
+    </article>
     <div v-if="detail" class="detail-overlay" @click.self="detail = null"><section class="detail-dialog log-reader-dialog" role="dialog" aria-modal="true" aria-label="详细日志"><header><div><h2>{{ detail.title }} · 详细日志</h2><p>{{ rawDetail ? '显示采集时间；日志原文中的时间保持不变。' : detail.uiStatus }}</p></div><div class="reader-tools"><label>字号<select v-model.number="fontSize" aria-label="日志字号"><option :value="12">12 px</option><option :value="13">13 px</option><option :value="14">14 px</option><option :value="16">16 px</option></select></label><label><input v-model="stripBlankLines" type="checkbox"> 隐藏空行</label><button v-if="!runDetail" type="button" @click="toggleRawDetail">{{ rawDetail ? '返回脚本界面日志' : '查看原始日志' }}</button><button @click="detail = null">关闭</button></div></header><div class="detail-content monaco-host"><p v-if="detail.error" role="alert">{{ detail.error }}</p><p v-else-if="!detail.entries.length && !detail.loading">暂无详细日志。</p><VueMonacoEditor v-else :value="detailEditorText" language="runner-logfile" theme="runner-log-dark" :options="editorOptions" height="100%" @before-mount="registerLogLanguage" /></div><div class="detail-buttons external-actions"><span class="reader-range">当前已读取 {{ detail.entries.length }} 条记录</span><button v-if="detail.next !== null" :disabled="detail.loading" @click="moreDetail">{{ detail.loading ? '正在读取' : '加载更多' }}</button></div></section></div>
     <div v-if="external" class="detail-overlay" @click.self="external = null"><section class="detail-dialog log-reader-dialog" role="dialog" aria-modal="true" aria-label="脚本内部日志"><header class="external-log-header"><div><h2>脚本内部日志</h2><p>直接读取脚本内部日志原文件；本软件不会保存副本。</p></div><div class="external-header-actions"><div class="external-files" aria-label="选择脚本内部日志文件"><button v-for="file in external.files" :key="file.index" :disabled="!file.available" :class="{ primary: external.selected?.index === file.index }" @click="selectExternal(file)">{{ file.name }}{{ file.available ? '' : '（不可读取）' }}</button></div><button @click="external = null">关闭</button></div></header><div class="reader-tools"><label>字号<select v-model.number="fontSize" aria-label="日志字号"><option :value="12">12 px</option><option :value="13">13 px</option><option :value="14">14 px</option><option :value="16">16 px</option></select></label><label><input v-model="stripBlankLines" type="checkbox"> 隐藏空行</label></div><div class="detail-content monaco-host"><p v-if="external.error" role="alert">{{ external.error }}</p><p v-else-if="!external.text && !external.loading">暂无内容。</p><VueMonacoEditor v-else :value="externalEditorText" language="runner-logfile" theme="runner-log-dark" :options="editorOptions" height="100%" @before-mount="registerLogLanguage" /></div><div class="detail-buttons external-actions"><span class="reader-range">{{ external.next === null ? '已读取完整文件' : '当前仅搜索已读取内容' }}</span><button v-if="external.next !== null" :disabled="external.loading" @click="loadMoreExternal">{{ external.loading ? '读取中…' : '加载更多' }}</button><button :disabled="!external.selected || !external.text || external.text.length > 10 * 1024 * 1024" @click="copyExternal">复制当前已读取内容</button><button :disabled="!external.selected" @click="exportExternal">导出原文件</button><button :disabled="!external.selected" @click="showExternalFolder">打开所在文件夹</button></div></section></div>
   </section>
@@ -264,6 +293,10 @@ function readableEventText(run: HistoryRun, item: RunItem) {
 
 <style scoped>
 .log-page{padding-bottom:48px}.log-filters,.live-log{padding:24px;border:1px solid var(--line);border-radius:8px;background:var(--panel);box-shadow:inset 0 1px rgba(255,255,255,.04)}.filter-label,.filter-row label,.group-mode>span{color:var(--muted);font-size:14px;font-weight:600}.quick-ranges{display:flex;flex-wrap:wrap;gap:9px;margin:12px 0 20px}.filter-row{display:flex;align-items:flex-end;flex-wrap:wrap;gap:16px;border-top:1px solid var(--line);padding-top:20px}.filter-row label,.group-mode{display:grid;gap:7px}.filter-row input{min-width:180px;min-height:38px;padding:8px 10px;border:1px solid var(--line-strong);border-radius:6px;background:var(--panel-deep);color:var(--ink);color-scheme:dark}.filter-row input:focus-visible{border-color:var(--teal);outline:2px solid rgba(22,119,255,.3)}.group-mode strong{display:flex;align-items:center;min-height:38px;padding:0 12px;border:1px solid var(--line-strong);border-radius:6px;color:var(--ink);font-size:14px}.filter-actions{display:flex;gap:9px;margin-left:auto}.filter-actions button{display:inline-flex;align-items:center;gap:7px}.filter-actions svg,.log-group svg{width:16px;height:16px}.filter-error{margin:12px 0 0;color:#f5a2a8}.log-empty{min-height:250px;display:grid;place-content:center;justify-items:center;gap:9px;text-align:center;color:var(--muted)}.log-empty svg{width:42px;height:42px;opacity:.7}.log-empty strong{font-size:18px;color:var(--ink)}.log-group{margin-top:24px}.log-group h2,.live-log h2{display:flex;align-items:center;gap:8px;font-size:18px;margin:0;color:var(--ink)}.live-log{margin-top:24px}.live-log p{color:var(--muted);margin:12px 0 0}.logs{margin-bottom:0}@media(max-width:980px){.filter-actions{margin-left:0}}@media(max-width:620px){.log-filters,.live-log{padding:16px}.filter-row label{width:100%}.filter-row input{width:100%}}
+</style>
+
+<style scoped>
+.task-detail-page{max-width:1280px;margin:0 auto;padding-top:20px}.standalone-task-detail{min-height:calc(100vh - 170px);margin-top:0;padding:24px}.detail-breadcrumb{margin:10px 0 8px!important;color:#75cbe1!important;font-size:13px}.standalone-task-detail .derived-event-editor{height:min(58vh,680px)}@media(max-width:620px){.task-detail-page{padding-top:8px}.standalone-task-detail{min-height:0;padding:14px}.standalone-task-detail .derived-event-editor{height:48vh}}
 </style>
 
 <style scoped>

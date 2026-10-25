@@ -13,12 +13,12 @@ function config(two = false): Config {
   return result
 }
 class QuietWebSocket { static readonly CONNECTING = 0; static readonly OPEN = 1; readyState = 0; onopen = null; onmessage = null; onclose = null; onerror = null; constructor(_: string) {} close() {} send() {} }
-function installBackend(source = config(), runtime: Runtime = { busy: false, activeTaskId: null, cooldownSeconds: 0, run: null }) {
+function installBackend(source = config(), runtime: Runtime = { busy: false, activeTaskId: null, cooldownSeconds: 0, run: null }, history: unknown[] = []) {
   const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
     const path = String(url)
     if (path.endsWith('/health')) return { ok: true, json: async () => ({ status: 'ok' }), text: async () => '' }
     if (path.endsWith('/runtime')) return { ok: true, json: async () => runtime, text: async () => '' }
-    if (path.endsWith('/history')) return { ok: true, json: async () => ({ runs: [] }), text: async () => '' }
+    if (path.endsWith('/history')) return { ok: true, json: async () => ({ runs: history }), text: async () => '' }
     if (path.endsWith('/presets')) return { ok: true, json: async () => [{ id: 'maa', label: 'MAA', executables: ['MAA.exe'], note: '日志成功', evidence: 'evidence', manualRequired: true, requiresLogRules: true, successRules: [{ pattern: '完成', mode: 'keyword' }], failureRules: [{ pattern: '失败', mode: 'keyword' }] }, { id: 'maaend', label: 'MaaEnd', executables: ['MaaEnd.exe'], note: '人工确认', evidence: 'evidence', manualRequired: true, editorCapability: 'maaend_windows_game' }], text: async () => '' }
     if (path.includes('/api/presets/')) { const body = JSON.parse(String(options?.body)); const id = path.includes('/maaend/') ? 'maaend' : 'maa'; return { ok: true, json: async () => ({ ...source.tasks[0], executable: body.executable, working_directory: 'C:\\Apps', name: id === 'maa' ? 'MAA' : 'MaaEnd', preset_id: id, preset_evidence: 'evidence', allow_manual_confirmation: true, allow_process_exit: false, success_log_rules: id === 'maa' ? [{ pattern: '完成', mode: 'keyword' }] : [], failure_log_rules: id === 'maa' ? [{ pattern: '失败', mode: 'keyword' }] : [], maa_adapter: id === 'maa' ? { installation_directory: 'C:\\Apps', adb_executable: null, adb_address: null, last_check_at: null, last_check_ok: null, last_check_message: null } : null, maaend_adapter: id === 'maaend' ? { installation_directory: 'C:\\Apps', game_executable: null, game_arguments: [], game_wait_seconds: 60, close_game_on_finish: true } : null }), text: async () => '' } }
     if (path.endsWith('/config')) return { ok: true, json: async () => options?.method === 'PUT' ? JSON.parse(String(options.body)) : structuredClone(source), text: async () => '' }
@@ -27,7 +27,7 @@ function installBackend(source = config(), runtime: Runtime = { busy: false, act
   })
   vi.stubGlobal('fetch', fetchMock); vi.stubGlobal('WebSocket', QuietWebSocket); return fetchMock
 }
-function runner() { window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }), selectDirectory: async () => ({ canceled: true }) }; return mount(App) }
+function runner() { window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }), selectDirectory: async () => ({ canceled: true }) }; return mount(App, { global: { stubs: { VueMonacoEditor: { props: ['value'], template: '<pre class="monaco-stub">{{ value }}</pre>' } } } }) }
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 test('keeps settings out of the plan page and makes plans the only timing entry', async () => {
@@ -122,6 +122,22 @@ test('keeps a completed failure visible and opens history detail', async () => {
   expect(wrapper.text()).toContain('失败项')
   await wrapper.findAll('button').find((button) => button.text() === '查看失败详情')!.trigger('click')
   expect(wrapper.find('[aria-label="日志"]').exists()).toBe(true)
+})
+
+test('opens history script detail as a separate application page and returns to the selected report', async () => {
+  const history = [{ id: 'history-1', queue_name: '历史脚本', trigger_source: 'manual', state: 'completed', started_at: '2026-10-25T12:00:00', items: [{ task_id: 't1', task_name: '历史任务', state: 'succeeded', readable_report: { generator_version: 'local-rules-v1', conclusion: '任务已完成', completion_basis: '人工确认', duration_seconds: 2, risk_count: 0, risks: [], events: [] } }] }]
+  installBackend(config(), { busy: false, activeTaskId: null, cooldownSeconds: 0, run: null }, history)
+  const wrapper = runner(); await flushPromises()
+  await wrapper.get('button[aria-label="日志"]').trigger('click'); await flushPromises()
+  await wrapper.get('.task-tab').trigger('click'); await flushPromises()
+  expect(wrapper.get('[aria-label="脚本运行详情"]').text()).toContain('历史任务')
+  expect(wrapper.find('.log-filters').exists()).toBe(false)
+  expect(wrapper.find('.history-navigator').exists()).toBe(false)
+  expect(wrapper.find('.task-tabs').exists()).toBe(false)
+  expect(wrapper.find('header h1').exists()).toBe(false)
+  await wrapper.get('button.text-button').trigger('click'); await flushPromises()
+  expect(wrapper.find('.task-tabs').exists()).toBe(true)
+  expect(wrapper.find('.task-tab.selected').exists()).toBe(true)
 })
 
 test('retries the latest draft after an older save fails and clears only save errors', async () => {
