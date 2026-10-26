@@ -297,6 +297,37 @@ async def test_folded_script_event_updates_its_existing_realtime_sequence(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_external_log_increment_reaches_translation_snapshot_websocket_and_report(tmp_path: Path) -> None:
+    """The real watcher callback must fan out without retaining its raw source text."""
+    task = python_task("受控外部日志", "pass")
+    engine, _ = build_engine(tmp_path, [task])
+    record = RunRecord(queue_id="q", queue_name="q", trigger_source="manual")
+    item = ItemRecord(task_id=task.id, task_name=task.name, state=ItemState.MONITORING)
+    record.items = [item]
+    engine.current_run = record
+    engine._reset_live_summary(record)
+
+    subscription = engine.events.subscribe()
+    next_event = asyncio.create_task(anext(subscription))
+    await asyncio.sleep(0)
+    raw = "[2026-10-26 12:00:00.000][INF][ConfigurationHelper] saved\n"
+    await engine._record_external_log(record, item, task.id, tmp_path / "authorized.log", raw)
+    emitted = await next_event
+    await subscription.aclose()
+
+    assert emitted["type"] == "script_event"
+    assert emitted["data"]["sequence"] == 1
+    assert emitted["data"]["event"]["message"] == "脚本正在更新配置。"
+    snapshot = engine.snapshot()
+    assert snapshot["scriptEvents"][0]["event"]["message"] == "脚本正在更新配置。"
+    assert snapshot["scriptLogs"][0]["text"] == raw
+    assert record.readable_report is not None
+    assert item.readable_report is not None
+    assert raw not in item.model_dump_json()
+    assert raw not in record.model_dump_json()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("allow_exit", [False, True])
 async def test_manual_waits_after_success_log_and_zero_exit(tmp_path: Path, allow_exit: bool) -> None:
     log = tmp_path / "success.log"

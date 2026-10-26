@@ -470,14 +470,7 @@ class RunnerEngine:
         watcher: ExternalLogWatcher | None = None
         if task.log_path:
             async def emit_external_log(path: Path, text: str) -> None:
-                source_id = "external-" + hashlib.sha256(str(path).casefold().encode("utf-8")).hexdigest()[:16]
-                try:
-                    local_report_provider.note_external_levels(item, text)
-                    translated = local_report_provider.append_script_events(item, text)
-                    await self._publish_script_events(record, item, translated)
-                except Exception:
-                    self._logger.exception("生成脚本可读事件时失败；继续传递原始日志")
-                await self._publish_script_log(record, task.id, source_id, path.name, "external", text)
+                await self._record_external_log(record, item, task.id, path, text)
 
             watcher = ExternalLogWatcher(
                 task.log_path, task.log_patterns,
@@ -846,6 +839,25 @@ class RunnerEngine:
         self._script_event_sequence = 0
         self._script_event_logs = []
         self._script_event_item_sequences = {}
+
+    async def _record_external_log(
+        self, record: RunRecord, item: ItemRecord, task_id: str, path: Path, text: str
+    ) -> None:
+        """Fan one authorized external-log increment into every observable log contract.
+
+        The watcher is deliberately the only caller: raw text is forwarded only to the
+        bounded live preview, while the report/history side receives translated facts.
+        A translation error must not hide the source increment or change run arbitration.
+        """
+        source_id = "external-" + hashlib.sha256(str(path).casefold().encode("utf-8")).hexdigest()[:16]
+        try:
+            local_report_provider.note_external_levels(item, text)
+            translated = local_report_provider.append_script_events(item, text)
+            await self._publish_script_events(record, item, translated)
+            self._refresh_readable_reports(record)
+        except Exception:
+            self._logger.exception("生成脚本可读事件时失败；继续传递原始日志")
+        await self._publish_script_log(record, task_id, source_id, path.name, "external", text)
 
     async def _publish_script_events(self, record: RunRecord, item: ItemRecord, events: list[ReadableEvent]) -> None:
         """Publish translated script facts without exposing the raw external line."""

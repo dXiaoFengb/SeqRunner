@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory=$true)][string]$Executable,
-  [ValidateSet('plan','log')][string]$Scenario = 'plan',
+  [ValidateSet('log')][string]$Scenario = 'log',
   [switch]$AllowWorkingCandidate
 )
 $ErrorActionPreference = 'Stop'
@@ -42,15 +42,22 @@ $env:RUNNER_USER_DATA_DIR = Join-Path $runPath 'UserData'
 $env:NO_PROXY = '127.0.0.1,localhost'; $env:no_proxy = '127.0.0.1,localhost'; $env:RUNNER_HEALTH_CHECK = '0'
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $listener.Start(); $port = $listener.LocalEndpoint.Port; $listener.Stop()
 $scenarioRunner = Join-Path $PSScriptRoot 'run-cdp-scenario.cjs'
-$scenarioPath = Join-Path $PSScriptRoot "$Scenario-scenario.js"
 if ($Scenario -eq 'log') {
   $dataPath = Join-Path $runPath 'UserData'
   New-Item -ItemType Directory -Path $dataPath | Out-Null
   @{ schema_version=3; queues=@(@{id='fixture-script';name='受控 MAA';task_ids=@('fixture-maa');time_slots=@()}); tasks=@(@{id='fixture-maa';name='受控 MAA';executable='C:\fixture\MAA.exe';preset_id='maa';preset_evidence='受控夹具';success_log_rules=@(@{mode='keyword';pattern='成功'});failure_log_rules=@(@{mode='keyword';pattern='失败'});maa_adapter=@{installation_directory='C:\fixture'} }); plans=@(); fired_slots=@(); startup_fired_dates=@{} } | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $dataPath 'config.json')
   $today = (Get-Date).Date
-  $fixtureEvent = @{timestamp='2026-01-01T00:00:00+00:00';task_id='task';task_name='验收任务';source='script';sequence=1;phase='脚本日志';severity='error';event_type='script.log.translated';message='脚本记录了错误级信息；请查看脚本内部日志确认原文。';rule_id='script.level.error'}
+  $externalFixtures = Join-Path $runPath 'external-log-fixtures'
+  New-Item -ItemType Directory -Path $externalFixtures | Out-Null
+  $firstExternalLog = Join-Path $externalFixtures 'part-01.log'
+  $secondExternalLog = Join-Path $externalFixtures 'part-02.log'
+  $missingExternalLog = Join-Path $externalFixtures 'missing.log'
+  $utf8 = [System.Text.UTF8Encoding]::new($false)
+  [System.IO.File]::WriteAllText($firstExternalLog, "[2026-01-01 12:00:00.000][INF][Bootstrapper] 外部日志首段`n" + [string]::new('x', 70000) + "`n外部日志尾段标记`n", $utf8)
+  [System.IO.File]::WriteAllText($secondExternalLog, "[2026-01-01 12:00:01.000][WRN][Worker] 第二个外部日志`n", $utf8)
+  $fixtureEvent = @{timestamp='2026-01-01T00:00:00+00:00';last_timestamp='2026-01-01T00:00:02+00:00';occurrence_count=3;task_id='task';task_name='验收任务';source='script';sequence=1;phase='脚本日志';severity='error';event_type='script.log.translated';message='脚本记录了错误级信息；请查看脚本内部日志确认原文。';rule_id='script.level.error'}
   $fixtureItems = @(
-    @{task_id='task';task_name='验收任务';state='failed';error_summary='受控失败';log_summary=@('受控摘要');script_translation_version='script-local-rules-v1';detail_log_id='f6e372af-0e2c-4fd7-9434-f229c3a1643f';detail_log_status='已采集';ui_log_id='69220a50-b013-4b4c-8109-850c9c62daca';ui_log_status='已采集界面日志';readable_report=@{generator_version='local-rules-v2';conclusion='任务未完成';completion_basis='受控失败';duration_seconds=$null;risk_count=1;risks=@('检测到 1 条错误级脚本日志');events=@($fixtureEvent)}}
+    @{task_id='task';task_name='验收任务';state='failed';error_summary='受控失败';log_summary=@('受控摘要');script_translation_version='script-local-rules-v1';unrecognized_log_count=2;external_log_files=@($firstExternalLog,$secondExternalLog,$missingExternalLog);external_log_status='已登记三个受控外部日志来源';detail_log_id='f6e372af-0e2c-4fd7-9434-f229c3a1643f';detail_log_status='已采集';ui_log_id='69220a50-b013-4b4c-8109-850c9c62daca';ui_log_status='已采集界面日志';readable_report=@{generator_version='local-rules-v2';conclusion='任务未完成';completion_basis='受控失败';duration_seconds=$null;risk_count=2;risks=@('检测到 1 条错误级脚本日志','检测到 2 条未识别脚本日志；请查看脚本内部日志确认原文');events=@($fixtureEvent)}}
     @{task_id='task-2';task_name='受控成功任务';state='succeeded';log_summary=@('已按受控规则完成');readable_report=@{generator_version='local-rules-v1';conclusion='任务已完成';completion_basis='成功规则命中';duration_seconds=12;risk_count=0;risks=@();events=@()}}
     @{task_id='task-3';task_name='受控人工确认';state='succeeded';log_summary=@('人工确认完成');readable_report=@{generator_version='local-rules-v1';conclusion='任务已完成';completion_basis='人工确认';duration_seconds=19;risk_count=0;risks=@();events=@()}}
     @{task_id='task-4';task_name='受控停止任务';state='stopped';error_summary='用户停止';log_summary=@('已停止');readable_report=@{generator_version='local-rules-v1';conclusion='任务已停止';completion_basis='用户停止';duration_seconds=4;risk_count=0;risks=@();events=@()}}

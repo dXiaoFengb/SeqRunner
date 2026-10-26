@@ -79,6 +79,18 @@ async function logScenario(cdp) {
   await evaluate(cdp, `(() => { const host = document.querySelector('.task-tabs'); const task = host.querySelectorAll('.task-tab')[0]; host.scrollTop = 36; task.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true})); task.focus(); task.click() })()`)
   await eventually(cdp, `Boolean(document.querySelector('[aria-label="脚本运行详情"]')) && !document.querySelector('.log-filters') && !document.querySelector('.history-navigator') && !document.querySelector('.task-tabs')`, '脚本详情没有切换到独立页面，或一级日志页面元素仍然可见')
   await eventually(cdp, `document.body.innerText.includes('日志 / 历史运行') && document.body.innerText.includes('脚本可读事件流')`, '独立详情页面没有呈现面包屑或脚本转译事件流')
+  const reader = await evaluate(cdp, `(() => { const host = document.querySelector('.derived-event-editor'); return host ? { height: host.clientHeight, overflow: getComputedStyle(host).overflow, scrollHeight: host.scrollHeight } : null })()`)
+  if (!reader || reader.height < 400 || reader.height > 460 || reader.overflow !== 'hidden') throw new Error(`脚本可读事件流没有使用固定的内部阅读窗口：${JSON.stringify(reader)}`)
+  await evaluate(cdp, click('查看脚本内部日志'))
+  await eventually(cdp, `Boolean(document.querySelector('[aria-label="脚本内部日志"]')) && document.body.innerText.includes('part-01.log') && document.body.innerText.includes('missing.log（不可读取）')`, '受限脚本原文阅读器或多文件引用没有打开')
+  await eventually(cdp, `document.querySelector('[aria-label="脚本内部日志"]')?.innerText.includes('外部日志首段')`, '外部原文首页没有读取已授权的第一个文件')
+  await evaluate(cdp, click('加载更多'))
+  await eventually(cdp, `(() => { const dialog = document.querySelector('[aria-label="脚本内部日志"]'); return Boolean(dialog) && ![...dialog.querySelectorAll('button')].some(node => node.textContent.trim() === '加载更多') && dialog.innerText.includes('已读取完整文件') && !dialog.querySelector('[role="alert"]') })()`, '外部原文分页没有完成或出现读取错误')
+  await evaluate(cdp, `(() => { const button = [...document.querySelectorAll('.external-files button')].find(node => node.textContent.includes('part-02.log')); if (!button) throw new Error('找不到第二个外部日志文件'); button.click() })()`)
+  await eventually(cdp, `document.querySelector('[aria-label="脚本内部日志"]')?.innerText.includes('第二个外部日志')`, '切换第二个受控外部日志文件失败')
+  if (!await evaluate(cdp, `[...document.querySelectorAll('.external-files button')].some(node => node.textContent.includes('missing.log') && node.disabled)`)) throw new Error('不可读的历史外部日志没有明确标记为不可读取')
+  await evaluate(cdp, click('关闭'))
+  await eventually(cdp, `!document.querySelector('[aria-label="脚本内部日志"]')`, '脚本原文阅读器没有关闭')
   await evaluate(cdp, click('← 返回运行报告'))
   await eventually(cdp, `document.querySelectorAll('.task-tabs .task-tab').length === 6`, '返回运行报告后没有恢复任务列表')
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -89,17 +101,30 @@ async function logScenario(cdp) {
   }
   const reloadUrl = await evaluate(cdp, 'location.href')
   await cdp.call('Page.enable')
-  await cdp.call('Page.addScriptToEvaluateOnNewDocument', { source: `(() => { class FixtureWebSocket { static CONNECTING=0; static OPEN=1; readyState=1; constructor(){ globalThis.__fixtureSocket=this; queueMicrotask(() => this.onopen?.()) } send(){} close(){ this.readyState=3 } }; Object.defineProperty(globalThis, 'WebSocket', { value: FixtureWebSocket, configurable: true, writable: true }); globalThis.__fixtureSocketOverrideInstalled = true })();` })
+  await cdp.call('Page.addScriptToEvaluateOnNewDocument', { source: `(() => { const nativeFetch = globalThis.fetch.bind(globalThis); globalThis.fetch = async (input, init) => { const url = typeof input === 'string' ? input : input?.url || ''; if (/\\/api\\/runtime(?:\\?|$)/.test(url) && globalThis.__fixtureRuntime) return new Response(JSON.stringify(globalThis.__fixtureRuntime), { status: 200, headers: { 'content-type': 'application/json' } }); return nativeFetch(input, init) }; class FixtureWebSocket { static CONNECTING=0; static OPEN=1; readyState=1; constructor(){ globalThis.__fixtureSocket=this; queueMicrotask(() => this.onopen?.()) } send(){} close(){ this.readyState=3 } }; Object.defineProperty(globalThis, 'WebSocket', { value: FixtureWebSocket, configurable: true, writable: true }); globalThis.__fixtureSocketOverrideInstalled = true })();` })
   await cdp.call('Page.navigate', { url: reloadUrl })
   await eventually(cdp, 'globalThis.__fixtureSocketOverrideInstalled === true', '受控 WebSocket 覆盖没有在新页面生效')
   await eventually(cdp, `document.body.innerText.includes('脚本管理')`, '重载后的主界面没有加载')
   await eventually(cdp, `Boolean(window.__fixtureSocket)`, '受控 WebSocket 没有建立')
   const emit = data => evaluate(cdp, `window.__fixtureSocket.onmessage({data: JSON.stringify(${JSON.stringify(data)})})`)
-  await emit({ type:'runtime', data:{ busy:true, activeTaskId:'fixture', cooldownSeconds:0, run:{id:'fixture-run',queue_name:'受控运行',state:'running',items:[{task_id:'fixture',task_name:'MAA',state:'waiting_manual',log_source_configured:true,script_translation_version:'script-local-rules-v1'}]}, runCenter:{currentScriptName:'受控脚本',currentTaskName:'MAA',currentState:'waiting_manual',currentIndex:1,totalPrograms:1}, liveLogs:[{runId:'fixture-run',sequence:1,taskId:'fixture',message:'开始校验任务配置',phase:'validation'},{runId:'fixture-run',sequence:2,taskId:'fixture',message:'等待人工确认当前程序完成',phase:'waiting'}], scriptEvents:[{runId:'fixture-run',taskId:'fixture',sequence:1,truncated:false,event:{timestamp:'2026-10-25T00:00:00Z',task_id:'fixture',task_name:'MAA',source:'script',sequence:1,phase:'脚本日志',severity:'info',event_type:'script.log.translated',message:'脚本正在更新配置。',rule_id:'script.module.configurationhelper'}}] } })
-  await emit({ type:'script_event', data:{runId:'fixture-run',taskId:'fixture',sequence:2,truncated:false,event:{timestamp:'2026-10-25T00:00:01Z',task_id:'fixture',task_name:'MAA',source:'script',sequence:2,phase:'脚本日志',severity:'warning',event_type:'script.log.translated',message:'脚本记录了警告级信息；请查看脚本内部日志确认原文。',rule_id:'script.level.warning'}} })
-  await eventually(cdp, `document.querySelector('.script-live-list')?.innerText.includes('脚本记录了警告级信息') && document.body.innerText.includes('等待人工确认当前程序完成')`, '运行中摘要或脚本实时转译未显示')
+  const scriptEvent = (sequence, message, severity, count = 1) => ({ runId:'fixture-run', taskId:'fixture', sequence, truncated:false, replace: count > 1, event:{ timestamp:'2026-10-25T00:00:00Z', last_timestamp: count > 1 ? '2026-10-25T00:00:03Z' : undefined, occurrence_count:count, task_id:'fixture', task_name:'MAA', source:'script', sequence:1, phase:'脚本日志', severity, event_type:'script.log.translated', message, rule_id: severity === 'warning' ? 'script.level.warning' : 'script.module.configurationhelper' } })
+  const initialEvent = scriptEvent(1, '脚本正在更新配置。', 'info', 3)
+  const runtime = { busy:true, activeTaskId:'fixture', cooldownSeconds:0, run:{id:'fixture-run',queue_name:'受控运行',state:'running',items:[{task_id:'fixture',task_name:'MAA',state:'waiting_manual',log_source_configured:true,script_translation_version:'script-local-rules-v1'}]}, runCenter:{currentScriptName:'受控脚本',currentTaskName:'MAA',currentState:'waiting_manual',currentIndex:1,totalPrograms:1}, liveLogs:[{runId:'fixture-run',sequence:1,taskId:'fixture',message:'开始校验任务配置',phase:'validation'},{runId:'fixture-run',sequence:2,taskId:'fixture',message:'等待人工确认当前程序完成',phase:'waiting'}], scriptEvents:[initialEvent] }
+  await evaluate(cdp, `globalThis.__fixtureRuntime = ${JSON.stringify(runtime)}`)
+  await emit({ type:'runtime', data:runtime })
+  const foldedEvent = scriptEvent(1, '脚本正在更新配置。', 'info', 4)
+  runtime.scriptEvents = [foldedEvent]
+  await emit({ type:'script_event', data:foldedEvent })
+  await eventually(cdp, `document.querySelector('.script-live-list')?.innerText.includes('脚本正在更新配置。') && document.querySelector('.script-live-list')?.innerText.includes('×4')`, '连续折叠脚本事件没有以原序号更新')
+  const warningEvent = scriptEvent(3, '脚本记录了警告级信息；请查看脚本内部日志确认原文。', 'warning')
+  runtime.scriptEvents = [foldedEvent, warningEvent]
+  await evaluate(cdp, `globalThis.__fixtureRuntime = ${JSON.stringify(runtime)}`)
+  await emit({ type:'script_event', data:warningEvent })
+  await eventually(cdp, `document.querySelector('.script-live-list')?.innerText.includes('脚本记录了警告级信息') && document.querySelector('.scheduler-live-list')?.innerText.includes('等待人工确认当前程序完成')`, '运行中摘要、脚本实时转译或序号断档重同步未显示')
+  if (await evaluate(cdp, `document.querySelector('.script-live-list')?.innerText.includes('等待人工确认当前程序完成')`)) throw new Error('本软件运行状态被错误混入脚本实时转译')
+  if (await evaluate(cdp, `document.querySelector('.scheduler-live-list')?.innerText.includes('脚本记录了警告级信息')`)) throw new Error('脚本实时转译被错误混入本软件运行状态')
   if (await evaluate(cdp, `document.querySelectorAll('.script-source-tabs').length !== 0`)) throw new Error('脚本实时转译仍显示来源选择条')
-  return 'PASS: 独立脚本详情页、状态恢复、纵向历史任务列表、运行摘要与合流脚本实时转译'
+  return 'PASS: 唯一 CDP 日志链路覆盖历史筛选、纵向详情、受限原文分页、多文件不可读状态、折叠更新、快照重同步、状态分层与无来源选择条'
 }
 
 async function main() {

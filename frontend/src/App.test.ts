@@ -261,3 +261,31 @@ test('deduplicates summary events and resynchronizes a sequence gap from runtime
   expect(wrapper.get('.side-live-list').text()).toContain('仍在等待确认')
   wrapper.unmount()
 })
+
+test('replaces folded script events and restores a script-event sequence gap from runtime', async () => {
+  const event = (sequence: number, message: string, occurrenceCount = 1) => ({ runId: 'run-1', taskId: 't1', sequence, truncated: false, replace: occurrenceCount > 1, event: { timestamp: '2026-10-26T00:00:00Z', last_timestamp: occurrenceCount > 1 ? '2026-10-26T00:00:03Z' : undefined, occurrence_count: occurrenceCount, task_id: 't1', task_name: '第一软件', source: 'script' as const, sequence: 1, phase: '脚本日志', severity: sequence === 3 ? 'warning' as const : 'info' as const, event_type: 'script.log.translated', message, rule_id: 'script.module.configurationhelper' } })
+  const initial = event(1, '脚本正在更新配置。', 3)
+  const snapshot: Runtime = {
+    busy: true, activeTaskId: 't1', cooldownSeconds: 0,
+    run: { id: 'run-1', queue_name: '第一软件', state: 'running', items: [{ task_id: 't1', task_name: '第一软件', state: 'waiting_manual', log_source_configured: true, script_translation_version: 'script-local-rules-v1' }] },
+    scriptEvents: [initial],
+  }
+  installBackend(config(), snapshot)
+  let socket: any
+  class TestSocket { static CONNECTING = 0; static OPEN = 1; readyState = 0; onmessage: any; onopen: any; onclose: any; onerror: any; constructor() { socket = this } close() {} send() {} }
+  vi.stubGlobal('WebSocket', TestSocket)
+  const wrapper = runner(); await flushPromises()
+  const folded = event(1, '脚本正在更新配置。', 4)
+  snapshot.scriptEvents = [folded]
+  socket.onmessage({ data: JSON.stringify({ type: 'script_event', data: folded }) })
+  await flushPromises()
+  expect(wrapper.get('.script-live-list').text()).toContain('×4')
+  expect(wrapper.get('.script-live-list').text().match(/脚本正在更新配置。/g)).toHaveLength(1)
+
+  const warning = event(3, '脚本记录了警告级信息；请查看脚本内部日志确认原文。')
+  snapshot.scriptEvents = [folded, warning]
+  socket.onmessage({ data: JSON.stringify({ type: 'script_event', data: warning }) })
+  await flushPromises(); await flushPromises()
+  expect(wrapper.get('.script-live-list').text()).toContain('脚本记录了警告级信息')
+  wrapper.unmount()
+})
