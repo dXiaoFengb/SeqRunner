@@ -9,6 +9,18 @@ test('development data remains inside the project source root', () => {
   assert.equal(dataDirectory({ packaged: false, sourceRoot: 'C:/project', execPath: 'C:/ignored.exe', environment: {} }), normalize('C:/project/data'));
 });
 
+test('an explicit development preview directory is isolated and does not migrate project data', () => {
+  const root = mkdtempSync(join(tmpdir(), 'runner-preview-data-'));
+  try {
+    const preview = join(root, '产物', '预览', '批次', 'run-1', 'UserData');
+    mkdirSync(join(root, 'data'), { recursive: true });
+    writeFileSync(join(root, 'data', 'config.json'), '{"user":true}', 'utf8');
+    assert.equal(prepareDataDirectory({ packaged: false, sourceRoot: root, execPath: join(root, 'electron.exe'), environment: { RUNNER_USER_DATA_DIR: preview } }), preview);
+    assert.equal(require('node:fs').existsSync(join(preview, 'config.json')), false);
+    assert.equal(readFileSync(join(root, 'data', 'config.json'), 'utf8'), '{"user":true}');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('portable data migrates only supported legacy entries without deleting them', () => {
   const root = mkdtempSync(join(tmpdir(), 'runner-portable-data-'));
   try {

@@ -39,7 +39,7 @@
 
 ## 产物目录约定
 
-本项目按开发版本保存验证包：`产物/工作/vX.Y.Z/` 是构建、下载缓存和隔离健康检查前的工作目录，`产物/验证/vX.Y.Z/` 只保存已通过 SHA-256 与隔离隐藏健康检查的最终 portable 包。`build/` 保存可重建的打包中间物、隔离验收和健康检查证据；`release/` 仅为未来已确认发布流程的根目录。验证包不代表候选或正式发布，不得覆盖已有目录，均不纳入 Git；不使用 `RUNNER_VALIDATION_SUFFIX`。具体规则、保留和 Git 忽略要求只在 `CONSTRAINTS.md` 与 `GIT.md` 维护。
+本项目按功能批次保存正式验证包：`产物/工作/vX.Y.Z/` 是构建、下载缓存和隔离健康检查前的工作目录，`产物/验证/vX.Y.Z/` 只保存已通过 SHA-256 与隔离隐藏健康检查的最终 portable 包。普通功能的隔离开发态预览位于 `产物/预览/<功能批次>/<唯一标识>/`，包含用户双击的启动器、检查说明和最小证据，不复制 EXE，也不代表正式验收。`build/` 保存可重建的打包中间物、隔离验收和健康检查证据；`release/` 仅为未来已确认发布流程的根目录。三类产物不得覆盖、均不纳入 Git；不使用 `RUNNER_VALIDATION_SUFFIX`。具体规则、保留和 Git 忽略要求只在 `CONSTRAINTS.md` 与 `GIT.md` 维护。
 ## 使用路径
 
 ### 只读答复
@@ -66,7 +66,7 @@
 - 目录结构（源 / 测试 / 产物 / 发布）：`backend/` 为本地服务、预设证据元数据与测试；`frontend/` 为 Vue 脚本管理、独立编辑页及连接控制模块；`electron/` 为安全主进程/preload；`scripts/` 为读取 `VERSION.md` 的本地打包入口；开发模式使用 `data/`，便携版在 EXE 同级生成可移交的 `UserData/`（不纳入 Git）；`frontend-dist/`、`portable/`、`build/`、`release/`、`产物/工作/` 与 `产物/验证/` 为本地构建或验证输出（不纳入 Git）。最终验证包的 portable EXE 直接位于版本根目录，缓存和健康检查资料位于 `Evidence/` 分类；不进行发布。Electron 默认原生菜单已移除，应用内“设置”是唯一设置入口。脚本首页为一行式软件卡，只提供检索、创建、全量运行和软件级操作；独立编辑页一次只配置当前软件，采用预设优先的路径导航、单张配置卡、说明提示与连续分区：先选预设，再填脚本和程序路径，随后设置运行、日志和完成信号。编辑字段只保存在草稿中，“保存更改”是唯一写入配置的入口；离开未保存编辑时可保存、放弃或继续编辑；首页状态按该软件的实时运行项显示，而非整轮状态。
 - 预设路径：选择预设时即显示本地证据表中的只读模板成功/失败规则；输入或选择匹配 EXE 后完整应用名称、参数、工作目录、日志、超时、完成方式与自动终态规则。用户规则在“添加自定义规则”中单独保存，重复模板规则会被拒绝。MAA 专用页只提供安卓模拟器 ADB 预检（失败仅警告，仍启动 MAA GUI），不改写 MAA 或模拟器配置；MaaEnd 专用页只提供本轮受管 Windows 游戏→等待→MaaEnd 启动编排，按开关仅收尾本轮创建的游戏 PID。MAA、绝区零一条龙具有日志终态规则，MaaEnd、三月七小助手和 BetterGI 保持人工确认回退。应用不会在运行时访问外网或改写目标软件配置。
 - 失败可追溯：整轮终态仅刷新运行历史而不覆盖本地脚本草稿。运行中心以整合状态徽标显示来源、计划名称、当前软件、进度、失败项、计划跳过和完成后操作倒计时；只在实际运行、人工确认、收尾冷却或完成后操作等待时，滚过观察点后收拢为可展开的紧凑吸顶条。完成、失败和停止终态保持在当前页面的正常文档流，“查看失败详情”会定位并展开相应历史记录，显示完成来源、退出码和日志摘要。计划因执行器忙碌而跳过时，不进入后台队列，并将计划名、预定时间和原因保存在当前轮与历史中。计划可设置启动时运行（否、是、每日首次启动时）、定时运行开关，以及只在整轮成功时生效的完成后操作；延时结束后总会先显示 60 秒可取消倒计时，新运行会自动取消待执行操作。
-- 构建命令：`npm run build`；`npm run package:backend` 生成隐藏控制台的后端；`npm run package:win` 生成 Windows portable EXE；`npm run package:validation:prepare` 是唯一可创建验证工作目录的入口，`npm run validation:health` 执行隔离隐藏健康检查，`npm run validation:finalize` 在通过后移动为 `产物/验证/vX.Y.Z/`；`npm run package:validation` 串行执行三步。工作或最终目录已存在即失败，不覆盖；每轮开发改进或本地提交的直接相关验证完成后，必须记录最终包 SHA-256、退出码、耗时、进程树状态与隐藏健康检查结果。
+- 构建与审核命令：`npm run build`；`npm run package:backend` 生成隐藏控制台的后端；`pwsh -NoProfile -File tools/feature-preview/New-FeaturePreview.ps1 -BatchId <批次> -Check <检查项>` 生成隔离开发态预览；`npm run validate:audit-coverage` 校验审核覆盖矩阵；`npm run package:win` 生成 Windows portable EXE；`npm run package:validation:prepare` 是唯一可创建验证工作目录的入口，`npm run validation:health` 执行隔离隐藏健康检查，`npm run validation:finalize` 在通过后移动为 `产物/验证/vX.Y.Z/`；`npm run package:validation` 串行执行三步。预览不创建 EXE；功能批次完成或高风险改动时，正式验证包才必须记录 SHA-256、退出码、耗时、进程树状态与隐藏健康检查结果。
 - 测试命令：`backend\.venv\Scripts\python.exe -m pytest backend/tests`、`backend\.venv\Scripts\python.exe -m ruff check backend`、`corepack npm run typecheck`、`corepack npm run test:frontend`、`corepack npm run build`、`corepack npm run electron:health`。
 - 发布路径与动作：见 `VERSION.md`
 - Git 与记录策略：见 `CONSTRAINTS.md`

@@ -23,6 +23,7 @@ release/
 portable/
 /产物/工作/
 /产物/验证/
+/产物/预览/
 backend/build/
 backend/dist/
 coverage/

@@ -16,6 +16,7 @@
     "package:validation:prepare": "npm run build && npm run package:backend:validation && cross-env RUNNER_VALIDATION_PREPARED=1 node scripts/package-portable.cjs --validation",
     "validation:health": "pwsh -NoProfile -File scripts/validate-validation-package.ps1",
     "validation:finalize": "node scripts/finalize-validation-package.cjs",
+    "validate:audit-coverage": "node scripts/validate-audit-coverage.cjs",
     "package:validation": "npm run package:validation:prepare && npm run validation:health && npm run validation:finalize"
   },
   "devDependencies": {

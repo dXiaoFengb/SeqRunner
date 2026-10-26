@@ -6,8 +6,9 @@ const portableDataDirectoryName = 'UserData';
 const legacyDataDirectoryNames = ['用户数据', 'data'];
 
 function dataDirectory({ packaged, sourceRoot, execPath, environment = process.env }) {
+  if (environment.RUNNER_USER_DATA_DIR) return environment.RUNNER_USER_DATA_DIR;
   if (!packaged) return path.join(sourceRoot, 'data');
-  return environment.RUNNER_USER_DATA_DIR || path.join(environment.PORTABLE_EXECUTABLE_DIR || path.dirname(execPath), portableDataDirectoryName);
+  return path.join(environment.PORTABLE_EXECUTABLE_DIR || path.dirname(execPath), portableDataDirectoryName);
 }
 
 function prepareDataDirectory(options) {

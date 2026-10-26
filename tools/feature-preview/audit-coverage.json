@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "description": "审核覆盖唯一机器可校验来源；任务卡引用的领域决定定向门禁与正式 EXE 时机。",
+  "areas": {
+    "日志": {
+      "tests": ["backend/tests/test_engine.py", "backend/tests/test_external_logs.py", "backend/tests/test_readable_reports.py", "frontend/src/LiveLog.test.ts", "frontend/src/LogPage.test.ts"],
+      "scenarios": ["tools/ui-acceptance/run-cdp-scenario.cjs"],
+      "preview": true,
+      "highRisk": false,
+      "manualAcceptance": [15, 18, 19, 20, 21]
+    },
+    "计划": {
+      "tests": ["backend/tests/test_plans.py", "backend/tests/test_scheduler.py", "frontend/src/PlanManager.test.ts"],
+      "scenarios": [],
+      "preview": true,
+      "highRisk": false,
+      "manualAcceptance": [7, 8, 9]
+    },
+    "脚本编辑": {
+      "tests": ["backend/tests/test_config_persistence.py", "frontend/src/App.test.ts", "frontend/src/ScriptCard.test.ts"],
+      "scenarios": [],
+      "preview": true,
+      "highRisk": false,
+      "manualAcceptance": [3, 5, 11, 12]
+    },
+    "配置迁移": {
+      "tests": ["backend/tests/test_storage.py", "backend/tests/test_storage_migration.py", "electron/portable-data.test.cjs"],
+      "scenarios": [],
+      "preview": true,
+      "highRisk": true,
+      "manualAcceptance": [1, 5]
+    },
+    "进程控制": {
+      "tests": ["backend/tests/test_engine.py", "backend/tests/test_connection.py", "tools/ui-acceptance/acceptance-process-helpers.test.ps1"],
+      "scenarios": ["tools/ui-acceptance/run-cdp-scenario.cjs"],
+      "preview": false,
+      "highRisk": true,
+      "manualAcceptance": [4, 10, 17, 21]
+    },
+    "Electron与打包": {
+      "tests": ["electron/portable-data.test.cjs", "scripts/validation-package-paths.test.cjs", "scripts/validation-electron-cache.test.cjs", "scripts/validation-builder-cache.test.cjs", "scripts/validation-health-helpers.test.ps1"],
+      "scenarios": ["tools/ui-acceptance/run-cdp-scenario.cjs"],
+      "preview": false,
+      "highRisk": true,
+      "manualAcceptance": [1, 10, 21]
+    }
+  },
+  "forbiddenCurrentReferences": ["plan-scenario.js", "log-scenario.js"]
+}
