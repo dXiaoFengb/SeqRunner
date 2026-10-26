@@ -66,12 +66,16 @@ const lastTaskId = ref<string | null>(null)
 const taskDetailPanel = ref<HTMLElement | null>(null)
 const taskTabs = ref<HTMLElement | null>(null)
 const taskListScrollTop = ref(0)
+let taskListPositionCaptured = false
+let appliedTaskRestore: string | null = null
 const visibleRuns = computed(() => groups.value.flatMap((group) => group.runs))
 const activeRun = computed(() => visibleRuns.value.find((run) => run.id === selectedRunId.value) || visibleRuns.value[0] || null)
 const activeItem = computed(() => activeRun.value?.items.find((item) => item.task_id === selectedTaskId.value) || activeRun.value?.items[0] || null)
 function selectRun(run: HistoryRun) { selectedRunId.value = run.id; selectedTaskId.value = null; taskDetailOpen.value = false }
+function rememberTaskListPosition() { taskListScrollTop.value = taskTabs.value?.scrollTop || 0; taskListPositionCaptured = true }
 function openTaskDetail(item: RunItem) {
-  taskListScrollTop.value = taskTabs.value?.scrollTop || 0
+  if (!taskListPositionCaptured) taskListScrollTop.value = taskTabs.value?.scrollTop || 0
+  taskListPositionCaptured = false
   selectedTaskId.value = item.task_id
   taskDetailOpen.value = true
   lastTaskId.value = item.task_id
@@ -79,8 +83,48 @@ function openTaskDetail(item: RunItem) {
   nextTick(() => taskDetailPanel.value?.focus())
 }
 function returnToRunReport() {
+  const taskId = lastTaskId.value || selectedTaskId.value
   taskDetailOpen.value = false
   emit('returnDetail')
+  if (taskId) restoreTaskListState(taskId, taskListScrollTop.value)
+}
+function restoreTaskListState(taskId: string, scrollTop: number, attempt = 0) {
+  nextTick(() => requestAnimationFrame(() => {
+    const list = taskTabs.value
+    const card = list ? [...list.querySelectorAll<HTMLButtonElement>('.task-tab')].find((button) => button.dataset.taskId === taskId) : null
+    if (list && card) {
+      try { card.focus({ preventScroll: true }) } catch { card.focus() }
+      list.scrollTop = scrollTop
+      if (attempt === 0) {
+        window.setTimeout(() => {
+          const currentList = taskTabs.value
+          const currentCard = currentList ? [...currentList.querySelectorAll<HTMLButtonElement>('.task-tab')].find((button) => button.dataset.taskId === taskId) : null
+          if (currentList && currentCard) {
+            currentList.scrollTop = scrollTop
+            try { currentCard.focus({ preventScroll: true }) } catch { currentCard.focus() }
+          }
+        }, 0)
+      }
+      if (attempt < 2) window.setTimeout(() => restoreTaskListState(taskId, scrollTop, attempt + 1), 0)
+    } else if (attempt < 4) {
+      window.setTimeout(() => restoreTaskListState(taskId, scrollTop, attempt + 1), 0)
+    }
+  }))
+}
+function restoreTaskTabElement(element: unknown, taskId: string) {
+  if (!(element instanceof HTMLButtonElement) || props.standalone || props.restoreTaskId !== taskId) return
+  const restoreKey = `${taskId}:${props.restoreTaskListScrollTop || 0}`
+  if (appliedTaskRestore === restoreKey) return
+  appliedTaskRestore = restoreKey
+  const list = taskTabs.value || element.closest<HTMLElement>('.task-tabs')
+  const scrollTop = props.restoreTaskListScrollTop || 0
+  if (list) list.scrollTop = scrollTop
+  window.setTimeout(() => {
+    const currentList = taskTabs.value || element.closest<HTMLElement>('.task-tabs')
+    if (!currentList || !element.isConnected) return
+    currentList.scrollTop = scrollTop
+    try { element.focus({ preventScroll: true }) } catch { element.focus() }
+  }, 0)
 }
 watch(() => [props.selectedId, props.history] as const, ([id]) => {
   if (!id) return
@@ -105,15 +149,10 @@ watch(() => [props.standalone, props.detailRunId, props.detailTaskId] as const, 
   nextTick(() => taskDetailPanel.value?.focus())
 }, { immediate: true })
 watch(() => [props.standalone, props.restoreTaskId, props.restoreTaskListScrollTop] as const, ([standalone, taskId, scrollTop]) => {
-  if (standalone || !taskId) return
+  if (standalone || !taskId) { appliedTaskRestore = null; return }
   selectedTaskId.value = taskId
-  nextTick(() => requestAnimationFrame(() => {
-    if (!taskTabs.value) return
-    taskTabs.value.scrollTop = scrollTop || 0
-    const card = [...taskTabs.value.querySelectorAll<HTMLButtonElement>('.task-tab')].find((button) => button.dataset.taskId === taskId)
-    card?.focus()
-  }))
-}, { immediate: true })
+  restoreTaskListState(taskId, scrollTop || 0)
+}, { immediate: true, flush: 'post' })
 function itemOutcome(item: RunItem) { const reason = item.error_summary || (item.exit_code !== null && item.exit_code !== undefined ? `退出码 ${item.exit_code}` : item.completion_source || '未提供摘要'); return item.state === 'failed' ? `失败：${reason}` : item.state === 'succeeded' ? `成功：${sourceLabel(item.completion_source || '已完成')}` : stateLabel(item.state) }
 function itemName(item: RunItem) { return item.script_name && item.script_name !== item.task_name ? `${item.script_name} / ${item.task_name}` : item.task_name }
 function uiLogStatus(item: RunItem) { return item.ui_log_status || (item.ui_log_id ? '已采集' : '暂无界面日志') }
@@ -234,13 +273,16 @@ function readableEventText(run: HistoryRun, item: RunItem) {
   return report.events.map((event) => {
     const time = new Date(event.timestamp)
     const timestamp = Number.isNaN(time.getTime()) ? event.timestamp : time.toLocaleString('zh-CN', { hour12: false })
-    return `[${timestamp}] [${eventLevel(event)}] [${event.phase}] [${itemName(item)}]${event.rule_id ? ` [${event.rule_id}]` : ''} ${event.message}`
+    const end = event.last_timestamp ? new Date(event.last_timestamp) : null
+    const lastTimestamp = end && !Number.isNaN(end.getTime()) ? end.toLocaleString('zh-CN', { hour12: false }) : event.last_timestamp
+    const repeated = (event.occurrence_count || 1) > 1 ? ` ×${event.occurrence_count}（至 ${lastTimestamp || timestamp}）` : ''
+    return `[${timestamp}] [${eventLevel(event)}] [${event.phase}] [${itemName(item)}]${event.rule_id ? ` [${event.rule_id}]` : ''} ${event.message}${repeated}`
   }).join('\n')
 }
 </script>
 
 <template>
-  <section class="log-page" :class="{ 'task-detail-page': standalone }" :aria-label="standalone ? '脚本运行详情' : '日志'">
+  <section class="log-page" :class="{ 'task-detail-page': standalone }" :data-restore-task-id="restoreTaskId || ''" :aria-label="standalone ? '脚本运行详情' : '日志'">
     <template v-if="!standalone">
     <div class="log-filters">
       <div class="filter-label">快捷选择</div>
@@ -267,13 +309,12 @@ function readableEventText(run: HistoryRun, item: RunItem) {
         <header class="run-record-head"><div><b>{{ activeRun.run_mode === 'plan' ? `计划：${activeRun.queue_name}` : activeRun.run_mode === 'all_scripts' ? '全部软件脚本' : activeRun.queue_name }}</b><small>{{ recordDate(activeRun) }} {{ runTime(activeRun) }} · {{ triggerLabel(activeRun.trigger_source) }} · {{ runOutcome(activeRun) }}</small><p v-if="reportFor(activeRun)" class="run-conclusion">{{ reportFor(activeRun)?.conclusion }}<span v-if="reportFor(activeRun)?.duration_seconds !== null && reportFor(activeRun)?.duration_seconds !== undefined"> · {{ durationLabel(reportFor(activeRun)?.duration_seconds) }}</span></p><small v-else class="legacy-report">此记录生成于可读报告功能启用前。</small></div><button type="button" @click="loadRunDetail(activeRun)">查看本轮运行日志</button></header>
         <section v-if="!taskDetailOpen" class="run-report run-report-overview">
           <header><b>运行报告</b><span>{{ reportFor(activeRun)?.completion_basis || '该历史项未保存可读报告' }}</span></header>
-          <p v-for="risk in reportFor(activeRun)?.risks || []" :key="risk" class="report-risk">{{ risk }}</p>
           <p class="report-guidance">选择一个脚本查看本软件生成的可读事件流、界面采集状态和原文入口。脚本内部日志不会在此处直接展开。</p>
           <div ref="taskTabs" class="task-tabs" aria-label="脚本详情选择">
-            <button v-for="item in activeRun.items" :key="item.task_id" type="button" class="task-tab" :data-task-id="item.task_id" :class="{ selected: selectedTaskId === item.task_id, failed: item.state === 'failed', stopped: item.state === 'stopped', risk: itemHasRisk(activeRun, item) }" :aria-label="`查看 ${itemName(item)} 的脚本详情`" @click="openTaskDetail(item)">
+            <button v-for="item in activeRun.items" :key="item.task_id" :ref="(element) => restoreTaskTabElement(element, item.task_id)" type="button" class="task-tab" :data-task-id="item.task_id" :class="{ selected: selectedTaskId === item.task_id, failed: item.state === 'failed', stopped: item.state === 'stopped', risk: itemHasRisk(activeRun, item) }" :aria-label="`查看 ${itemName(item)} 的脚本详情`" @pointerdown="rememberTaskListPosition" @keydown="rememberTaskListPosition" @click="openTaskDetail(item)">
               <span class="task-tab-state">{{ item.state === 'failed' ? '失败' : item.state === 'stopped' ? '已停止' : item.state === 'succeeded' ? '成功' : stateLabel(item.state) }}</span>
               <span class="task-tab-main"><b>{{ itemName(item) }}</b><small>{{ reportFor(activeRun, item)?.conclusion || itemOutcome(item) }}</small></span>
-              <span class="task-tab-meta"><span v-if="itemHasRisk(activeRun, item)" class="task-tab-risk">存在需查看项</span><span class="task-tab-action">查看详情</span></span>
+              <span class="task-tab-meta"><span v-if="itemHasRisk(activeRun, item)" class="task-tab-risk">需查看 {{ Math.max(reportFor(activeRun, item)?.risk_count || 0, reportFor(activeRun, item)?.risks.length || 0, item.unrecognized_log_count || 0, item.state === 'failed' ? 1 : 0) }} 项</span><span class="task-tab-action">查看详情</span></span>
             </button>
           </div>
         </section>
@@ -309,7 +350,7 @@ function readableEventText(run: HistoryRun, item: RunItem) {
 </style>
 
 <style scoped>
-.task-detail-page{max-width:1280px;margin:0 auto;padding-top:20px}.standalone-task-detail{min-height:calc(100vh - 170px);margin-top:0;padding:24px}.detail-breadcrumb{margin:10px 0 8px!important;color:#75cbe1!important;font-size:13px}.standalone-task-detail .derived-event-editor{height:min(58vh,680px)}@media(max-width:620px){.task-detail-page{padding-top:8px}.standalone-task-detail{min-height:0;padding:14px}.standalone-task-detail .derived-event-editor{height:48vh}}
+.task-detail-page{max-width:1280px;margin:0 auto;padding-top:20px}.standalone-task-detail{min-height:calc(100vh - 170px);margin-top:0;padding:24px}.detail-breadcrumb{margin:10px 0 8px!important;color:#75cbe1!important;font-size:13px}.standalone-task-detail .derived-event-editor{height:440px;min-height:0;overflow:hidden;overscroll-behavior:contain}@media(max-width:620px){.task-detail-page{padding-top:8px}.standalone-task-detail{min-height:0;padding:14px}.standalone-task-detail .derived-event-editor{height:min(46vh,420px)}}
 </style>
 
 <style scoped>
@@ -326,5 +367,5 @@ function readableEventText(run: HistoryRun, item: RunItem) {
 </style>
 
 <style scoped>
-.report-guidance{margin:0;color:#9ab4c2;font-size:13px}.task-tabs{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;max-block-size:456px;overflow-y:auto;overflow-x:hidden;padding:3px 4px 8px 1px;scrollbar-color:#38627c transparent}.task-tab{position:relative;display:grid;grid-template-columns:74px minmax(0,1fr) auto;align-items:center;gap:13px;min-height:78px;width:100%;padding:11px 15px 11px 12px;border:1px solid #31576b;border-left:4px solid #4eb5d2;border-radius:7px;background:#102434;color:var(--ink);text-align:left;cursor:pointer;transition:border-color .16s ease,background .16s ease;overflow-wrap:anywhere}.task-tab:hover{border-color:#65cce7;background:#133044}.task-tab.selected{border-color:#62d8ed;background:#153549;box-shadow:inset 0 0 0 1px rgba(101,219,239,.45)}.task-tab:focus-visible{outline:2px solid #64d5e8;outline-offset:2px}.task-tab.failed{border-left-color:#ef7676;background:#2c1d26}.task-tab.stopped{border-left-color:#bc91d4;background:#271e31}.task-tab.risk:not(.failed){box-shadow:inset 0 0 0 1px rgba(218,169,76,.35)}.task-tab.selected.risk:not(.failed){box-shadow:inset 0 0 0 1px #62d8ed}.task-tab-state{width:max-content;padding:2px 6px;border:1px solid #3d8ea8;border-radius:4px;color:#8ee8ee;font-size:12px}.task-tab.failed .task-tab-state{border-color:#ba6268;color:#ffb4bc}.task-tab-main{display:grid;gap:4px;min-width:0}.task-tab b{font-size:16px}.task-tab small{color:#b8ccd8;line-height:1.4}.task-tab-meta{display:grid;justify-items:end;gap:5px;min-width:88px}.task-tab-risk{color:#ffd783;font-size:12px}.task-tab-action{color:#70d7ef;font-size:12px;font-weight:700}.task-detail-panel{display:grid;gap:16px;margin-top:18px;padding:18px;border:1px solid #356276;border-radius:8px;background:#0b1b27;outline:none}.task-detail-panel:focus-visible{box-shadow:0 0 0 2px rgba(100,213,232,.55)}.task-detail-head{display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #27465a;padding-bottom:14px}.task-detail-head>div:first-child{min-width:0}.task-detail-head h2{margin:8px 0 4px;font-size:22px}.task-detail-head p{margin:0;color:#8fe4d5}.task-detail-actions{display:flex;align-items:start;justify-content:flex-end;gap:8px;flex-wrap:wrap}.text-button{padding:0;border:0;background:transparent;color:#76cce3;text-decoration:underline;text-underline-offset:3px}.task-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}.task-facts div{display:grid;gap:5px;min-width:0;padding:10px;border:1px solid #29485b;border-radius:6px;background:#0d2534}.task-facts span{color:#88adbd;font-size:12px}.task-facts b{color:#d7ecf3;font-size:13px;overflow-wrap:anywhere}.derived-events{display:grid;gap:10px}.derived-events header{display:flex;align-items:start;justify-content:space-between;gap:12px}.derived-events h3,.task-source-status h3{margin:0;color:#dcecf2;font-size:16px}.derived-events p,.task-source-status p{margin:5px 0 0;color:#99b9c7;font-size:13px}.derived-events header>span{flex:none;color:#79c7d8;font-size:12px}.derived-event-editor{height:min(48vh,560px)}.task-source-status{padding:13px;border-left:3px solid #416e83;background:#0c202e}.task-source-status h3{margin-bottom:7px}.task-source-status p{overflow-wrap:anywhere}.schedule-skips{display:grid;gap:5px;margin:16px 0 0;padding:12px;border-left:3px solid #bc8e4c;background:#2c2417;color:#f4d59b}.schedule-skips span{font-size:13px}@media(max-width:980px){.task-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:620px){.task-tabs{max-block-size:420px}.task-tab{grid-template-columns:1fr;align-items:start;gap:7px;min-height:0}.task-tab-meta{display:flex;justify-items:start;align-items:center;justify-content:space-between;width:100%;min-width:0}.task-detail-panel{padding:14px}.task-detail-head{flex-direction:column}.task-detail-actions{justify-content:flex-start}.task-facts{grid-template-columns:1fr}.derived-events header{flex-direction:column}.derived-event-editor{height:46vh}}
+.report-guidance{margin:0;color:#9ab4c2;font-size:13px}.task-tabs{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;max-block-size:456px;overflow-y:auto;overflow-x:hidden;padding:3px 4px 8px 1px;scrollbar-color:#38627c transparent}.task-tab{position:relative;display:grid;grid-template-columns:74px minmax(0,1fr) auto;align-items:center;gap:13px;min-height:78px;width:100%;padding:11px 15px 11px 12px;border:1px solid #31576b;border-left:4px solid #4eb5d2;border-radius:7px;background:#102434;color:var(--ink);text-align:left;cursor:pointer;transition:border-color .16s ease,background .16s ease;overflow-wrap:anywhere}.task-tab:hover{border-color:#65cce7;background:#133044}.task-tab.selected{border-color:#62d8ed;background:#153549;box-shadow:inset 0 0 0 1px rgba(101,219,239,.45)}.task-tab:focus-visible{outline:2px solid #64d5e8;outline-offset:2px}.task-tab.failed{border-left-color:#ef7676;background:#2c1d26}.task-tab.stopped{border-left-color:#bc91d4;background:#271e31}.task-tab.risk:not(.failed){box-shadow:inset 0 0 0 1px rgba(218,169,76,.35)}.task-tab.selected.risk:not(.failed){box-shadow:inset 0 0 0 1px #62d8ed}.task-tab-state{width:max-content;padding:2px 6px;border:1px solid #3d8ea8;border-radius:4px;color:#8ee8ee;font-size:12px}.task-tab.failed .task-tab-state{border-color:#ba6268;color:#ffb4bc}.task-tab-main{display:grid;gap:4px;min-width:0}.task-tab b{font-size:16px}.task-tab small{color:#b8ccd8;line-height:1.4}.task-tab-meta{display:grid;justify-items:end;gap:5px;min-width:88px}.task-tab-risk{color:#ffd783;font-size:12px}.task-tab-action{color:#70d7ef;font-size:12px;font-weight:700}.task-detail-panel{display:grid;gap:16px;margin-top:18px;padding:18px;border:1px solid #356276;border-radius:8px;background:#0b1b27;outline:none}.task-detail-panel:focus-visible{box-shadow:0 0 0 2px rgba(100,213,232,.55)}.task-detail-head{display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #27465a;padding-bottom:14px}.task-detail-head>div:first-child{min-width:0}.task-detail-head h2{margin:8px 0 4px;font-size:22px}.task-detail-head p{margin:0;color:#8fe4d5}.task-detail-actions{display:flex;align-items:start;justify-content:flex-end;gap:8px;flex-wrap:wrap}.text-button{padding:0;border:0;background:transparent;color:#76cce3;text-decoration:underline;text-underline-offset:3px}.task-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}.task-facts div{display:grid;gap:5px;min-width:0;padding:10px;border:1px solid #29485b;border-radius:6px;background:#0d2534}.task-facts span{color:#88adbd;font-size:12px}.task-facts b{color:#d7ecf3;font-size:13px;overflow-wrap:anywhere}.derived-events{display:grid;gap:10px}.derived-events header{display:flex;align-items:start;justify-content:space-between;gap:12px}.derived-events h3,.task-source-status h3{margin:0;color:#dcecf2;font-size:16px}.derived-events p,.task-source-status p{margin:5px 0 0;color:#99b9c7;font-size:13px}.derived-events header>span{flex:none;color:#79c7d8;font-size:12px}.derived-event-editor{height:440px;min-height:0;overflow:hidden;overscroll-behavior:contain}.task-source-status{padding:13px;border-left:3px solid #416e83;background:#0c202e}.task-source-status h3{margin-bottom:7px}.task-source-status p{overflow-wrap:anywhere}.schedule-skips{display:grid;gap:5px;margin:16px 0 0;padding:12px;border-left:3px solid #bc8e4c;background:#2c2417;color:#f4d59b}.schedule-skips span{font-size:13px}@media(max-width:980px){.task-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:620px){.task-tabs{max-block-size:420px}.task-tab{grid-template-columns:1fr;align-items:start;gap:7px;min-height:0}.task-tab-meta{display:flex;justify-items:start;align-items:center;justify-content:space-between;width:100%;min-width:0}.task-detail-panel{padding:14px}.task-detail-head{flex-direction:column}.task-detail-actions{justify-content:flex-start}.task-facts{grid-template-columns:1fr}.derived-events header{flex-direction:column}.derived-event-editor{height:min(46vh,420px)}}
 </style>

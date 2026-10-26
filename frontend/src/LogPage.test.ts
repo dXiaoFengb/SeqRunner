@@ -71,8 +71,9 @@ test('renders a local readable report after opening the selected script detail a
   const wrapper = setup([record])
   expect(wrapper.get('[aria-label="运行报告"]').text()).toContain('本轮全部完成')
   expect(wrapper.text()).toContain('0 小时 1 分 3 秒')
-  expect(wrapper.text()).toContain('检测到 1 条错误级脚本日志，但未构成终态失败')
+  expect(wrapper.text()).not.toContain('检测到 1 条错误级脚本日志，但未构成终态失败')
   await openFirstTaskDetail(wrapper)
+  expect(wrapper.text()).toContain('检测到 1 条错误级脚本日志，但未构成终态失败')
   expect(wrapper.text()).toContain('等待人工确认')
   expect(wrapper.text()).toContain('历史运行状态记录')
   expect(wrapper.text()).toContain('脚本转译启用前')
@@ -97,6 +98,19 @@ test('renders only translated script facts for new history and keeps the source 
   expect(wrapper.text()).toContain('脚本可读事件流')
   expect(wrapper.text()).toContain(event.message)
   expect(wrapper.text()).not.toContain('历史运行状态记录')
+})
+
+test('renders folded script events with their time range and keeps task risks off the run overview', async () => {
+  const event = { timestamp: '2026-01-01T12:00:00Z', last_timestamp: '2026-01-01T12:00:03Z', occurrence_count: 4, source: 'script' as const, sequence: 1, phase: '脚本日志', severity: 'info' as const, event_type: 'script.log.translated', task_id: 't', task_name: '程序', rule_id: 'script.module.bootstrapper', message: '脚本启动器正在初始化。' }
+  const report: ReadableReport = { generator_version: 'local-rules-v2', conclusion: '任务已完成', completion_basis: '人工确认', duration_seconds: 1, risk_count: 1, risks: ['检测到 1 条警告级脚本日志'], events: [event] }
+  const record = { ...run('折叠转译', '2026-01-01T12:00:00'), readable_report: { ...report, risks: ['运行级不应显示'] }, items: [{ task_id: 't', task_name: '程序', state: 'succeeded', script_translation_version: 'script-local-rules-v1', readable_report: report }] }
+  const wrapper = setup([record])
+  expect(wrapper.get('[aria-label="运行报告"]').text()).not.toContain('运行级不应显示')
+  expect(wrapper.get('.task-tab').text()).toContain('需查看 1 项')
+  await openFirstTaskDetail(wrapper)
+  expect(wrapper.get('[aria-label="脚本详情"]').text()).toContain('检测到 1 条警告级脚本日志')
+  expect(wrapper.get('.monaco-stub').text()).toContain('×4')
+  expect(wrapper.get('.monaco-stub').text()).toContain('至')
 })
 
 test('shows a truthful empty state when a translation-enabled task received no readable script event', async () => {
@@ -146,6 +160,73 @@ test('restores the task-list scroll position and original task focus after the a
     expect((document.activeElement as HTMLElement | null)?.dataset.taskId).toBe('returned')
     wrapper.unmount()
   } finally { window.requestAnimationFrame = original }
+})
+
+test('restores task-list state after switching back from the standalone detail page', async () => {
+  const record: TestRun = { ...run('返回运行', '2026-01-01T12:00:00'), items: [
+    { task_id: 'task', task_name: '返回目标', state: 'succeeded' },
+    { task_id: 'other', task_name: '另一任务', state: 'succeeded' },
+  ] }
+  const original = window.requestAnimationFrame
+  window.requestAnimationFrame = (callback) => { callback(0); return 1 }
+  try {
+    const wrapper = mount(LogPage, {
+      props: { history: [record], selectedId: '返回运行', expanded: new Set<string>(), standalone: true, detailRunId: '返回运行', detailTaskId: 'task' },
+      attachTo: document.body,
+      global: { stubs: { VueMonacoEditor: { props: ['value'], template: '<pre class="monaco-stub">{{ value }}</pre>' } } },
+    })
+    await wrapper.setProps({ standalone: false, restoreTaskId: 'task', restoreTaskListScrollTop: 36 })
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+    const list = wrapper.get('.task-tabs').element as HTMLElement
+    expect(list.scrollTop).toBe(36)
+    expect((document.activeElement as HTMLElement | null)?.dataset.taskId).toBe('task')
+    wrapper.unmount()
+  } finally { window.requestAnimationFrame = original }
+})
+
+test('restores task-list state directly when its own detail return control removes the detail panel', async () => {
+  const record: TestRun = { ...run('本地返回', '2026-01-01T12:00:00'), items: [
+    { task_id: 'task', task_name: '返回目标', state: 'succeeded' },
+    { task_id: 'other', task_name: '另一任务', state: 'succeeded' },
+  ] }
+  const original = window.requestAnimationFrame
+  window.requestAnimationFrame = (callback) => { callback(0); return 1 }
+  try {
+    const wrapper = mount(LogPage, {
+      props: { history: [record], selectedId: null, expanded: new Set<string>() },
+      attachTo: document.body,
+      global: { stubs: { VueMonacoEditor: { props: ['value'], template: '<pre class="monaco-stub">{{ value }}</pre>' } } },
+    })
+    await wrapper.get('.task-tabs').trigger('pointerdown')
+    const list = wrapper.get('.task-tabs').element as HTMLElement
+    list.scrollTop = 36
+    await wrapper.get('.task-tab').trigger('click')
+    await wrapper.get('button.return-report-button').trigger('click')
+    await wrapper.vm.$nextTick()
+    await vi.runOnlyPendingTimersAsync()
+    await wrapper.vm.$nextTick()
+    expect((wrapper.get('.task-tabs').element as HTMLElement).scrollTop).toBe(36)
+    expect((document.activeElement as HTMLElement | null)?.dataset.taskId).toBe('task')
+    wrapper.unmount()
+  } finally { window.requestAnimationFrame = original }
+})
+
+test('captures task-list scroll before pointer focus can move the selected task', async () => {
+  const record: TestRun = { ...run('按下位置', '2026-01-01T12:00:00'), items: [{ task_id: 'task', task_name: '验收任务', state: 'succeeded' }] }
+  const wrapper = mount(LogPage, {
+    props: { history: [record], selectedId: '按下位置', expanded: new Set<string>() },
+    attachTo: document.body,
+    global: { stubs: { VueMonacoEditor: { props: ['value'], template: '<pre class="monaco-stub">{{ value }}</pre>' } } },
+  })
+  await wrapper.vm.$nextTick()
+  const list = wrapper.get('.task-tabs').element as HTMLElement
+  list.scrollTop = 36
+  const task = wrapper.get('[data-task-id="task"]')
+  await task.trigger('pointerdown')
+  await task.trigger('click')
+  expect(wrapper.emitted('openDetail')?.[0]).toEqual(['按下位置', 'task', 36])
+  wrapper.unmount()
 })
 
 test('filters records by keyword and trigger source together, resets defaults, and keeps script navigation explicit', async () => {

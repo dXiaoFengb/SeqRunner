@@ -159,13 +159,11 @@ def translate_script_line(item: ItemRecord, line: str) -> ReadableEvent | None:
         # A known level alone is useful for statistics, but not enough to
         # invent a business-level Chinese explanation for an unknown message.
         return None
-    item.script_event_sequence += 1
     return ReadableEvent(
         timestamp=_script_timestamp(line) or datetime.now(UTC),
         task_id=item.task_id,
         task_name=item.task_name,
         source="script",
-        sequence=item.script_event_sequence,
         phase="脚本日志",
         severity=severity,
         event_type="script.log.translated",
@@ -174,11 +172,23 @@ def translate_script_line(item: ItemRecord, line: str) -> ReadableEvent | None:
     )
 
 
+def _same_script_translation(left: ReadableEvent, right: ReadableEvent) -> bool:
+    return (
+        left.source == right.source
+        and left.phase == right.phase
+        and left.severity == right.severity
+        and left.message == right.message
+        and left.rule_id == right.rule_id
+        and left.event_type == right.event_type
+    )
+
+
 def append_script_events(item: ItemRecord, text: str) -> list[ReadableEvent]:
     """Persist only translated facts. Raw text remains at its authorised file."""
     item.script_translation_version = SCRIPT_TRANSLATION_VERSION
-    created: list[ReadableEvent] = []
+    changed: list[ReadableEvent] = []
     unrecognised = 0
+    previous = item.script_readable_events[-1] if item.script_event_fold_open and item.script_readable_events else None
     for line in text.splitlines():
         normalized = line.strip()
         event = translate_script_line(item, normalized)
@@ -188,15 +198,28 @@ def append_script_events(item: ItemRecord, text: str) -> list[ReadableEvent]:
             # count, while still never retaining their raw body.
             if _LEVEL.search(normalized) or _MODULE.search(normalized):
                 unrecognised += 1
+            if normalized:
+                previous = None
+                item.script_event_fold_open = False
             continue
+        if previous is not None and _same_script_translation(previous, event):
+            previous.occurrence_count += 1
+            previous.last_timestamp = event.timestamp
+            if previous not in changed:
+                changed.append(previous)
+            continue
+        item.script_event_sequence += 1
+        event.sequence = item.script_event_sequence
         item.script_readable_events.append(event)
-        created.append(event)
+        changed.append(event)
+        previous = event
+        item.script_event_fold_open = True
     item.unrecognized_log_count += unrecognised
     if len(item.script_readable_events) > SCRIPT_EVENT_LIMIT:
         item.script_readable_events = item.script_readable_events[-SCRIPT_EVENT_LIMIT:]
         item.script_event_truncated = True
     item.readable_report = build_item_report(item)
-    return created
+    return changed
 
 
 def count_external_levels(text: str) -> dict[str, int]:

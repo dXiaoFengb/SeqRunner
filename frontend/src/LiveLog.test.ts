@@ -41,6 +41,14 @@ test('renders the merged translated script stream without source selectors and f
   expect(list.scrollTop).toBe(500)
 })
 
+test('shows a folded translated event count without restoring source selectors', async () => {
+  const folded = scriptEvent(1)
+  folded.event = { ...folded.event, occurrence_count: 4, last_timestamp: '2026-01-01T00:00:03Z' }
+  const wrapper = mount(LiveLog, { props: { logs: [], runtime: runtime(), scriptEvents: [folded] } })
+  expect(wrapper.get('.script-live-list').text()).toContain('×4')
+  expect(wrapper.find('.script-source-tabs').exists()).toBe(false)
+})
+
 test('keeps the script translation panel hidden without an external file source while software status remains', () => {
   const current = runtime()
   current.run!.items[0].log_source_configured = false

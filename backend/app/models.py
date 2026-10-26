@@ -200,6 +200,9 @@ class ReadableEvent(BaseModel):
     event_type: str = "legacy"
     message: str
     rule_id: str | None = None
+    # 连续的同一脚本转译事件可合并为一项；旧记录缺少这些字段时按单次展示。
+    occurrence_count: int = 1
+    last_timestamp: datetime | None = None
 
 
 class ReadableReport(BaseModel):
@@ -240,6 +243,8 @@ class ItemRecord(BaseModel):
     script_readable_events: list[ReadableEvent] = Field(default_factory=list)
     script_translation_version: str | None = None
     script_event_sequence: int = 0
+    # 连续折叠跨日志轮询块延续；遇到任一未转译原文即关闭，绝不跨未知原文合并。
+    script_event_fold_open: bool = False
     script_event_truncated: bool = False
     readable_report: ReadableReport | None = None
     external_log_level_counts: dict[str, int] = Field(default_factory=dict)

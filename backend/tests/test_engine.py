@@ -275,6 +275,28 @@ async def test_script_translation_events_are_globally_ordered_and_recoverable_fr
 
 
 @pytest.mark.asyncio
+async def test_folded_script_event_updates_its_existing_realtime_sequence(tmp_path: Path) -> None:
+    task = python_task("转译日志", "pass")
+    engine, _ = build_engine(tmp_path, [task])
+    record = RunRecord(queue_id="q", queue_name="q", trigger_source="manual")
+    item = ItemRecord(task_id=task.id, task_name=task.name, state=ItemState.MONITORING)
+    record.items = [item]
+    engine.current_run = record
+    engine._reset_live_summary(record)
+
+    first = append_script_events(item, "[2026-10-26 12:00:00.000][INF][Bootstrapper] one\n")
+    await engine._publish_script_events(record, item, first)
+    updated = append_script_events(item, "[2026-10-26 12:00:01.000][INF][Bootstrapper] two\n")
+    await engine._publish_script_events(record, item, updated)
+
+    snapshot = engine.snapshot()["scriptEvents"]
+    assert len(snapshot) == 1
+    assert snapshot[0]["sequence"] == 1
+    assert snapshot[0]["replace"] is True
+    assert snapshot[0]["event"]["occurrence_count"] == 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("allow_exit", [False, True])
 async def test_manual_waits_after_success_log_and_zero_exit(tmp_path: Path, allow_exit: bool) -> None:
     log = tmp_path / "success.log"

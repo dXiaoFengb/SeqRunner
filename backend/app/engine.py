@@ -23,6 +23,7 @@ from .models import (
     ItemRecord,
     ItemState,
     QueueDefinition,
+    ReadableEvent,
     RunRecord,
     RunState,
     SchedulePlan,
@@ -111,6 +112,7 @@ class RunnerEngine:
         self._script_event_run_id: str | None = None
         self._script_event_sequence = 0
         self._script_event_logs: list[dict[str, object]] = []
+        self._script_event_item_sequences: dict[tuple[str, int], int] = {}
         self._logger = logger or logging.getLogger("sequential-runner")
         self._config_lock = asyncio.Lock()
 
@@ -843,8 +845,9 @@ class RunnerEngine:
         self._script_event_run_id = record.id
         self._script_event_sequence = 0
         self._script_event_logs = []
+        self._script_event_item_sequences = {}
 
-    async def _publish_script_events(self, record: RunRecord, item: ItemRecord, events: list[object]) -> None:
+    async def _publish_script_events(self, record: RunRecord, item: ItemRecord, events: list[ReadableEvent]) -> None:
         """Publish translated script facts without exposing the raw external line."""
         if not events:
             return
@@ -852,18 +855,38 @@ class RunnerEngine:
             self._script_event_run_id = record.id
             self._script_event_sequence = 0
             self._script_event_logs = []
+            self._script_event_item_sequences = {}
         for event in events:
-            self._script_event_sequence += 1
+            item_sequence = event.sequence
+            key = (item.task_id, item_sequence) if item_sequence else None
+            published_sequence = self._script_event_item_sequences.get(key) if key else None
+            existing_index = next((index for index, payload in enumerate(self._script_event_logs) if payload["sequence"] == published_sequence), None)
+            replace = existing_index is not None
+            if published_sequence is None or not replace:
+                self._script_event_sequence += 1
+                published_sequence = self._script_event_sequence
+                if key:
+                    self._script_event_item_sequences[key] = published_sequence
             payload = {
                 "runId": record.id,
                 "taskId": item.task_id,
-                "sequence": self._script_event_sequence,
+                "sequence": published_sequence,
                 "event": event.model_dump(mode="json"),
                 "truncated": False,
+                "replace": replace,
             }
-            self._script_event_logs.append(payload)
+            if existing_index is None:
+                self._script_event_logs.append(payload)
+            else:
+                self._script_event_logs[existing_index] = payload
             if len(self._script_event_logs) > SCRIPT_EVENT_BUFFER_LIMIT:
+                removed = self._script_event_logs[:-SCRIPT_EVENT_BUFFER_LIMIT]
                 self._script_event_logs = self._script_event_logs[-SCRIPT_EVENT_BUFFER_LIMIT:]
+                removed_sequences = {entry["sequence"] for entry in removed}
+                self._script_event_item_sequences = {
+                    item_key: sequence for item_key, sequence in self._script_event_item_sequences.items()
+                    if sequence not in removed_sequences
+                }
                 item.script_event_truncated = True
             await self.events.publish("script_event", payload)
 

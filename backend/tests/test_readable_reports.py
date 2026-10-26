@@ -97,6 +97,42 @@ def test_legacy_history_without_report_fields_remains_readable() -> None:
     assert record.items[0].readable_events == []
 
 
+def test_consecutive_script_translations_are_folded_without_retaining_raw_text() -> None:
+    item = ItemRecord(task_id="fixture", task_name="受控夹具", state=ItemState.MONITORING)
+    changed = append_script_events(
+        item,
+        "[2026-10-26 12:00:00.000][INF][Bootstrapper] one\n"
+        "[2026-10-26 12:00:01.000][INF][Bootstrapper] two\n"
+        "[2026-10-26 12:00:02.000][INF][Bootstrapper] three\n"
+        "[2026-10-26 12:00:03.000][ERR][Worker] fail\n"
+        "[2026-10-26 12:00:04.000][INF][Bootstrapper] after-break\n",
+    )
+
+    assert len(item.script_readable_events) == 3
+    first, error, final = item.script_readable_events
+    assert first.message == "脚本启动器正在初始化。"
+    assert first.occurrence_count == 3
+    assert first.last_timestamp is not None
+    assert first.sequence == 1
+    assert error.sequence == 2
+    assert final.sequence == 3
+    assert len(changed) == 3
+    persisted = "\n".join(event.model_dump_json() for event in item.script_readable_events)
+    assert not any(raw in persisted for raw in ("one", "two", "three", "after-break"))
+
+
+def test_consecutive_translation_folding_crosses_polling_blocks_but_unknown_text_breaks_it() -> None:
+    item = ItemRecord(task_id="fixture", task_name="受控夹具", state=ItemState.MONITORING)
+    append_script_events(item, "[2026-10-26 12:00:00.000][INF][Bootstrapper] first\n")
+    updated = append_script_events(item, "[2026-10-26 12:00:01.000][INF][Bootstrapper] second\n")
+    assert len(item.script_readable_events) == 1
+    assert updated[0].sequence == 1
+    assert updated[0].occurrence_count == 2
+    append_script_events(item, "unrecognised separator\n")
+    append_script_events(item, "[2026-10-26 12:00:02.000][INF][Bootstrapper] third\n")
+    assert len(item.script_readable_events) == 2
+
+
 @pytest.mark.parametrize("case", json.loads((Path(__file__).parent / "fixtures" / "readable_report_cases.json").read_text(encoding="utf-8")), ids=lambda case: case["name"])
 def test_report_fixture_cases_are_deterministic(case: dict[str, object]) -> None:
     item = ItemRecord(

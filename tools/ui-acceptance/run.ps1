@@ -1,17 +1,37 @@
-param([Parameter(Mandatory=$true)][string]$Executable, [ValidateSet('plan','log')][string]$Scenario = 'plan')
+param(
+  [Parameter(Mandatory=$true)][string]$Executable,
+  [ValidateSet('plan','log')][string]$Scenario = 'plan',
+  [switch]$AllowWorkingCandidate
+)
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
+$helpers = Join-Path $PSScriptRoot 'acceptance-process-helpers.psm1'
+Import-Module $helpers -Force
 $source = (Resolve-Path -LiteralPath $Executable).Path
-if ($source -notmatch ('^' + [regex]::Escape($root) + '[\\/]产物[\\/]验证[\\/]v\d+\.\d+\.\d+[\\/][^\\/]+-portable\.exe$')) { throw '仅允许工作区内已最终化验证包根目录的 portable EXE。' }
+$finalPackagePattern = '^' + [regex]::Escape($root) + '[\\/]产物[\\/]验证[\\/]v\d+\.\d+\.\d+[\\/][^\\/]+-portable\.exe$'
+$workingPackagePattern = '^' + [regex]::Escape($root) + '[\\/]产物[\\/]工作[\\/]v\d+\.\d+\.\d+[\\/]软件包[\\/][^\\/]+-portable\.exe$'
+if ($source -match $finalPackagePattern) {
+  $candidateKind = '最终化验证包'
+} elseif ($AllowWorkingCandidate -and $source -match $workingPackagePattern) {
+  $candidateKind = '工作验证包（仅用于最终化前验收）'
+} else {
+  throw '仅允许工作区内已最终化验证包根目录的 portable EXE；最终化前验收必须显式传入 -AllowWorkingCandidate，且仅允许本轮产物/工作/vX.Y.Z/软件包/ 下的 portable EXE。'
+}
 $runId = [guid]::NewGuid().ToString('N')
 $runPath = Join-Path $root "build/ui-acceptance/$runId"
 if (Test-Path -LiteralPath $runPath) { throw '隔离目录已经存在。' }
 New-Item -ItemType Directory -Path $runPath | Out-Null
-$copy = $source
 $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+$copy = Join-Path $runPath (Split-Path -Leaf $source)
+Copy-Item -LiteralPath $source -Destination $copy -ErrorAction Stop
+$copyHash = (Get-FileHash -LiteralPath $copy -Algorithm SHA256).Hash
+if ($copyHash -ne $sourceHash) { throw '隔离验收副本的 SHA-256 与验证包不一致。' }
 @"
 验证包：$source
+候选类型：$candidateKind
 SHA-256：$sourceHash
+启动副本：$copy
+副本 SHA-256：$copyHash
 隔离目录：$runPath
 "@ | Set-Content -Encoding utf8 (Join-Path $runPath 'source.txt')
 New-Item -ItemType Directory -Path (Join-Path $runPath 'appdata'),(Join-Path $runPath 'localappdata'),(Join-Path $runPath 'temp') | Out-Null
@@ -48,10 +68,20 @@ if ($Scenario -eq 'log') {
   '{"captured_at":"2026-01-01T00:00:00+00:00","text":"受控界面日志"}' | Set-Content -Encoding utf8NoBOM (Join-Path $details '69220a50-b013-4b4c-8109-850c9c62daca.jsonl')
   '{"captured_at":"2026-01-01T00:00:00+00:00","text":"受控本轮日志：总耗时 12 秒"}' | Set-Content -Encoding utf8NoBOM (Join-Path $details '9718cc60-639e-48c9-8875-069541d28b52.jsonl')
 }
-$process = $null; $success = $false
+$process = $null; $success = $false; $debugPort = $null
+$trackedProcessIds = @(); $processTreeStatus = 'checked'; $processTreeError = $null
+$closeRequestStatus = 'not_requested'; $residualBeforeFallback = @(); $residualProcessIds = @(); $fallbackUsed = $false; $shutdownError = $null
+function Update-TrackedProcessIds {
+  if (-not $process) { return }
+  $tree = Get-AcceptanceProcessTree -RootProcessId $process.Id
+  if ($tree.status -ne 'checked') { $script:processTreeStatus = 'unknown'; $script:processTreeError = $tree.error; return }
+  $script:trackedProcessIds = @($script:trackedProcessIds + $tree.processIds | Sort-Object -Unique)
+}
 Push-Location $runPath
 try {
-  $process = Start-Process -FilePath $copy -ArgumentList "--remote-debugging-port=$port" -WorkingDirectory (Split-Path -Parent $source) -WindowStyle Hidden -PassThru
+  $process = Start-Process -FilePath $copy -ArgumentList "--remote-debugging-port=$port" -WorkingDirectory $runPath -WindowStyle Hidden -PassThru
+  Update-TrackedProcessIds
+  if ($processTreeStatus -ne 'checked') { throw "无法确认隔离验收进程树：$processTreeError" }
   $ready = $false
   $debugPort = $port
   $debugPortFile = Join-Path $env:RUNNER_USER_DATA_DIR 'electron/DevToolsActivePort'
@@ -75,6 +105,7 @@ try {
   $lastTargets = ''
   for ($i=0; $i -lt 180; $i++) {
     $process.Refresh()
+    Update-TrackedProcessIds
     if ($process.HasExited) { $rendererExited = $true; break }
     $targets = & curl.exe --noproxy '*' --silent --max-time 1 "http://127.0.0.1:$debugPort/json/list" 2>$null
     if ($LASTEXITCODE -eq 0) { $lastTargets = $targets -join '' }
@@ -98,11 +129,36 @@ try {
     throw "验收截图未成功生成，退出码：$screenshotExitCode`n$screenshot"
   }
   if ($result -notmatch '(?s)### Result\s+"PASS:') { throw "验收未通过，详情见 $runPath/result.txt`n$result" }
+  $closeResult = & node $scenarioRunner '--cdp' "http://127.0.0.1:$debugPort" '--close' 2>&1 | Out-String
+  $closeExitCode = $LASTEXITCODE
+  $closeResult | Out-File -Encoding utf8 'close-request.txt'
+  if ($closeExitCode -ne 0 -or $closeResult -notmatch '### Close') { $closeRequestStatus = 'failed'; throw "无法请求关闭隔离 Electron 窗口，退出码：$closeExitCode`n$closeResult" }
+  $closeRequestStatus = 'requested'
+  $residualBeforeFallback = @(Wait-AcceptanceProcessExit -ProcessIds $trackedProcessIds -TimeoutMilliseconds 10000)
+  if ($residualBeforeFallback.Count -gt 0) { throw ('验收窗口关闭后仍有隔离进程：' + ($residualBeforeFallback -join ', ')) }
   $success = $true
   Write-Output $result
   Write-Output "Evidence=$runPath"
 } finally {
-  if ($process -and -not $process.HasExited) { if (-not $process.WaitForExit(10000)) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } }
+  if ($process) {
+    Update-TrackedProcessIds
+    if ($closeRequestStatus -eq 'not_requested' -and $debugPort) {
+      $fallbackClose = & node $scenarioRunner '--cdp' "http://127.0.0.1:$debugPort" '--close' 2>&1 | Out-String
+      $fallbackClose | Out-File -Encoding utf8 'close-request.txt'
+      if ($LASTEXITCODE -eq 0 -and $fallbackClose -match '### Close') { $closeRequestStatus = 'requested' } else { $closeRequestStatus = 'failed'; $shutdownError = '验收异常后无法请求关闭隔离窗口。' }
+    }
+    if ($processTreeStatus -eq 'checked') {
+      $remainingAfterClose = @(Wait-AcceptanceProcessExit -ProcessIds $trackedProcessIds -TimeoutMilliseconds 1000)
+      $residualBeforeFallback = @($residualBeforeFallback + $remainingAfterClose | Sort-Object -Unique)
+      if ($residualBeforeFallback.Count -gt 0) { $fallbackUsed = $true; $residualProcessIds = @(Stop-AcceptanceProcessTree -RootProcessId $process.Id -ProcessIds $trackedProcessIds) }
+    }
+    if ($processTreeStatus -ne 'checked') { $shutdownError = $processTreeError }
+    $shutdown = New-AcceptanceShutdownEvidence -CloseRequestStatus $closeRequestStatus -ProcessTreeStatus $processTreeStatus -TrackedProcessIds $trackedProcessIds -ResidualBeforeFallback $residualBeforeFallback -FallbackUsed $fallbackUsed -ResidualProcessIds $residualProcessIds -Error $shutdownError
+    $shutdown | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 'shutdown.json'
+    if ($success -and ($processTreeStatus -ne 'checked' -or $fallbackUsed -or $residualProcessIds.Count -gt 0)) {
+      throw '验收场景虽已完成，但隔离窗口未能自然且可核验地关闭。'
+    }
+  }
   Pop-Location
   $env:APPDATA=$oldAppData; $env:LOCALAPPDATA=$oldLocalAppData; $env:NO_PROXY=$oldNoProxy; $env:no_proxy=$oldNoProxyLower; $env:RUNNER_HEALTH_CHECK=$oldHealth; $env:TEMP=$oldTemp; $env:TMP=$oldTmp; $env:RUNNER_USER_DATA_DIR=$oldRunnerUserData
 }

@@ -11,6 +11,9 @@ public static class RegionNative {
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
+    [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
+    [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
@@ -18,6 +21,7 @@ public static class RegionNative {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+    [DllImport("gdi32.dll", SetLastError = true)] public static extern bool BitBlt(IntPtr destination, int destinationX, int destinationY, int width, int height, IntPtr source, int sourceX, int sourceY, uint rasterOperation);
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
     public delegate bool EnumProc(IntPtr hwnd, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
@@ -92,7 +96,12 @@ if ($Mode -eq 'select') {
         $screen.Y = $origin.Y + [int][Math]::Round($pixels.Y)
         return $screen
     }
-    $state = @{start = $null; startVisual = $null; result = $null}
+    function Get-PhysicalCursorPoint() {
+        $screen = [RegionNative+POINT]::new()
+        if (-not [RegionNative]::GetCursorPos([ref]$screen)) { throw '无法读取框选鼠标位置' }
+        return $screen
+    }
+    $state = @{start = $null; startVisual = $null; lastPhysical = $null; result = $null}
     $canvas.Add_MouseLeftButtonDown({ param($sender, $event)
         $point = $event.GetPosition($canvas)
         $state.start = Get-PhysicalCanvasPoint $point
@@ -102,6 +111,7 @@ if ($Mode -eq 'select') {
     $canvas.Add_MouseMove({ param($sender, $event)
         if ($null -eq $state.start) { return }
         $p = $event.GetPosition($canvas)
+        $state.lastPhysical = Get-PhysicalCursorPoint
         [System.Windows.Controls.Canvas]::SetLeft($border, [Math]::Min($state.startVisual.X, $p.X))
         [System.Windows.Controls.Canvas]::SetTop($border, [Math]::Min($state.startVisual.Y, $p.Y))
         $border.Width = [Math]::Abs($p.X - $state.startVisual.X)
@@ -109,14 +119,14 @@ if ($Mode -eq 'select') {
     })
     $canvas.Add_MouseLeftButtonUp({ param($sender, $event)
         if ($null -eq $state.start) { return }
-        $screen = Get-PhysicalCanvasPoint ($event.GetPosition($canvas))
+        $screen = if ($null -ne $state.lastPhysical) { $state.lastPhysical } else { Get-PhysicalCanvasPoint ($event.GetPosition($canvas)) }
         $left = [Math]::Max(0, [Math]::Min($state.start.X, $screen.X) - $origin.X); $top = [Math]::Max(0, [Math]::Min($state.start.Y, $screen.Y) - $origin.Y)
         $right = [Math]::Min($actualWidth, [Math]::Max($state.start.X, $screen.X) - $origin.X); $bottom = [Math]::Min($actualHeight, [Math]::Max($state.start.Y, $screen.Y) - $origin.Y)
         if ($right - $left -ge 5 -and $bottom - $top -ge 5) {
             $state.result = @{x=$left; y=$top; width=$right-$left; height=$bottom-$top}
             $window.Close()
         }
-        $canvas.ReleaseMouseCapture(); $state.start = $null; $state.startVisual = $null
+        $canvas.ReleaseMouseCapture(); $state.start = $null; $state.startVisual = $null; $state.lastPhysical = $null
     })
     $window.Add_KeyDown({ param($sender, $event) if ($event.Key -eq 'Escape') { $window.Close() } })
     [void]$window.ShowDialog()
@@ -128,7 +138,22 @@ if ($Mode -eq 'frame') {
     $frame = [System.Drawing.Bitmap]::new($actualWidth, $actualHeight)
     try {
         $g = [System.Drawing.Graphics]::FromImage($frame)
-        try { $g.CopyFromScreen($origin.X, $origin.Y, 0, 0, $frame.Size) } finally { $g.Dispose() }
+        try {
+            try {
+                $g.CopyFromScreen($origin.X, $origin.Y, 0, 0, $frame.Size)
+            } catch [System.ComponentModel.Win32Exception] {
+                $destination = $g.GetHdc()
+                $desktop = [RegionNative]::GetDC([IntPtr]::Zero)
+                try {
+                    if ($desktop -eq [IntPtr]::Zero -or -not [RegionNative]::BitBlt($destination, 0, 0, $actualWidth, $actualHeight, $desktop, $origin.X, $origin.Y, 0x00CC0020)) {
+                        throw '无法读取已确认可见的日志区域'
+                    }
+                } finally {
+                    if ($desktop -ne [IntPtr]::Zero) { [void][RegionNative]::ReleaseDC([IntPtr]::Zero, $desktop) }
+                    $g.ReleaseHdc($destination)
+                }
+            }
+        } finally { $g.Dispose() }
         CheckIdentity
         $after = [RegionNative+POINT]::new()
         $afterRect = [RegionNative+RECT]::new()
