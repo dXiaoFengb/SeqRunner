@@ -1,10 +1,11 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, shell } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { promisify } = require('node:util');
 const { prepareDataDirectory } = require('./portable-data.cjs');
+const { createArchive, readSettings, writeSettings } = require('./settings.cjs');
 
 let backend; let windowRef; let connection; let quitting = false; let backendState = 'starting'; let backendDetail = '';
 const sourceRoot = path.resolve(__dirname, '..');
@@ -15,7 +16,12 @@ function developmentVersion() {
 const executableNames = { maa: ['maa.exe'], zzz_onedragon: ['onedragon-runtimelauncher.exe', 'onedragon-launcher.exe'], maaend: ['maaend.exe'], march7th: ['march7th assistant.exe'], bettergi: ['bettergi.exe'] };
 function frontendEntry() { return app.isPackaged ? path.join(app.getAppPath(), 'frontend-dist', 'index.html') : path.join(sourceRoot, 'frontend-dist', 'index.html'); }
 function runtimeDataDirectory() { return prepareDataDirectory({ packaged: app.isPackaged, sourceRoot, execPath: process.execPath, environment: process.env }); }
+function uiWindowDimension(name, fallback, minimum) { const value = Number.parseInt(process.env[name] || '', 10); return Number.isInteger(value) && value >= minimum && value <= 4096 ? value : fallback; }
 app.setPath('userData', path.join(runtimeDataDirectory(), 'electron'));
+let appSettings = readSettings(runtimeDataDirectory());
+function applyLoginSettings(settings) {
+  if (process.platform === 'win32') app.setLoginItemSettings({ openAtLogin: settings.autoStart, openAsHidden: settings.autoStart && settings.minimizeOnLaunch });
+}
 function backendCommand() { if (app.isPackaged) return { command: path.join(process.resourcesPath, 'backend', 'sequential-runner-backend.exe') }; const base = path.join(sourceRoot, 'backend'); return { command: path.join(base, '.venv', 'Scripts', 'python.exe'), args: ['-m', 'app.runner_server'], cwd: base }; }
 function startBackend() {
   const target = backendCommand(); const token = crypto.randomUUID();
@@ -54,6 +60,30 @@ function shutdown() {
 ipcMain.handle('runner:get-connection', () => connection || null);
 ipcMain.handle('runner:get-backend-status', () => ({ state: backendState, detail: backendDetail }));
 ipcMain.handle('runner:get-build-info', () => ({ version: developmentVersion() }));
+ipcMain.handle('runner:get-settings', () => appSettings);
+ipcMain.handle('runner:save-settings', (_event, next) => {
+  appSettings = writeSettings(runtimeDataDirectory(), next);
+  applyLoginSettings(appSettings);
+  return appSettings;
+});
+ipcMain.handle('runner:export-archive', async (_event, request) => {
+  const kind = request?.kind;
+  if (!['backup', 'logs', 'diagnostic'].includes(kind)) throw new Error('导出类型无效。');
+  const label = kind === 'backup' ? '数据备份' : kind === 'logs' ? '本体日志' : '专项问题包';
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const picked = await dialog.showSaveDialog(windowRef, { defaultPath: `${label}-${stamp}.zip`, filters: [{ name: 'ZIP 文件', extensions: ['zip'] }] });
+  if (picked.canceled || !picked.filePath) return { canceled: true };
+  const result = createArchive(runtimeDataDirectory(), picked.filePath, { kind, presetId: typeof request.presetId === 'string' ? request.presetId : null });
+  return { canceled: false, ...result };
+});
+ipcMain.handle('runner:open-devtools', () => { if (!windowRef) throw new Error('应用窗口尚未准备好。'); windowRef.webContents.openDevTools({ mode: 'detach' }); return { accepted: true }; });
+ipcMain.handle('runner:show-notification', (_event, request) => {
+  const kind = request?.kind;
+  if (!['completed', 'failed'].includes(kind)) throw new Error('通知类型无效。');
+  if (!appSettings.notifications[kind]) return { shown: false };
+  if (Notification.isSupported()) new Notification({ title: typeof request.title === 'string' ? request.title.slice(0, 120) : '顺序任务调度器', body: typeof request.body === 'string' ? request.body.slice(0, 400) : '' }).show();
+  return { shown: Notification.isSupported() };
+});
 ipcMain.handle('runner:select-executable', async (_event, presetId) => { const picked = await dialog.showOpenDialog(windowRef, { properties: ['openFile'], filters: [{ name: 'Windows 可执行程序', extensions: ['exe'] }] }); if (picked.canceled || !picked.filePaths[0]) return { canceled: true }; const selected = picked.filePaths[0]; const expected = executableNames[presetId] || []; return { canceled: false, path: selected, matchesPreset: !presetId || expected.includes(path.basename(selected).toLowerCase()) }; });
 ipcMain.handle('runner:select-directory', async () => { const picked = await dialog.showOpenDialog(windowRef, { properties: ['openDirectory'] }); return picked.canceled || !picked.filePaths[0] ? { canceled: true } : { canceled: false, path: picked.filePaths[0] }; });
 function externalFile(source) {
@@ -74,7 +104,7 @@ ipcMain.handle('runner:copy-text', (_event, text) => { if (typeof text !== 'stri
 ipcMain.handle('runner:export-file', async (_event, reference) => { const file = await authorizedHistoryFile(reference); const picked = await dialog.showSaveDialog(windowRef, { defaultPath: path.basename(file) }); if (picked.canceled || !picked.filePath) return { canceled: true }; fs.copyFileSync(file, picked.filePath, fs.constants.COPYFILE_EXCL); return { canceled: false, path: picked.filePath }; });
 ipcMain.handle('runner:show-in-folder', async (_event, reference) => { shell.showItemInFolder(await authorizedHistoryFile(reference)); return { accepted: true }; });
 ipcMain.handle('runner:quit-app', () => { shutdown(); return { accepted: true }; });
-async function createWindow() { await startBackend(); await verifyBackend(); Menu.setApplicationMenu(null); const healthCheck = process.env.RUNNER_HEALTH_CHECK === '1'; windowRef = new BrowserWindow({ width: 1280, height: 820, minWidth: 1280, minHeight: 820, show: !healthCheck, backgroundColor: '#0b1722', title: `顺序任务调度器 ${developmentVersion()}`, webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs') } }); windowRef.webContents.setWindowOpenHandler(() => ({ action: 'deny' })); const devServer = process.env.VITE_DEV_SERVER_URL; if (devServer) await windowRef.loadURL(devServer); else await windowRef.loadFile(frontendEntry()); if (healthCheck) setTimeout(shutdown, 1000); }
+async function createWindow() { await startBackend(); await verifyBackend(); Menu.setApplicationMenu(null); const healthCheck = process.env.RUNNER_HEALTH_CHECK === '1'; const width = uiWindowDimension('RUNNER_UI_WINDOW_WIDTH', 1280, 640); const height = uiWindowDimension('RUNNER_UI_WINDOW_HEIGHT', 820, 620); windowRef = new BrowserWindow({ width, height, minWidth: 640, minHeight: 620, show: false, backgroundColor: '#0b1722', title: `顺序任务调度器 ${developmentVersion()}`, webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs') } }); windowRef.webContents.setWindowOpenHandler(() => ({ action: 'deny' })); windowRef.once('ready-to-show', () => { if (healthCheck) return; windowRef.show(); if (appSettings.minimizeOnLaunch) windowRef.minimize(); }); const devServer = process.env.VITE_DEV_SERVER_URL; if (devServer) await windowRef.loadURL(devServer); else await windowRef.loadFile(frontendEntry()); if (healthCheck) setTimeout(shutdown, 1000); }
 const lock = app.requestSingleInstanceLock(); if (!lock) app.quit();
 app.on('second-instance', () => { if (windowRef) { if (windowRef.isMinimized()) windowRef.restore(); windowRef.focus(); } });
 app.whenReady().then(createWindow).catch(async (error) => { await dialog.showMessageBox({ type: 'error', title: '启动失败', message: error.message }); app.quit(); });

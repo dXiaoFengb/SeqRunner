@@ -43,6 +43,13 @@
       "preview": false,
       "highRisk": true,
       "manualAcceptance": [1, 10, 21]
+    },
+    "设置中心": {
+      "tests": ["frontend/src/App.test.ts", "electron/settings.test.cjs", "electron/portable-data.test.cjs"],
+      "scenarios": [],
+      "preview": true,
+      "highRisk": true,
+      "manualAcceptance": [1, 22]
     }
   },
   "forbiddenCurrentReferences": ["plan-scenario.js", "log-scenario.js"]

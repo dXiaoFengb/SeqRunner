@@ -1,6 +1,7 @@
 param(
   [Parameter(Mandatory=$true)][string]$Executable,
-  [ValidateSet('log')][string]$Scenario = 'log',
+  [ValidateSet('log','settings')][string]$Scenario = 'log',
+  [int]$WindowWidth = 0,
   [switch]$AllowWorkingCandidate
 )
 $ErrorActionPreference = 'Stop'
@@ -40,6 +41,11 @@ $env:APPDATA = Join-Path $runPath 'appdata'; $env:LOCALAPPDATA = Join-Path $runP
 $env:TEMP = Join-Path $runPath 'temp'; $env:TMP = $env:TEMP
 $env:RUNNER_USER_DATA_DIR = Join-Path $runPath 'UserData'
 $env:NO_PROXY = '127.0.0.1,localhost'; $env:no_proxy = '127.0.0.1,localhost'; $env:RUNNER_HEALTH_CHECK = '0'
+if ($Scenario -eq 'settings') {
+  if ($WindowWidth -notin @(640, 960, 1280)) { throw 'settings 场景必须指定 -WindowWidth 640、960 或 1280。' }
+  $env:RUNNER_UI_WINDOW_WIDTH = [string]$WindowWidth
+  $env:RUNNER_UI_WINDOW_HEIGHT = '860'
+}
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $listener.Start(); $port = $listener.LocalEndpoint.Port; $listener.Stop()
 $scenarioRunner = Join-Path $PSScriptRoot 'run-cdp-scenario.cjs'
 if ($Scenario -eq 'log') {
@@ -124,7 +130,9 @@ try {
     if ($rendererExited) { throw "隔离 Electron 在创建渲染页面前退出，退出码：$($process.ExitCode)。" }
     throw '隔离 Electron 在 45 秒内没有创建渲染页面。'
   }
-  $result = & node $scenarioRunner '--cdp' "http://127.0.0.1:$debugPort" '--scenario' $Scenario 2>&1 | Out-String
+  $scenarioArgs = @('--cdp', "http://127.0.0.1:$debugPort", '--scenario', $Scenario)
+  if ($Scenario -eq 'settings') { $scenarioArgs += "--settings-screenshots=$(Join-Path $runPath 'settings-screenshots')"; $scenarioArgs += "--window-width=$WindowWidth" }
+  $result = & node $scenarioRunner $scenarioArgs 2>&1 | Out-String
   $scenarioExitCode = $LASTEXITCODE
   $result | Out-File -Encoding utf8 'result.txt'
   if ($scenarioExitCode -ne 0) { throw "验收场景执行失败，退出码：$scenarioExitCode`n$result" }
@@ -167,5 +175,5 @@ try {
     }
   }
   Pop-Location
-  $env:APPDATA=$oldAppData; $env:LOCALAPPDATA=$oldLocalAppData; $env:NO_PROXY=$oldNoProxy; $env:no_proxy=$oldNoProxyLower; $env:RUNNER_HEALTH_CHECK=$oldHealth; $env:TEMP=$oldTemp; $env:TMP=$oldTmp; $env:RUNNER_USER_DATA_DIR=$oldRunnerUserData
+  $env:APPDATA=$oldAppData; $env:LOCALAPPDATA=$oldLocalAppData; $env:NO_PROXY=$oldNoProxy; $env:no_proxy=$oldNoProxyLower; $env:RUNNER_HEALTH_CHECK=$oldHealth; $env:TEMP=$oldTemp; $env:TMP=$oldTmp; $env:RUNNER_USER_DATA_DIR=$oldRunnerUserData; Remove-Item Env:RUNNER_UI_WINDOW_WIDTH -ErrorAction SilentlyContinue; Remove-Item Env:RUNNER_UI_WINDOW_HEIGHT -ErrorAction SilentlyContinue
 }

@@ -21,6 +21,11 @@ declare global {
       showInFolder?(reference: { runId: string; taskId: string; index: number }): Promise<{ accepted: boolean }>
       getBackendStatus?(): Promise<{ state: string; detail: string }>
       getBuildInfo?(): Promise<{ version: string }>
+      getSettings?(): Promise<{ autoStart: boolean; minimizeOnLaunch: boolean; notifications: { completed: boolean; failed: boolean } }>
+      saveSettings?(settings: { autoStart: boolean; minimizeOnLaunch: boolean; notifications: { completed: boolean; failed: boolean } }): Promise<{ autoStart: boolean; minimizeOnLaunch: boolean; notifications: { completed: boolean; failed: boolean } }>
+      exportArchive?(request: { kind: 'backup' | 'logs' | 'diagnostic'; presetId?: string }): Promise<{ canceled: boolean; path?: string; files?: number }>
+      openDevTools?(): Promise<{ accepted: boolean }>
+      showNotification?(request: { kind: 'completed' | 'failed'; title: string; body: string }): Promise<{ shown: boolean }>
       quitApp?(): Promise<{ accepted: boolean }>
     }
   }
