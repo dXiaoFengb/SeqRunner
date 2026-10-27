@@ -6,7 +6,6 @@ contextBridge.exposeInMainWorld('desktopRunner', {
   getSettings: () => ipcRenderer.invoke('runner:get-settings'),
   saveSettings: (settings) => ipcRenderer.invoke('runner:save-settings', settings),
   exportArchive: (request) => ipcRenderer.invoke('runner:export-archive', request),
-  openDevTools: () => ipcRenderer.invoke('runner:open-devtools'),
   showNotification: (request) => ipcRenderer.invoke('runner:show-notification', request),
   selectExecutable: (presetId) => ipcRenderer.invoke('runner:select-executable', presetId || null),
   selectDirectory: () => ipcRenderer.invoke('runner:select-directory'),

@@ -46,7 +46,7 @@
     },
     "设置中心": {
       "tests": ["frontend/src/App.test.ts", "electron/settings.test.cjs", "electron/portable-data.test.cjs"],
-      "scenarios": [],
+      "scenarios": ["tools/ui-acceptance/run-cdp-scenario.cjs"],
       "preview": true,
       "highRisk": true,
       "manualAcceptance": [1, 22]

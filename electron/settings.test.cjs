@@ -7,6 +7,28 @@ const { collectFiles, createArchive, readSettings, writeSettings } = require('./
 
 function workspace() { return fs.mkdtempSync(path.join(os.tmpdir(), 'runner-settings-')); }
 function cleanup(directory) { fs.rmSync(directory, { recursive: true, force: true }); }
+function archiveEntries(destination) {
+  const archive = fs.readFileSync(destination); const entries = new Map(); let offset = 0;
+  while (offset + 4 <= archive.length && archive.readUInt32LE(offset) === 0x04034b50) {
+    const method = archive.readUInt16LE(offset + 8); const size = archive.readUInt32LE(offset + 18); const nameSize = archive.readUInt16LE(offset + 26); const extraSize = archive.readUInt16LE(offset + 28);
+    assert.equal(method, 0, '本地 ZIP 导出应使用可直接核验的存储条目');
+    const nameStart = offset + 30; const dataStart = nameStart + nameSize + extraSize;
+    entries.set(archive.subarray(nameStart, nameStart + nameSize).toString('utf8'), archive.subarray(dataStart, dataStart + size));
+    offset = dataStart + size;
+  }
+  assert.ok(entries.size > 0, '导出 ZIP 应至少含有导出清单');
+  return entries;
+}
+function writeFixture(directory) {
+  fs.mkdirSync(path.join(directory, 'backups')); fs.mkdirSync(path.join(directory, 'logs')); fs.mkdirSync(path.join(directory, 'detail_logs'));
+  fs.writeFileSync(path.join(directory, 'config.json'), JSON.stringify({ schema_version: 3, tasks: [{ id: 'maa-task', preset_id: 'maa', name: '目标 MAA' }, { id: 'other-task', preset_id: 'maaend', name: '无关 MaaEnd' }], queues: [{ id: 'maa-queue', task_ids: ['maa-task'] }, { id: 'other-queue', task_ids: ['other-task'] }], plans: [{ id: 'mixed-plan', items: [{ script_id: 'maa-queue' }, { script_id: 'other-queue' }] }] }));
+  fs.writeFileSync(path.join(directory, 'history.json'), JSON.stringify({ runs: [{ id: 'mixed-run', items: [{ task_id: 'maa-task', state: 'completed' }, { task_id: 'other-task', state: 'failed' }] }] }));
+  fs.writeFileSync(path.join(directory, 'settings.json'), JSON.stringify({ autoStart: false }));
+  fs.writeFileSync(path.join(directory, 'backups', 'legacy.json'), '{"backup":true}');
+  fs.writeFileSync(path.join(directory, 'logs', 'backend.log'), '受管后端日志');
+  fs.writeFileSync(path.join(directory, 'detail_logs', 'run.log'), '受管明细日志');
+}
+function entryNames(entries) { return [...entries.keys()].sort(); }
 
 test('settings use safe defaults and atomically persist supported values', () => {
   const directory = workspace();
@@ -29,25 +51,48 @@ test('archive collection stays inside the managed data directory', () => {
   } finally { cleanup(directory); cleanup(outside); }
 });
 
-test('archive writes a non-overwriting zip with an export manifest', () => {
+test('backup and log archives contain only their declared managed data with a matching manifest', () => {
   const directory = workspace(); const destination = path.join(directory, 'backup.zip');
   try {
-    fs.writeFileSync(path.join(directory, 'config.json'), '{"schema_version":3}');
+    writeFixture(directory);
     const result = createArchive(directory, destination, { kind: 'backup' });
-    const archive = fs.readFileSync(destination);
-    assert.equal(result.files, 1); assert.equal(archive.readUInt32LE(0), 0x04034b50); assert.equal(archive.includes(Buffer.from('导出清单.json')), true);
+    const backup = archiveEntries(destination);
+    assert.equal(result.files, 4); assert.deepEqual(entryNames(backup), ['backups/legacy.json', 'config.json', 'history.json', 'settings.json', '导出清单.json']);
+    const backupManifest = JSON.parse(backup.get('导出清单.json').toString('utf8'));
+    assert.deepEqual(backupManifest.files, ['backups/legacy.json', 'config.json', 'history.json', 'settings.json']);
     assert.throws(() => createArchive(directory, destination, { kind: 'backup' }), /已经存在/);
+    const logDestination = path.join(directory, 'logs.zip'); createArchive(directory, logDestination, { kind: 'logs' });
+    const logs = archiveEntries(logDestination);
+    assert.deepEqual(entryNames(logs), ['detail_logs/run.log', 'logs/backend.log', '导出清单.json']);
+    assert.equal(logs.has('config.json'), false); assert.equal(logs.has('history.json'), false);
   } finally { cleanup(directory); }
 });
 
-test('diagnostic archive requires a preset and omits unrelated tasks from its JSON payload', () => {
+test('diagnostic archive requires a preset and filters unrelated configuration and history records', () => {
   const directory = workspace(); const destination = path.join(directory, 'diagnostic.zip');
   try {
-    fs.writeFileSync(path.join(directory, 'config.json'), JSON.stringify({ tasks: [{ id: 'maa', preset_id: 'maa' }, { id: 'other', preset_id: 'maaend' }], queues: [{ id: 'q1', task_ids: ['maa'] }, { id: 'q2', task_ids: ['other'] }], plans: [{ id: 'p1', items: [{ script_id: 'q1' }, { script_id: 'q2' }] }] }));
-    fs.writeFileSync(path.join(directory, 'history.json'), JSON.stringify({ runs: [{ id: 'r1', items: [{ task_id: 'maa' }, { task_id: 'other' }] }] }));
+    writeFixture(directory);
     assert.throws(() => createArchive(directory, destination, { kind: 'diagnostic' }), /必须指定预设/);
     createArchive(directory, destination, { kind: 'diagnostic', presetId: 'maa' });
-    const archive = fs.readFileSync(destination).toString('utf8');
-    assert.equal(archive.includes('"other"'), false); assert.equal(archive.includes('"maa"'), true);
+    const diagnostic = archiveEntries(destination);
+    assert.deepEqual(entryNames(diagnostic), ['config.json', 'history.json', 'settings.json', '导出清单.json']);
+    const configuration = JSON.parse(diagnostic.get('config.json').toString('utf8')); const history = JSON.parse(diagnostic.get('history.json').toString('utf8')); const manifest = JSON.parse(diagnostic.get('导出清单.json').toString('utf8'));
+    assert.deepEqual(configuration.tasks.map((task) => task.id), ['maa-task']);
+    assert.deepEqual(configuration.queues.map((queue) => queue.id), ['maa-queue']);
+    assert.deepEqual(configuration.plans[0].items.map((item) => item.script_id), ['maa-queue']);
+    assert.deepEqual(history.runs[0].items.map((item) => item.task_id), ['maa-task']);
+    assert.equal(JSON.stringify(configuration).includes('other-task'), false); assert.equal(JSON.stringify(history).includes('other-task'), false);
+    assert.deepEqual(manifest.files, ['config.json', 'history.json', 'settings.json']);
+  } finally { cleanup(directory); }
+});
+
+test('diagnostic export rejects invalid managed JSON and empty log export still writes only its manifest', () => {
+  const directory = workspace(); const diagnosticDestination = path.join(directory, 'diagnostic.zip'); const logDestination = path.join(directory, 'empty-logs.zip');
+  try {
+    fs.writeFileSync(path.join(directory, 'config.json'), '{invalid');
+    assert.throws(() => createArchive(directory, diagnosticDestination, { kind: 'diagnostic', presetId: 'maa' }), /无法生成预设问题包/);
+    fs.rmSync(path.join(directory, 'config.json'));
+    createArchive(directory, logDestination, { kind: 'logs' });
+    assert.deepEqual(entryNames(archiveEntries(logDestination)), ['导出清单.json']);
   } finally { cleanup(directory); }
 });

@@ -76,7 +76,6 @@ ipcMain.handle('runner:export-archive', async (_event, request) => {
   const result = createArchive(runtimeDataDirectory(), picked.filePath, { kind, presetId: typeof request.presetId === 'string' ? request.presetId : null });
   return { canceled: false, ...result };
 });
-ipcMain.handle('runner:open-devtools', () => { if (!windowRef) throw new Error('应用窗口尚未准备好。'); windowRef.webContents.openDevTools({ mode: 'detach' }); return { accepted: true }; });
 ipcMain.handle('runner:show-notification', (_event, request) => {
   const kind = request?.kind;
   if (!['completed', 'failed'].includes(kind)) throw new Error('通知类型无效。');

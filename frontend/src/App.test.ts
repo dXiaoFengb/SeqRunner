@@ -27,7 +27,7 @@ function installBackend(source = config(), runtime: Runtime = { busy: false, act
   })
   vi.stubGlobal('fetch', fetchMock); vi.stubGlobal('WebSocket', QuietWebSocket); return fetchMock
 }
-function runner() { window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }), selectDirectory: async () => ({ canceled: true }), getSettings: async () => ({ autoStart: false, minimizeOnLaunch: false, notifications: { completed: true, failed: true } }), saveSettings: async (settings) => settings, exportArchive: async () => ({ canceled: false, path: 'C:\\Temp\\settings.zip' }), openDevTools: async () => ({ accepted: true }), showNotification: async () => ({ shown: true }) }; return mount(App, { global: { stubs: { VueMonacoEditor: { props: ['value'], template: '<pre class="monaco-stub">{{ value }}</pre>' } } } }) }
+function runner(exportResult: { canceled: boolean; path?: string } = { canceled: false, path: 'C:\\Temp\\settings.zip' }) { window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }), selectDirectory: async () => ({ canceled: true }), getSettings: async () => ({ autoStart: false, minimizeOnLaunch: false, notifications: { completed: true, failed: true } }), saveSettings: async (settings) => settings, exportArchive: async () => exportResult, showNotification: async () => ({ shown: true }) }; return mount(App, { global: { stubs: { VueMonacoEditor: { props: ['value'], template: '<pre class="monaco-stub">{{ value }}</pre>' } } } }) }
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 test('keeps settings out of the plan page and makes plans the only timing entry', async () => {
@@ -49,17 +49,29 @@ test('keeps settings out of the plan page and makes plans the only timing entry'
   expect(wrapper.text()).toContain('连接诊断')
 })
 
-test('persists launch preferences and exposes every settings tab', async () => {
+test('keeps launch preferences in the default function tab and exposes four settings tabs', async () => {
   installBackend(); const wrapper = runner(); await flushPromises()
   await wrapper.get('button[aria-label="设置"]').trigger('click')
-  expect(wrapper.get('[role="tablist"]').text()).toContain('界面设置')
+  expect(wrapper.get('[role="tablist"]').text()).toContain('功能设置')
   expect(wrapper.get('[role="tablist"]').text()).toContain('日志管理')
+  expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual(['功能设置', '通知设置', '日志管理', '关于'])
+  expect(wrapper.text()).not.toContain('本地设置')
+  expect(wrapper.text()).not.toContain('界面设置')
+  expect(wrapper.text()).not.toContain('开发者工具')
   await wrapper.get('[aria-label="开机自启"]').setValue(true); await flushPromises()
   expect(wrapper.text()).toContain('已保存')
   await wrapper.findAll('button').find((button) => button.text() === '日志管理')!.trigger('click')
   expect(wrapper.text()).toContain('导出数据备份 ZIP')
   await wrapper.findAll('button').find((button) => button.text() === 'MAA 问题包')!.trigger('click'); await flushPromises()
   expect(wrapper.text()).toContain('已导出：C:\\Temp\\settings.zip')
+})
+
+test('reports cancellation when a settings archive destination is not selected', async () => {
+  installBackend(); const wrapper = runner({ canceled: true }); await flushPromises()
+  await wrapper.get('button[aria-label="设置"]').trigger('click')
+  await wrapper.findAll('button').find((button) => button.text() === '日志管理')!.trigger('click')
+  await wrapper.findAll('button').find((button) => button.text().includes('导出数据备份 ZIP'))!.trigger('click'); await flushPromises()
+  expect(wrapper.text()).toContain('已取消导出。')
 })
 
 test('shows only Android emulator connection controls for an MAA script', async () => {

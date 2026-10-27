@@ -131,27 +131,28 @@ async function settingsScenario(cdp, screenshotDirectory, windowWidth) {
   const clickTab = label => `(() => { const node = [...document.querySelectorAll('[role="tab"]')].find(tab => tab.textContent.trim() === ${JSON.stringify(label)}); if (!node) throw new Error('找不到设置页签：${label}'); node.click() })()`
   await eventually(cdp, `document.body.innerText.includes('脚本管理')`, '主界面没有加载')
   await evaluate(cdp, `(() => { const node = [...document.querySelectorAll('nav button')].find(button => button.textContent.includes('设置')); if (!node) throw new Error('找不到设置导航'); node.click() })()`)
-  await eventually(cdp, `document.querySelector('[role="tablist"]') && document.querySelectorAll('[role="tab"]').length === 5`, '设置中心的五个页签没有加载')
+  await eventually(cdp, `document.querySelector('[role="tablist"]') && document.querySelectorAll('[role="tab"]').length === 4`, '设置中心的四个页签没有加载')
   const labels = await evaluate(cdp, `[...document.querySelectorAll('[role="tab"]')].map(tab => tab.textContent.trim())`)
-  const expected = ['界面设置', '功能设置', '通知设置', '日志管理', '关于']
+  const expected = ['功能设置', '通知设置', '日志管理', '关于']
   if (JSON.stringify(labels) !== JSON.stringify(expected)) throw new Error(`设置页签顺序不符合预期：${JSON.stringify(labels)}`)
+  if (await evaluate(cdp, `document.body.innerText.includes('本地设置') || document.body.innerText.includes('界面设置') || document.body.innerText.includes('开发者工具')`)) throw new Error('设置中心仍保留已移除的设置入口')
   await evaluate(cdp, `document.getElementById('settings-tab-function').focus()`)
   if (!await evaluate(cdp, `document.activeElement?.id === 'settings-tab-function'`)) throw new Error('设置页签无法通过键盘焦点访问')
   if (!await evaluate(cdp, `(() => { const tab = document.getElementById('settings-tab-function'); return tab instanceof HTMLButtonElement && !tab.disabled && tab.tabIndex >= 0 })()`)) throw new Error('设置页签不是可由键盘激活的原生按钮')
   await evaluate(cdp, `document.getElementById('settings-tab-function').click()`)
   await eventually(cdp, `document.querySelector('[role="tab"][aria-selected="true"]')?.textContent.trim() === '功能设置'`, '设置页签无法切换')
-  await eventually(cdp, `document.body.innerText.includes('后端运行方式') && document.body.innerText.includes('由应用 Runtime 监督')`, '受管后端运行方式没有呈现')
+  await eventually(cdp, `Boolean(document.querySelector('[aria-label="开机自启"]')) && Boolean(document.querySelector('[aria-label="启动后直接最小化"]')) && document.body.innerText.includes('后端运行方式') && document.body.innerText.includes('由应用 Runtime 监督')`, '功能设置没有同时呈现启动配置与受管运行方式')
   await evaluate(cdp, clickTab('通知设置'))
   await eventually(cdp, `Boolean(document.querySelector('[aria-label="运行结束通知"]')) && Boolean(document.querySelector('[aria-label="失败或停止通知"]'))`, '通知设置开关没有呈现')
   await evaluate(cdp, clickTab('日志管理'))
-  await eventually(cdp, `document.body.innerText.includes('导出数据备份 ZIP') && document.body.innerText.includes('导出本体日志 ZIP') && document.body.innerText.includes('打开开发者工具')`, '日志管理的受限导出入口没有呈现')
+  await eventually(cdp, `document.body.innerText.includes('导出数据备份 ZIP') && document.body.innerText.includes('导出本体日志 ZIP') && document.body.innerText.includes('问题包')`, '日志管理的受限导出入口没有呈现')
   await evaluate(cdp, clickTab('关于'))
   await eventually(cdp, `document.body.innerText.includes('应用信息') && document.body.innerText.includes('连接诊断')`, '关于页诊断信息没有呈现')
   if (screenshotDirectory) {
     if (![640, 960, 1280].includes(windowWidth)) throw new Error('settings 场景缺少合法的原生窗口宽度。')
     fs.mkdirSync(screenshotDirectory, { recursive: true })
     await cdp.call('Page.enable')
-    const tabByWidth = { 1280: '界面设置', 960: '日志管理', 640: '关于' }
+    const tabByWidth = { 1280: '功能设置', 960: '日志管理', 640: '关于' }
     await evaluate(cdp, clickTab(tabByWidth[windowWidth]))
     await eventually(cdp, `outerWidth === ${windowWidth}`, `原生窗口未以 ${windowWidth}px 宽度创建`)
     const layout = await evaluate(cdp, `(() => ({ windowWidth: outerWidth, viewport: innerWidth, documentWidth: document.documentElement.scrollWidth, workbenchWidth: Math.ceil(document.querySelector('.settings-workbench')?.getBoundingClientRect().width || 0), tabWidth: Math.ceil(document.querySelector('.settings-tabs')?.scrollWidth || 0), tabClientWidth: Math.ceil(document.querySelector('.settings-tabs')?.clientWidth || 0) }))()`)
@@ -159,7 +160,7 @@ async function settingsScenario(cdp, screenshotDirectory, windowWidth) {
     const image = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
     fs.writeFileSync(`${screenshotDirectory}/settings-${windowWidth}.png`, Buffer.from(image.data, 'base64'))
   }
-  return `PASS: 设置中心五页签、键盘访问、受管运行方式、通知入口、日志管理、关于诊断与 ${windowWidth}px 真实窗口布局均已在隔离 Electron 渲染页核验`
+  return `PASS: 设置中心四页签、键盘访问、启动配置与受管运行方式、通知入口、日志管理、关于诊断及 ${windowWidth}px 真实窗口布局均已在隔离 Electron 渲染页核验`
 }
 
 async function main() {

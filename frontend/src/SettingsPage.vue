@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { BellRing, DatabaseBackup, Download, Info, MonitorCog, ServerCog, Settings2, Wrench } from '@lucide/vue'
+import { BellRing, DatabaseBackup, Download, Info, ServerCog, Settings2 } from '@lucide/vue'
 
 type AppSettings = { autoStart: boolean; minimizeOnLaunch: boolean; notifications: { completed: boolean; failed: boolean } }
 type SettingsChange = { autoStart?: boolean; minimizeOnLaunch?: boolean; notifications?: Partial<AppSettings['notifications']> }
-type SettingsTab = 'appearance' | 'function' | 'notifications' | 'logs' | 'about'
+type SettingsTab = 'function' | 'notifications' | 'logs' | 'about'
 type PresetOption = { id: string; label: string }
 
 const props = defineProps<{
@@ -17,14 +17,12 @@ const props = defineProps<{
   presets: PresetOption[]
   saveSettings: (value: AppSettings) => Promise<void>
   exportArchive: (kind: 'backup' | 'logs' | 'diagnostic', presetId?: string) => Promise<{ path?: string; canceled?: boolean }>
-  openDevTools: () => Promise<void>
   refreshDiagnostics: () => Promise<void>
 }>()
 
-const tab = ref<SettingsTab>('appearance')
+const tab = ref<SettingsTab>('function')
 const actionNote = ref('')
-const tabs: Array<{ id: SettingsTab; label: string; icon: typeof MonitorCog }> = [
-  { id: 'appearance', label: '界面设置', icon: MonitorCog },
+const tabs: Array<{ id: SettingsTab; label: string; icon: typeof Settings2 }> = [
   { id: 'function', label: '功能设置', icon: Settings2 },
   { id: 'notifications', label: '通知设置', icon: BellRing },
   { id: 'logs', label: '日志管理', icon: DatabaseBackup },
@@ -32,8 +30,7 @@ const tabs: Array<{ id: SettingsTab; label: string; icon: typeof MonitorCog }> =
 ]
 const activeTab = computed(() => tabs.find((item) => item.id === tab.value) || tabs[0])
 const tabSummary: Record<SettingsTab, string> = {
-  appearance: '调整应用打开时的行为，不会影响当前运行中的任务。',
-  function: '查看当前应用负责的后端运行边界。',
+  function: '管理应用启动行为，并查看受管后端的运行边界。',
   notifications: '只在一轮任务出现明确结果时提醒。',
   logs: '导出受管数据与本体日志，不采集外部软件原始日志。',
   about: '查看版本、连接状态与本地诊断。',
@@ -54,26 +51,18 @@ async function exportPackage(kind: 'backup' | 'logs' | 'diagnostic', presetId?: 
     actionNote.value = result.canceled ? '已取消导出。' : result.path ? `已导出：${result.path}` : '导出完成。'
   } catch (error) { actionNote.value = error instanceof Error ? `导出失败：${error.message}` : '导出失败。' }
 }
-async function openDevTools() { try { await props.openDevTools(); actionNote.value = '已打开当前窗口的开发者工具。' } catch (error) { actionNote.value = error instanceof Error ? error.message : '无法打开开发者工具。' } }
 </script>
 
 <template>
   <section class="settings-workbench" aria-label="设置中心">
-    <div class="settings-navigation">
-      <p>本地设置</p>
-      <nav class="settings-tabs" role="tablist" aria-label="设置功能选项卡">
-        <button v-for="item in tabs" :id="`settings-tab-${item.id}`" :key="item.id" :class="{ active: tab === item.id }" role="tab" :aria-selected="tab === item.id" :aria-controls="`settings-panel-${item.id}`" @click="tab = item.id"><component :is="item.icon" aria-hidden="true" /><span>{{ item.label }}</span></button>
-      </nav>
-    </div>
+    <nav class="settings-tabs" role="tablist" aria-label="设置功能选项卡">
+      <button v-for="item in tabs" :id="`settings-tab-${item.id}`" :key="item.id" :class="{ active: tab === item.id }" role="tab" :aria-selected="tab === item.id" :aria-controls="`settings-panel-${item.id}`" @click="tab = item.id"><component :is="item.icon" aria-hidden="true" /><span>{{ item.label }}</span></button>
+    </nav>
     <section class="settings-stage" role="tabpanel" :aria-labelledby="`settings-tab-${tab}`" :id="`settings-panel-${tab}`">
       <header class="settings-stage-heading"><div><h2>{{ activeTab.label }}</h2><p>{{ tabSummary[tab] }}</p></div><small v-if="saveLabel" :class="`settings-save-${saveState}`">{{ saveLabel }}</small></header>
 
-      <template v-if="tab === 'appearance'">
+      <template v-if="tab === 'function'">
         <section class="settings-section"><div class="settings-section-heading"><h3>启动配置</h3><p>更改会保存到本机，并在下一次打开应用时生效。</p></div><div class="settings-option-list"><label class="settings-option"><span><b>开机自启</b><small>登录 Windows 后自动启动顺序任务调度器。</small></span><input type="checkbox" :checked="settings.autoStart" aria-label="开机自启" @change="update({ autoStart: ($event.target as HTMLInputElement).checked })"></label><label class="settings-option"><span><b>启动后直接最小化</b><small>打开应用后最小化到任务栏，不影响后台运行。</small></span><input type="checkbox" :checked="settings.minimizeOnLaunch" aria-label="启动后直接最小化" @change="update({ minimizeOnLaunch: ($event.target as HTMLInputElement).checked })"></label></div></section>
-        <p class="settings-note">设置中心只管理本应用的本地行为；不会上传使用数据，也不会改变外部软件的配置。</p>
-      </template>
-
-      <template v-else-if="tab === 'function'">
         <section class="settings-section"><div class="settings-section-heading"><h3>后端运行方式</h3><p>应用负责启动、监视、停止和进程清理，避免出现无人管理的后台进程。</p></div><div class="settings-runtime"><ServerCog aria-hidden="true" /><div><b>自动</b><small>由应用 Runtime 监督；暂不支持手动接管。</small></div><span>受管</span></div></section>
         <p class="settings-note">软件脚本仍按原路径读取已授权的外部日志；设置中心不修改外部软件配置，也不批量采集外部日志。</p>
       </template>
@@ -86,7 +75,6 @@ async function openDevTools() { try { await props.openDevTools(); actionNote.val
         <section class="settings-section settings-export-section"><div class="settings-section-heading"><h3>数据备份</h3><p>导出本软件的配置、运行历史、迁移备份和设置文件。</p></div><button class="primary" @click="exportPackage('backup')"><Download aria-hidden="true" />导出数据备份 ZIP</button></section>
         <section class="settings-section settings-export-section"><div class="settings-section-heading"><h3>本体日志导出</h3><p>导出本软件的后端日志、应用明细日志和导出清单。</p></div><button class="primary" @click="exportPackage('logs')"><Download aria-hidden="true" />导出本体日志 ZIP</button></section>
         <section class="settings-section"><div class="settings-section-heading"><h3>专项问题包导出</h3><p>按预设生成仅含本软件受管数据的诊断包；不包含目标软件外部日志。</p></div><div class="diagnostic-actions"><button v-for="preset in presets" :key="preset.id" @click="exportPackage('diagnostic', preset.id)"><Download aria-hidden="true" />{{ preset.label }} 问题包</button><button v-if="!presets.length" disabled>暂无可导出的预设问题包</button></div></section>
-        <section class="settings-section settings-developer"><div class="settings-section-heading"><h3>开发者选项</h3><p>仅在手动点击后打开当前窗口的开发者工具。</p></div><button @click="openDevTools"><Wrench aria-hidden="true" />打开开发者工具</button></section>
       </template>
 
       <template v-else>
