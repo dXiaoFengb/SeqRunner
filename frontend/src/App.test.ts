@@ -27,7 +27,7 @@ function installBackend(source = config(), runtime: Runtime = { busy: false, act
   })
   vi.stubGlobal('fetch', fetchMock); vi.stubGlobal('WebSocket', QuietWebSocket); return fetchMock
 }
-function runner(exportResult: { canceled: boolean; path?: string } = { canceled: false, path: 'C:\\Temp\\settings.zip' }) { window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }), selectDirectory: async () => ({ canceled: true }), getSettings: async () => ({ autoStart: false, minimizeOnLaunch: false, notifications: { completed: true, failed: true } }), saveSettings: async (settings) => settings, exportArchive: async () => exportResult, showNotification: async () => ({ shown: true }) }; return mount(App, { global: { stubs: { VueMonacoEditor: { props: ['value'], template: '<pre class="monaco-stub">{{ value }}</pre>' } } } }) }
+function runner(exportResult: { canceled: boolean; path?: string } = { canceled: false, path: 'C:\\Temp\\settings.zip' }) { window.desktopRunner = { getConnection: async () => ({ apiBase: 'http://127.0.0.1:1', wsBase: 'ws://127.0.0.1:1' }), selectExecutable: async () => ({ canceled: true }), selectDirectory: async () => ({ canceled: true }), getSettings: async () => ({ autoStart: false, minimizeOnLaunch: false, notifications: { completed: true, failed: true, system: true } }), saveSettings: async (settings) => settings, exportArchive: async () => exportResult, showNotification: async () => ({ shown: true }) }; return mount(App, { global: { stubs: { VueMonacoEditor: { props: ['value'], template: '<pre class="monaco-stub">{{ value }}</pre>' } } } }) }
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 test('keeps settings out of the plan page and makes plans the only timing entry', async () => {
@@ -58,7 +58,13 @@ test('keeps launch preferences in the default function tab and exposes four sett
   expect(wrapper.text()).not.toContain('本地设置')
   expect(wrapper.text()).not.toContain('界面设置')
   expect(wrapper.text()).not.toContain('开发者工具')
-  await wrapper.get('[aria-label="开机自启"]').setValue(true); await flushPromises()
+  const functionBlocks = wrapper.findAll('[data-testid="settings-function-block"]')
+  expect(functionBlocks).toHaveLength(2)
+  expect(functionBlocks[0].text()).toContain('启动配置')
+  expect(functionBlocks[1].text()).toContain('后端运行方式')
+  expect(functionBlocks.every((block) => block.classes().includes('settings-card'))).toBe(true)
+  expect(wrapper.find('[data-testid="settings-function-group"]').exists()).toBe(false)
+  await wrapper.get('[aria-label="开机自启"]').setValue('true'); await flushPromises()
   expect(wrapper.text()).toContain('已保存')
   await wrapper.findAll('button').find((button) => button.text() === '日志管理')!.trigger('click')
   expect(wrapper.text()).toContain('导出数据备份 ZIP')

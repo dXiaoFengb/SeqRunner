@@ -238,6 +238,8 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173", "null"],
+        # 开发预览使用受控的随机回环端口；绝不接受局域网或外部来源。
+        allow_origin_regex=r"^https?://(?:127\.0\.0\.1|localhost):[0-9]{1,5}$",
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "OPTIONS"],
         allow_headers=["content-type"],

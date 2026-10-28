@@ -5,7 +5,7 @@ const path = require('node:path');
 const DEFAULT_SETTINGS = Object.freeze({
   autoStart: false,
   minimizeOnLaunch: false,
-  notifications: Object.freeze({ completed: true, failed: true }),
+  notifications: Object.freeze({ completed: true, failed: true, system: true }),
 });
 
 function settingsPath(dataDirectory) { return path.join(dataDirectory, 'settings.json'); }
@@ -19,6 +19,7 @@ function normalizeSettings(value) {
     notifications: {
       completed: asBoolean(notifications.completed, DEFAULT_SETTINGS.notifications.completed),
       failed: asBoolean(notifications.failed, DEFAULT_SETTINGS.notifications.failed),
+      system: asBoolean(notifications.system, DEFAULT_SETTINGS.notifications.system),
     },
   };
 }

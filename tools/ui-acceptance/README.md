@@ -1,6 +1,6 @@
 # 隔离 Electron 日志自动验收
 
-本工具只有一个实际执行入口：`run.ps1` 启动隔离副本后调用 `run-cdp-scenario.cjs --scenario log`。它仅在功能批次完成或 EXE 门禁触发后使用；普通功能的开发态检查改用 `../../docs/审核覆盖矩阵.md` 所述 `产物/预览/` 预览流程。它将只读的 portable 验证包复制到新建的 `build/ui-acceptance/<唯一标识>/`，在该目录创建虚拟配置、受控历史记录和脱敏外部日志夹具；不读取项目 `data/`、用户数据或真实业务日志，也不启动业务软件或系统操作。
+正式 EXE 自动验收入口仍为 `run.ps1`，它启动隔离副本后调用 `run-cdp-scenario.cjs --scenario log`。只有用户明确说“打包验证”时才使用该入口；普通功能的开发态检查使用 `../../docs/审核覆盖矩阵.md` 所述 `产物/预览/` 流程，并由 `run-feature-preview.cjs` 以 Playwright 启动 Electron、确认 API 在线和实时已连接、保存截图后等待用户关闭窗口。两条路线都不读取项目 `data/`、用户数据或真实业务日志，也不启动业务软件或系统操作。
 
 场景只通过 CDP 附着本次 Electron 渲染页面，不创建额外浏览器标签。无论通过或失败，启动器都会请求关闭该副本窗口、核验本次已记录的进程树，并将关闭请求、兜底情况和残留 PID 写入 `shutdown.json`。残留 PID 非空、进程树未知或需要兜底终止时，自动验收不得报告通过。
 
@@ -13,7 +13,7 @@ corepack npm ci --prefix tools/ui-acceptance --ignore-scripts --no-audit --no-fu
 pwsh -NoProfile -File tools/ui-acceptance/run.ps1 -Executable '<TASK.md 指定且已核验 SHA-256 的 portable EXE 路径>'
 ```
 
-默认场景就是 `log`；不再存在未执行的备用 Playwright、计划或日志场景路径。脚本默认只接受本工作区 `产物/验证/vX.Y.Z/` 根目录下以 `-portable.exe` 结尾的文件。版本事务最终化前可显式传入 `-AllowWorkingCandidate`，仅验收同一工作区 `产物/工作/vX.Y.Z/软件包/` 下的 portable EXE；验收的 `source.txt` 会记录源与副本 SHA-256，最终化后必须核对主 EXE 哈希未变。该开关不接受其他工作目录、历史包或业务程序。
+正式 EXE 默认场景就是 `log`；它只接受本工作区 `产物/验证/vX.Y.Z/` 根目录下以 `-portable.exe` 结尾的文件。版本事务最终化前可显式传入 `-AllowWorkingCandidate`，仅验收同一工作区 `产物/工作/vX.Y.Z/软件包/` 下的 portable EXE；验收的 `source.txt` 会记录源与副本 SHA-256，最终化后必须核对主 EXE 哈希未变。该开关不接受其他工作目录、历史包或业务程序。Playwright 使用项目现有 Electron，不下载浏览器或进行全局安装。
 
 运行时通过 `RUNNER_USER_DATA_DIR` 使用隔离用户数据目录。成功时输出 `Evidence=...`；其中 `source.txt` 记录候选与哈希，`result.txt` 记录场景断言，`shutdown.json` 记录关闭与进程树证据，`final.png` 与 `viewport-*.png` 用于复核。
 

@@ -14,6 +14,7 @@ backend/.venv/
 
 # Node / Electron
 node_modules/
+/.npm-cache/
 frontend/node_modules/
 dist/
 frontend-dist/
@@ -56,3 +57,5 @@ coverage/
 !.env.example
 *.key
 *.pem
+qq-notification.encrypted
+webhooks.encrypted

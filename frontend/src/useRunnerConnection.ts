@@ -21,10 +21,24 @@ declare global {
       showInFolder?(reference: { runId: string; taskId: string; index: number }): Promise<{ accepted: boolean }>
       getBackendStatus?(): Promise<{ state: string; detail: string }>
       getBuildInfo?(): Promise<{ version: string }>
-      getSettings?(): Promise<{ autoStart: boolean; minimizeOnLaunch: boolean; notifications: { completed: boolean; failed: boolean } }>
-      saveSettings?(settings: { autoStart: boolean; minimizeOnLaunch: boolean; notifications: { completed: boolean; failed: boolean } }): Promise<{ autoStart: boolean; minimizeOnLaunch: boolean; notifications: { completed: boolean; failed: boolean } }>
+      getSettings?(): Promise<{ autoStart: boolean; minimizeOnLaunch: boolean; notifications: { completed: boolean; failed: boolean; system: boolean } }>
+      saveSettings?(settings: { autoStart: boolean; minimizeOnLaunch: boolean; notifications: { completed: boolean; failed: boolean; system: boolean } }): Promise<{ autoStart: boolean; minimizeOnLaunch: boolean; notifications: { completed: boolean; failed: boolean; system: boolean } }>
       exportArchive?(request: { kind: 'backup' | 'logs' | 'diagnostic'; presetId?: string }): Promise<{ canceled: boolean; path?: string; files?: number }>
-      showNotification?(request: { kind: 'completed' | 'failed'; title: string; body: string }): Promise<{ shown: boolean }>
+      showNotification?(request: { kind: 'completed' | 'failed'; title: string; body: string }): Promise<{ shown: boolean; webhookFailures?: number; qqFailed?: boolean }>
+      qqStatus?(): Promise<{ bound: boolean; enabled: boolean; state: string }>
+      qqStart?(): Promise<{ id: string; image: string }>
+      qqPoll?(id: string): Promise<{ state: string }>
+      qqCancel?(): Promise<unknown>
+      qqEnable?(enabled: boolean): Promise<unknown>
+      qqUnbind?(): Promise<unknown>
+      qqTest?(): Promise<{ sent: boolean }>
+      listWebhooks?(): Promise<Array<{ id: string; name: string; enabled: boolean; method: 'GET' | 'POST' }>>
+      getWebhook?(id: string): Promise<{ id: string; name: string; enabled: boolean; method: 'GET' | 'POST'; url: string; template: string; headers: Record<string, string> }>
+      saveWebhook?(value: { id?: string; name: string; enabled: boolean; method: 'GET' | 'POST'; url: string; template: string; headers: Record<string, string> }): Promise<unknown>
+      removeWebhook?(id: string): Promise<unknown>
+      resetUnreadableWebhooks?(): Promise<unknown>
+      testWebhook?(id: string): Promise<{ sent: boolean }>
+      testSystemNotification?(): Promise<{ shown: boolean }>
       quitApp?(): Promise<{ accepted: boolean }>
     }
   }

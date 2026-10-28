@@ -8,7 +8,7 @@ from app.events import EventHub
 from app.main import create_app
 
 
-def test_health_returns_the_startup_instance_and_development_cors(tmp_path) -> None:
+def test_health_returns_the_startup_instance_and_loopback_development_cors(tmp_path) -> None:
     with TestClient(create_app(tmp_path / "data", instance_id="this-instance")) as client:
         response = client.get("/health", headers={"Origin": "http://127.0.0.1:5173"})
     assert response.json() == {
@@ -17,6 +17,18 @@ def test_health_returns_the_startup_instance_and_development_cors(tmp_path) -> N
         "scheduler": {"status": "healthy", "lastError": None, "failedAt": None},
     }
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
+
+
+def test_cors_allows_random_loopback_preview_port_but_not_external_origin(tmp_path) -> None:
+    with TestClient(create_app(tmp_path / "data", instance_id="cors-test")) as client:
+        preview = client.get("/health", headers={"Origin": "http://127.0.0.1:4999"})
+        local_host = client.get("/health", headers={"Origin": "http://localhost:61234"})
+        external = client.get("/health", headers={"Origin": "https://example.invalid"})
+        packaged = client.get("/health", headers={"Origin": "null"})
+    assert preview.headers["access-control-allow-origin"] == "http://127.0.0.1:4999"
+    assert local_host.headers["access-control-allow-origin"] == "http://localhost:61234"
+    assert "access-control-allow-origin" not in external.headers
+    assert packaged.headers["access-control-allow-origin"] == "null"
 
 
 def test_preset_endpoint_exposes_manual_fallback(tmp_path) -> None:

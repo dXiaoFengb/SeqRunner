@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, shell } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, safeStorage, shell } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -6,12 +6,14 @@ const path = require('node:path');
 const { promisify } = require('node:util');
 const { prepareDataDirectory } = require('./portable-data.cjs');
 const { createArchive, readSettings, writeSettings } = require('./settings.cjs');
+const { store: webhookStore, send: sendWebhook } = require('./webhooks.cjs');
+const { displayedVersion } = require('./version.cjs');
+const { createQQNotifications } = require('./qq-notifications.cjs');
 
 let backend; let windowRef; let connection; let quitting = false; let backendState = 'starting'; let backendDetail = '';
 const sourceRoot = path.resolve(__dirname, '..');
 function developmentVersion() {
-  const versionFile = app.isPackaged ? path.join(app.getAppPath(), 'VERSION.md') : path.join(sourceRoot, 'VERSION.md');
-  try { return fs.readFileSync(versionFile, 'utf8').match(/^\s*- 开发提交版本：\s*(v\d+\.\d+\.\d+)\s*$/m)?.[1] || 'v0.0.0'; } catch (_) { return 'v0.0.0'; }
+  return displayedVersion({ packaged: app.isPackaged, sourceRoot, appPath: app.getAppPath() });
 }
 const executableNames = { maa: ['maa.exe'], zzz_onedragon: ['onedragon-runtimelauncher.exe', 'onedragon-launcher.exe'], maaend: ['maaend.exe'], march7th: ['march7th assistant.exe'], bettergi: ['bettergi.exe'] };
 function frontendEntry() { return app.isPackaged ? path.join(app.getAppPath(), 'frontend-dist', 'index.html') : path.join(sourceRoot, 'frontend-dist', 'index.html'); }
@@ -19,6 +21,8 @@ function runtimeDataDirectory() { return prepareDataDirectory({ packaged: app.is
 function uiWindowDimension(name, fallback, minimum) { const value = Number.parseInt(process.env[name] || '', 10); return Number.isInteger(value) && value >= minimum && value <= 4096 ? value : fallback; }
 app.setPath('userData', path.join(runtimeDataDirectory(), 'electron'));
 let appSettings = readSettings(runtimeDataDirectory());
+let qqManager = null;
+function qq() { if (!qqManager) qqManager = createQQNotifications({ directory: runtimeDataDirectory(), secure: safeStorage }); return qqManager; }
 function applyLoginSettings(settings) {
   if (process.platform === 'win32') app.setLoginItemSettings({ openAtLogin: settings.autoStart, openAsHidden: settings.autoStart && settings.minimizeOnLaunch });
 }
@@ -53,6 +57,7 @@ function shutdown() {
   if (quitting) return;
   quitting = true;
   void (async () => {
+    if (qqManager) qqManager.stop();
     await stopBackend();
     app.exit(0);
   })();
@@ -76,13 +81,31 @@ ipcMain.handle('runner:export-archive', async (_event, request) => {
   const result = createArchive(runtimeDataDirectory(), picked.filePath, { kind, presetId: typeof request.presetId === 'string' ? request.presetId : null });
   return { canceled: false, ...result };
 });
-ipcMain.handle('runner:show-notification', (_event, request) => {
+ipcMain.handle('runner:show-notification', async (_event, request) => {
   const kind = request?.kind;
   if (!['completed', 'failed'].includes(kind)) throw new Error('通知类型无效。');
   if (!appSettings.notifications[kind]) return { shown: false };
-  if (Notification.isSupported()) new Notification({ title: typeof request.title === 'string' ? request.title.slice(0, 120) : '顺序任务调度器', body: typeof request.body === 'string' ? request.body.slice(0, 400) : '' }).show();
-  return { shown: Notification.isSupported() };
+  const message = { title: typeof request.title === 'string' ? request.title.slice(0, 120) : '顺序任务调度器', body: typeof request.body === 'string' ? request.body.slice(0, 400) : '' };
+  return require('./notification-dispatch.cjs').dispatchNotifications({
+    system: () => { if (!appSettings.notifications.system || !Notification.isSupported()) return false; new Notification(message).show(); return true; },
+    webhooks: async () => { const hooks = webhookStore(runtimeDataDirectory(), safeStorage); const results = await Promise.allSettled(hooks.list().filter(value => value.enabled).map(item => Promise.resolve().then(() => sendWebhook(hooks.get(item.id), message)))); return results.filter(result => result.status === 'rejected').length; },
+    qq: async () => { if (qq().status().enabled) await qq().send(message); },
+  });
 });
+ipcMain.handle('runner:qq-status', () => qq().status());
+ipcMain.handle('runner:qq-start', () => qq().start());
+ipcMain.handle('runner:qq-poll', (_event, id) => qq().poll(id));
+ipcMain.handle('runner:qq-cancel', () => { qq().cancel(); return qq().status(); });
+ipcMain.handle('runner:qq-enable', (_event, value) => { qq().setEnabled(value); return qq().status(); });
+ipcMain.handle('runner:qq-unbind', () => { qq().unbind(); return qq().status(); });
+ipcMain.handle('runner:qq-test', () => qq().send({ title:'顺序任务调度器测试通知', body:'这是一条测试通知。' }));
+ipcMain.handle('runner:webhooks-list', () => webhookStore(runtimeDataDirectory(), safeStorage).list());
+ipcMain.handle('runner:webhooks-get', (_event, id) => webhookStore(runtimeDataDirectory(), safeStorage).get(id));
+ipcMain.handle('runner:webhooks-save', (_event, value) => webhookStore(runtimeDataDirectory(), safeStorage).save(value));
+ipcMain.handle('runner:webhooks-remove', (_event, id) => { webhookStore(runtimeDataDirectory(), safeStorage).remove(id); return { removed: true }; });
+ipcMain.handle('runner:webhooks-reset-unreadable', () => { webhookStore(runtimeDataDirectory(), safeStorage).resetUnreadable(); return { reset: true }; });
+ipcMain.handle('runner:webhooks-test', async (_event, id) => sendWebhook(webhookStore(runtimeDataDirectory(), safeStorage).get(id), { title: '顺序任务调度器测试通知', body: '这是一条测试通知。' }));
+ipcMain.handle('runner:system-notification-test', () => { if (!Notification.isSupported()) return { shown: false }; new Notification({ title: '顺序任务调度器测试通知', body: '这是一条测试通知。' }).show(); return { shown: true }; });
 ipcMain.handle('runner:select-executable', async (_event, presetId) => { const picked = await dialog.showOpenDialog(windowRef, { properties: ['openFile'], filters: [{ name: 'Windows 可执行程序', extensions: ['exe'] }] }); if (picked.canceled || !picked.filePaths[0]) return { canceled: true }; const selected = picked.filePaths[0]; const expected = executableNames[presetId] || []; return { canceled: false, path: selected, matchesPreset: !presetId || expected.includes(path.basename(selected).toLowerCase()) }; });
 ipcMain.handle('runner:select-directory', async () => { const picked = await dialog.showOpenDialog(windowRef, { properties: ['openDirectory'] }); return picked.canceled || !picked.filePaths[0] ? { canceled: true } : { canceled: false, path: picked.filePaths[0] }; });
 function externalFile(source) {
@@ -106,6 +129,6 @@ ipcMain.handle('runner:quit-app', () => { shutdown(); return { accepted: true };
 async function createWindow() { await startBackend(); await verifyBackend(); Menu.setApplicationMenu(null); const healthCheck = process.env.RUNNER_HEALTH_CHECK === '1'; const width = uiWindowDimension('RUNNER_UI_WINDOW_WIDTH', 1280, 640); const height = uiWindowDimension('RUNNER_UI_WINDOW_HEIGHT', 820, 620); windowRef = new BrowserWindow({ width, height, minWidth: 640, minHeight: 620, show: false, backgroundColor: '#0b1722', title: `顺序任务调度器 ${developmentVersion()}`, webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs') } }); windowRef.webContents.setWindowOpenHandler(() => ({ action: 'deny' })); windowRef.once('ready-to-show', () => { if (healthCheck) return; windowRef.show(); if (appSettings.minimizeOnLaunch) windowRef.minimize(); }); const devServer = process.env.VITE_DEV_SERVER_URL; if (devServer) await windowRef.loadURL(devServer); else await windowRef.loadFile(frontendEntry()); if (healthCheck) setTimeout(shutdown, 1000); }
 const lock = app.requestSingleInstanceLock(); if (!lock) app.quit();
 app.on('second-instance', () => { if (windowRef) { if (windowRef.isMinimized()) windowRef.restore(); windowRef.focus(); } });
-app.whenReady().then(createWindow).catch(async (error) => { await dialog.showMessageBox({ type: 'error', title: '启动失败', message: error.message }); app.quit(); });
+app.whenReady().then(async () => { try { qq().startGateway(); } catch (_) {} await createWindow(); }).catch(async (error) => { await dialog.showMessageBox({ type: 'error', title: '启动失败', message: error.message }); app.quit(); });
 app.on('before-quit', (event) => { if (quitting) return; event.preventDefault(); shutdown(); });
 app.on('window-all-closed', () => app.quit());

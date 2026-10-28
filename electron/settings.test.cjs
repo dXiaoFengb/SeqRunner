@@ -33,9 +33,9 @@ function entryNames(entries) { return [...entries.keys()].sort(); }
 test('settings use safe defaults and atomically persist supported values', () => {
   const directory = workspace();
   try {
-    assert.deepEqual(readSettings(directory), { autoStart: false, minimizeOnLaunch: false, notifications: { completed: true, failed: true } });
-    assert.deepEqual(writeSettings(directory, { autoStart: true, minimizeOnLaunch: true, notifications: { completed: false, failed: true }, ignored: 'no' }), { autoStart: true, minimizeOnLaunch: true, notifications: { completed: false, failed: true } });
-    assert.deepEqual(readSettings(directory), { autoStart: true, minimizeOnLaunch: true, notifications: { completed: false, failed: true } });
+    assert.deepEqual(readSettings(directory), { autoStart: false, minimizeOnLaunch: false, notifications: { completed: true, failed: true, system: true } });
+    assert.deepEqual(writeSettings(directory, { autoStart: true, minimizeOnLaunch: true, notifications: { completed: false, failed: true }, ignored: 'no' }), { autoStart: true, minimizeOnLaunch: true, notifications: { completed: false, failed: true, system: true } });
+    assert.deepEqual(readSettings(directory), { autoStart: true, minimizeOnLaunch: true, notifications: { completed: false, failed: true, system: true } });
     assert.equal(fs.readdirSync(directory).some((name) => name.endsWith('.tmp')), false);
   } finally { cleanup(directory); }
 });

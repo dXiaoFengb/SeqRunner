@@ -19,7 +19,7 @@ type ScriptExecution = { kind: 'idle' | 'queued' | 'running' | 'waiting_manual' 
 type LiveLogEntry = LiveSummaryLog
 type EditorDraft = { script: Queue; task: Task; isNew: boolean }
 type HistoryDetailState = { runId: string; taskId: string; taskListScrollTop: number }
-type AppSettings = { autoStart: boolean; minimizeOnLaunch: boolean; notifications: { completed: boolean; failed: boolean } }
+type AppSettings = { autoStart: boolean; minimizeOnLaunch: boolean; notifications: { completed: boolean; failed: boolean; system: boolean } }
 
 const config = ref<Config>({ schema_version: 3, queues: [], tasks: [], plans: [], fired_slots: [], startup_fired_dates: {} })
 const runtime = ref<Runtime>({ busy: false, activeTaskId: null, cooldownSeconds: 0, cooldownUntil: null, runCenter: null, run: null })
@@ -31,7 +31,7 @@ const editingScriptId = ref<string | null>(null); const editorDraft = ref<Editor
 const expandedHistory = ref(new Set<string>()); const draggedScript = ref<string | null>(null); const allRunProblems = ref<string[]>([])
 const selectionIssues = ref<Record<string, string>>({}); const deferredPresets = ref<Record<string, DeferredPreset>>({}); const presetRequestSerial = new Map<string, number>()
 const confirmationPending = ref(false); const countdownNow = ref(Date.now()); const saveState = ref<'saved' | 'saving' | 'draft' | 'failed'>('saved')
-const appSettings = ref<AppSettings>({ autoStart: false, minimizeOnLaunch: false, notifications: { completed: true, failed: true } }); const settingsSaveState = ref<'idle' | 'saving' | 'saved' | 'failed'>('idle')
+const appSettings = ref<AppSettings>({ autoStart: false, minimizeOnLaunch: false, notifications: { completed: true, failed: true, system: true } }); const settingsSaveState = ref<'idle' | 'saving' | 'saved' | 'failed'>('idle')
 const appVersion = ref('开发版本读取中'); const backendDetail = ref(''); let localRevision = 0; let savedRevision = 0; let saveFlight: Promise<void> | undefined; let historyFlight: Promise<void> | undefined; let terminalHistoryId: string | null = null; let countdownTimer: number | undefined; let exitAppRunId: string | null = null; let summaryRunId: string | null = null; let summarySequence = 0; let summaryResyncing = false; let scriptRunId: string | null = null; let scriptResyncing = false; let scriptEventRunId: string | null = null; let scriptEventSequence = 0
 let terminalNotificationRunId: string | null = null
 const taskBook = computed(() => new Map(config.value.tasks.map((task) => [task.id, task])))
@@ -96,7 +96,7 @@ function notifyRunTerminal(next: Runtime) {
   const kind = failed ? 'failed' : 'completed'
   const title = failed ? '顺序任务调度器：本轮未完全成功' : '顺序任务调度器：本轮已完成'
   const body = failed ? `${run.queue_name} 已结束，请查看运行中心或日志。` : `${run.queue_name} 已按顺序完成。`
-  void window.desktopRunner?.showNotification?.({ kind, title, body })
+  void window.desktopRunner?.showNotification?.({ kind, title, body }).then((result) => { if (result.webhookFailures || result.qqFailed) notice.value = '部分通知发送失败，请在通知设置中检查。' }).catch(() => { notice.value = '通知发送失败，请在通知设置中检查。' })
 }
 async function resyncLiveLogs() { if (summaryResyncing) return; summaryResyncing = true; try { applyRuntime(await connection.request('/api/runtime') as Runtime) } catch (error) { report('无法重同步本轮日志摘要', error) } finally { summaryResyncing = false } }
 function appendLiveLog(data: Partial<LiveSummaryLog>) { const sequence = data.sequence; if (!data.runId || sequence === undefined || !Number.isInteger(sequence) || !data.message) { const message = data.message || ''; logs.value = [...logs.value.slice(-39), { runId: runtime.value.run?.id || 'legacy', sequence: summarySequence + 1, taskId: data.taskId, message: liveLogLabel(message), phase: logPhase(message) }]; summarySequence += 1; return } if (data.runId !== runtime.value.run?.id) return; if (summaryRunId !== data.runId || sequence !== summarySequence + 1) { if (sequence <= summarySequence) return; void resyncLiveLogs(); return } const next = makeLiveEntry(data as LiveSummaryLog); logs.value = [...logs.value.slice(-39), next]; summarySequence = next.sequence }

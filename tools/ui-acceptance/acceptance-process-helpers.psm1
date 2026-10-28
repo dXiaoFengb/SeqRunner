@@ -1,4 +1,4 @@
-function Get-NativeProcessSnapshot {
+﻿function Get-NativeProcessSnapshot {
     if ($null -eq ('AcceptanceProcessNative' -as [type])) {
         Add-Type @'
 using System;
