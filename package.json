@@ -5,20 +5,20 @@
   "description": "本地顺序任务调度器",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "concurrently -k \"vite --host 127.0.0.1 --strictPort --config frontend/vite.config.ts\" \"cross-env NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
-    "dev:preview": "concurrently -k \"vite --host 127.0.0.1 --port %RUNNER_PREVIEW_PORT% --strictPort --config frontend/vite.config.ts\" \"cross-env NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost wait-on http://127.0.0.1:%RUNNER_PREVIEW_PORT% && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:%RUNNER_PREVIEW_PORT% electron .\"",
+    "dev": "concurrently -k --success command-1 \"vite --host 127.0.0.1 --strictPort --config frontend/vite.config.ts\" \"cross-env NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "dev:preview": "concurrently -k --success command-1 \"vite --host 127.0.0.1 --port %RUNNER_PREVIEW_PORT% --strictPort --config frontend/vite.config.ts\" \"cross-env NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost wait-on http://127.0.0.1:%RUNNER_PREVIEW_PORT% && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:%RUNNER_PREVIEW_PORT% electron .\"",
     "build": "vite build --config frontend/vite.config.ts",
     "typecheck": "vue-tsc -p frontend/tsconfig.json --noEmit",
     "test:frontend": "vitest run --config frontend/vitest.config.ts",
     "electron:health": "cross-env RUNNER_HEALTH_CHECK=1 electron .",
     "package:backend": "backend\\.venv\\Scripts\\python.exe -m PyInstaller --noconfirm --clean --distpath portable\\backend --workpath build\\pyinstaller backend\\sequential_runner_backend.spec",
-    "package:win": "npm run build && npm run package:backend && node scripts/package-portable.cjs",
+    "package:win": "node scripts/packaging-rebuild-required.cjs",
     "package:backend:validation": "node scripts/package-backend-validation.cjs",
-    "package:validation:prepare": "npm run build && npm run package:backend:validation && cross-env RUNNER_VALIDATION_PREPARED=1 node scripts/package-portable.cjs --validation",
-    "validation:health": "pwsh -NoProfile -File scripts/validate-validation-package.ps1",
-    "validation:finalize": "node scripts/finalize-validation-package.cjs",
+    "package:validation:prepare": "node scripts/packaging-rebuild-required.cjs",
+    "validation:health": "node scripts/packaging-rebuild-required.cjs",
+    "validation:finalize": "node scripts/packaging-rebuild-required.cjs",
     "validate:audit-coverage": "node scripts/validate-audit-coverage.cjs",
-    "package:validation": "npm run package:validation:prepare && npm run validation:health && npm run validation:finalize"
+    "package:validation": "node scripts/packaging-rebuild-required.cjs"
   },
   "devDependencies": {
     "@guolao/vue-monaco-editor": "1.6.0",

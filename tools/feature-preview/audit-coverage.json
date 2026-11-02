@@ -1,56 +1,36 @@
 {
-  "version": 1,
-  "description": "审核覆盖唯一机器可校验来源；任务卡引用的领域决定定向门禁与正式 EXE 时机。",
+  "version": 2,
+  "description": "测试文件存在性映射；不表示测试已经运行或功能验收通过。",
   "areas": {
-    "日志": {
-      "tests": ["backend/tests/test_engine.py", "backend/tests/test_external_logs.py", "backend/tests/test_readable_reports.py", "frontend/src/LiveLog.test.ts", "frontend/src/LogPage.test.ts"],
-      "scenarios": ["tools/ui-acceptance/run-cdp-scenario.cjs"],
-      "preview": true,
-      "highRisk": false,
-      "manualAcceptance": [15, 18, 19, 20, 21]
-    },
-    "计划": {
-      "tests": ["backend/tests/test_plans.py", "backend/tests/test_scheduler.py", "frontend/src/PlanManager.test.ts"],
-      "scenarios": [],
-      "preview": true,
-      "highRisk": false,
-      "manualAcceptance": [7, 8, 9]
-    },
-    "脚本编辑": {
-      "tests": ["backend/tests/test_config_persistence.py", "frontend/src/App.test.ts", "frontend/src/ScriptCard.test.ts"],
-      "scenarios": [],
-      "preview": true,
-      "highRisk": false,
-      "manualAcceptance": [3, 5, 11, 12]
-    },
-    "配置迁移": {
-      "tests": ["backend/tests/test_storage.py", "backend/tests/test_storage_migration.py", "electron/portable-data.test.cjs"],
-      "scenarios": [],
-      "preview": true,
-      "highRisk": true,
-      "manualAcceptance": [1, 5]
-    },
-    "进程控制": {
-      "tests": ["backend/tests/test_engine.py", "backend/tests/test_connection.py", "tools/ui-acceptance/acceptance-process-helpers.test.ps1"],
-      "scenarios": ["tools/ui-acceptance/run-cdp-scenario.cjs"],
-      "preview": false,
-      "highRisk": true,
-      "manualAcceptance": [4, 10, 17, 21]
-    },
-    "Electron与打包": {
-      "tests": ["electron/portable-data.test.cjs", "scripts/validation-package-paths.test.cjs", "scripts/validation-electron-cache.test.cjs", "scripts/validation-builder-cache.test.cjs", "scripts/validation-health-helpers.test.ps1"],
-      "scenarios": ["tools/ui-acceptance/run-cdp-scenario.cjs"],
-      "preview": false,
-      "highRisk": true,
-      "manualAcceptance": [1, 10, 21]
-    },
-    "设置中心": {
-      "tests": ["frontend/src/App.test.ts", "frontend/src/SettingsPage.test.ts", "electron/settings.test.cjs", "electron/webhooks.test.cjs", "electron/qq-notifications.test.cjs", "electron/notification-dispatch.test.cjs", "electron/portable-data.test.cjs"],
-      "scenarios": ["tools/ui-acceptance/run-cdp-scenario.cjs"],
-      "preview": true,
-      "highRisk": true,
-      "manualAcceptance": [1, 22]
-    }
-  },
-  "forbiddenCurrentReferences": ["plan-scenario.js", "log-scenario.js"]
+    "调度与执行": [
+      "backend/tests/test_engine.py",
+      "backend/tests/test_scheduler.py",
+      "backend/tests/test_plans.py",
+      "frontend/src/PlanManager.test.ts"
+    ],
+    "日志与报告": [
+      "backend/tests/test_external_logs.py",
+      "backend/tests/test_logwatch.py",
+      "backend/tests/test_readable_reports.py",
+      "frontend/src/LiveLog.test.ts",
+      "frontend/src/LogPage.test.ts"
+    ],
+    "配置与迁移": [
+      "backend/tests/test_config_persistence.py",
+      "backend/tests/test_storage_migration.py",
+      "electron/portable-data.test.cjs"
+    ],
+    "脚本与运行中心": [
+      "frontend/src/App.test.ts",
+      "frontend/src/ScriptCard.test.ts",
+      "frontend/src/RunCenter.test.ts"
+    ],
+    "设置与通知": [
+      "frontend/src/SettingsPage.test.ts",
+      "electron/settings.test.cjs",
+      "electron/webhooks.test.cjs",
+      "electron/qq-notifications.test.cjs",
+      "electron/notification-dispatch.test.cjs"
+    ]
+  }
 }

@@ -59,3 +59,7 @@ coverage/
 *.pem
 qq-notification.encrypted
 webhooks.encrypted
+
+# 新项目的全部本地记录与备份
+/对话记录/
+/产物/发布/

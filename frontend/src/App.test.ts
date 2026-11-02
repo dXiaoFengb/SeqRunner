@@ -158,7 +158,7 @@ test('keeps a completed failure visible and opens history detail', async () => {
 })
 
 test('opens history script detail as a separate application page and returns to the selected report', async () => {
-  const history = [{ id: 'history-1', queue_name: '历史脚本', trigger_source: 'manual', state: 'completed', started_at: '2026-10-25T12:00:00', items: [{ task_id: 't1', task_name: '历史任务', state: 'succeeded', readable_report: { generator_version: 'local-rules-v1', conclusion: '任务已完成', completion_basis: '人工确认', duration_seconds: 2, risk_count: 0, risks: [], events: [] } }] }]
+  const history = [{ id: 'history-1', queue_name: '历史脚本', trigger_source: 'manual', state: 'completed', started_at: new Date().toISOString(), items: [{ task_id: 't1', task_name: '历史任务', state: 'succeeded', readable_report: { generator_version: 'local-rules-v1', conclusion: '任务已完成', completion_basis: '人工确认', duration_seconds: 2, risk_count: 0, risks: [], events: [] } }] }]
   installBackend(config(), { busy: false, activeTaskId: null, cooldownSeconds: 0, run: null }, history)
   const wrapper = runner(); await flushPromises()
   await wrapper.get('button[aria-label="日志"]').trigger('click'); await flushPromises()
