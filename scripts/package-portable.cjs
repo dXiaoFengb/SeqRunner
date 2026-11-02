@@ -1,3 +1,4 @@
+throw new Error('旧打包入口已停用，请使用 V2 打包流程。');
 const { mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const { dirname, relative, resolve } = require('node:path');
@@ -35,7 +36,7 @@ if (validation) {
   });
   const generatedConfig = resolve(root, 'build', 'electron-builder-validation-v' + paths.version + '.json');
   mkdirSync(dirname(generatedConfig), { recursive: true });
-  const baseConfig = JSON.parse(readFileSync(resolve(root, 'electron-builder.validation.json'), 'utf8'));
+  const baseConfig = JSON.parse(readFileSync(resolve(root, 'scripts', 'config', 'electron-builder.validation.json'), 'utf8'));
   writeFileSync(generatedConfig, JSON.stringify({
     ...baseConfig,
     directories: { output: relative(root, paths.applicationDirectory) },

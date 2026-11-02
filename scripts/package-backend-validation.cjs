@@ -1,3 +1,4 @@
+throw new Error('旧打包入口已停用，请使用 V2 打包流程。');
 const { spawnSync } = require('node:child_process');
 const { relative, resolve } = require('node:path');
 const {

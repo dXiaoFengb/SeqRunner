@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set "ROOT=%~dp0"
+for %%I in ("%~dp0..") do set "ROOT=%%~fI\"
 set "PYTHON=%ROOT%backend\.venv\Scripts\python.exe"
 if not exist "%PYTHON%" (
   echo [Missing Python virtual environment]

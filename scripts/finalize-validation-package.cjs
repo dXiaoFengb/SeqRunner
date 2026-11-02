@@ -1,3 +1,4 @@
+if (require.main === module) throw new Error('旧最终化入口已停用，请使用 V2 打包流程。');
 const { existsSync, mkdirSync, readFileSync, readdirSync, renameSync } = require('node:fs');
 const { createHash } = require('node:crypto');
 const { dirname, join, resolve } = require('node:path');

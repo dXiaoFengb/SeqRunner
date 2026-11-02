@@ -2,7 +2,7 @@
   "appId": "local.sequential-task-runner",
   "productName": "顺序任务调度器",
   "files": [
-    "frontend-dist/**",
+    "frontend/dist/**",
     "electron/**",
     "package.json",
     "VERSION.md",
@@ -10,9 +10,8 @@
   ],
   "win": {
     "target": [
-      "portable"
+      "dir"
     ],
-    "artifactName": "${productName}-v${version}-portable.${ext}",
     "signAndEditExecutable": false
   }
 }

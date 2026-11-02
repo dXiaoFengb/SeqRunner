@@ -1,3 +1,4 @@
+throw '旧健康检查入口已停用，请按 V2 人工验收流程检查。'
 $ErrorActionPreference = 'Stop'
 
 Import-Module (Join-Path $PSScriptRoot 'validation-health-helpers.psm1') -Force

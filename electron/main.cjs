@@ -16,7 +16,7 @@ function developmentVersion() {
   return displayedVersion({ packaged: app.isPackaged, sourceRoot, appPath: app.getAppPath() });
 }
 const executableNames = { maa: ['maa.exe'], zzz_onedragon: ['onedragon-runtimelauncher.exe', 'onedragon-launcher.exe'], maaend: ['maaend.exe'], march7th: ['march7th assistant.exe'], bettergi: ['bettergi.exe'] };
-function frontendEntry() { return app.isPackaged ? path.join(app.getAppPath(), 'frontend-dist', 'index.html') : path.join(sourceRoot, 'frontend-dist', 'index.html'); }
+function frontendEntry() { return app.isPackaged ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html') : path.join(sourceRoot, 'frontend', 'dist', 'index.html'); }
 function runtimeDataDirectory() { return prepareDataDirectory({ packaged: app.isPackaged, sourceRoot, execPath: process.execPath, environment: process.env }); }
 function uiWindowDimension(name, fallback, minimum) { const value = Number.parseInt(process.env[name] || '', 10); return Number.isInteger(value) && value >= minimum && value <= 4096 ? value : fallback; }
 app.setPath('userData', path.join(runtimeDataDirectory(), 'electron'));

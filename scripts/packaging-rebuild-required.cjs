@@ -1,2 +1,2 @@
-console.error('旧打包流程依赖未迁移的历史验证包且不符合 V2 规则；请先按 V2 打包规则重建并验证流程。');
+console.error('旧打包入口已停用。请在明确获得打包授权后使用新的准备与最终核验命令；详见 README。');
 process.exitCode = 1;

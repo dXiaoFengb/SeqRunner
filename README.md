@@ -59,9 +59,9 @@ Windows EXE 项目仅在明确要求时打包：工作位置 `产物/工作/<开
 
 - 项目名称 / 定位：顺序任务调度器；Windows 本地桌面程序，按用户配置的顺序执行软件任务，并通过计划、日志与运行历史管理执行。
 - 技术栈：Python 3.13、FastAPI、Pydantic、Uvicorn、Vue 3、TypeScript、Vite、Electron。
-- 目录结构（源 / 测试 / 产物 / 发布）：`backend/`、`frontend/`、`electron/` 分别为后端、前端和桌面主进程，测试与源码相邻；`scripts/`、`tools/` 为开发和验收工具。`data/`、`node_modules/`、`backend/.venv/` 和 `产物/工作/`、`产物/验证/`、`产物/发布/` 不进入 Git。
-- 构建命令：`npm run build` 构建前端。旧 EXE 打包入口因依赖未迁移的历史验证包并与 V2 规则不一致，现已暂停；需在未来获得明确打包授权后按新规则重建和验证。
-- 测试命令：`backend\.venv\Scripts\python.exe -m pytest backend/tests`、`backend\.venv\Scripts\python.exe -m ruff check backend`、`npm run typecheck`、`npm run test:frontend`、`node --test electron/*.test.cjs`、`npm run validate:audit-coverage`。最后一项仅核查测试文件映射，不执行测试或代表验收。
+- 目录结构（源 / 测试 / 产物 / 发布）：`backend/`、`frontend/`、`electron/` 分别为后端、前端和桌面主进程，测试与源码相邻；`scripts/`、`tools/` 为开发和验收工具。`data/`、`node_modules/`、`backend/.venv/`、`frontend/dist/` 和 `产物/工作/`、`产物/验证/`、`产物/发布/` 不进入 Git。
+- 构建命令：`npm run build` 构建前端。免安装文件夹打包工具已重建，仅经模拟测试；真实构建须用户明确要求打包验证。
+- 测试命令：`backend\.venv\Scripts\python.exe -m pytest backend/tests`、`backend\.venv\Scripts\python.exe -m ruff check backend`、`npm run typecheck`、`npm run test:frontend`、`node --test electron/*.test.cjs`、`npm run validate:audit-coverage`、`npm run test:packaging`。最后一项仅核查测试文件映射，不执行测试或代表验收。
 - 发布路径与动作：见 `VERSION.md`
 - Git 与记录策略：见 `CONSTRAINTS.md`
 
@@ -71,4 +71,8 @@ Windows EXE 项目仅在明确要求时打包：工作位置 `产物/工作/<开
 
 在 Windows 安装 Python 3.13 和 Node.js 后，运行 `py -3.13 -m venv backend\.venv`、`backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt` 和 `npm ci`。依赖安装受当前项目的来源和脚本授权约束。双击 `验证审查器.cmd`，入口会选择动态本机端口并为每次启动创建新的隔离临时数据目录；关闭程序窗口即可退出。该预览不会使用项目原有 `data/`，不会打包；每次启动的数据互不继承。
 
-旧 `tools/feature-preview/` 和 `tools/ui-acceptance/` 包含迁移参考脚本；旧的历史证据门禁和旧打包命令不作为 V2 的验证或发布入口。项目人工验收方法见 `人工验收流程.md`。
+旧 `tools/feature-preview/` 和 `tools/ui-acceptance/` 包含迁移参考脚本；旧的历史证据门禁不作为 V2 的验证或发布入口。开发者旧启动器位于 `tools/启动器.bat`，使用项目 `data/`，与隔离预览不同。项目人工验收方法见 `人工验收流程.md`。
+
+## 免安装文件夹打包
+
+仅用户明确要求打包验证时，先安装锁定的本地构建依赖；执行 `npm run package:validation:prepare -- --attempt <唯一标识> --confirm-packaging`，在独立工作目录准备文件夹与清单。按 `人工验收流程.md` 完成全部适用检查并填写工作目录中的验收记录；验证期间通过 `RUNNER_USER_DATA_DIR` 将测试数据指向工作目录外的独立临时位置，避免在产品目录生成 UserData 并改变清单；验收记录按条填写结果及证据，未完成项不能最终化；仅在符合 `规则/打包验证.md` 后执行 `npm run validation:finalize -- --attempt <同一标识> --confirm-packaging`。本轮没有实际打包；若依赖或缓存缺失，不应静默下载或以模拟结果冒充真实产品验证。
