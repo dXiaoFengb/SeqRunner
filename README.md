@@ -63,7 +63,7 @@ Windows EXE 项目仅在明确要求时打包：工作位置 `产物/工作/<开
 - 技术栈：Python 3.13、FastAPI、Pydantic、Uvicorn、Vue 3、TypeScript、Vite、Electron。
 - 目录结构（源 / 测试 / 产物 / 发布）：`backend/`、`frontend/`、`electron/` 分别为后端、前端和桌面主进程，测试与源码相邻；`scripts/`、`tools/` 为开发和验收工具。`data/`、`node_modules/`、`backend/.venv/`、`frontend/dist/` 和 `产物/工作/`、`产物/验证/`、`产物/发布/` 不进入 Git。
 - 构建命令：`npm run build` 构建前端。免安装文件夹打包工具已重建，仅经模拟测试；真实构建须用户明确要求打包验证。
-- 测试命令：`backend\.venv\Scripts\python.exe -m pytest backend/tests`、`backend\.venv\Scripts\python.exe -m ruff check backend`、`npm run typecheck`、`npm run test:frontend`、`node --test electron/*.test.cjs`、`npm run validate:audit-coverage`、`npm run test:packaging`。最后一项仅核查测试文件映射，不执行测试或代表验收。
+- 测试命令：`backend\.venv\Scripts\python.exe -m pytest backend/tests`、`backend\.venv\Scripts\python.exe -m ruff check backend`、`npm run typecheck`、`npm run test:frontend`、`node --test electron/*.test.cjs`、`npm run validate:audit-coverage`、`npm run test:packaging`。`npm run validate:audit-coverage` 仅核查测试文件映射，不执行测试或代表验收；`npm run test:packaging` 执行打包工具模拟测试。
 - 发布路径与动作：见 `VERSION.md`
 - Git 与记录策略：见 `CONSTRAINTS.md`
 
