@@ -86,3 +86,70 @@ test('expired QR shows refresh without leaving the dialog', async () => {
   await vi.advanceTimersByTimeAsync(2000); expect(document.querySelector('[role="dialog"]')?.textContent).toContain('二维码已过期'); expect(document.querySelector('img[alt="手机 QQ 扫码绑定二维码"]')).toBeNull()
   wrapper.unmount()
 })
+
+
+test('Webhook dialog retains invalid and unsaved input and restores focus', async () => {
+  const saveWebhook = vi.fn(async () => { throw new Error('地址无效') })
+  window.desktopRunner = { listWebhooks:async () => [], saveWebhook } as unknown as typeof window.desktopRunner
+  const wrapper = mount(SettingsPage, { props, attachTo:document.body }); await flushPromises()
+  await wrapper.get('#settings-tab-notifications').trigger('click')
+  const opener = wrapper.findAll('button').find(item => item.text() === '添加 Webhook')!
+  await opener.trigger('click'); await flushPromises()
+  const dialog = document.querySelector<HTMLElement>('.hook-dialog')!
+  expect(document.activeElement).toBe(dialog)
+  const input = dialog.querySelector<HTMLInputElement>('input')!; input.value = '示例'; input.dispatchEvent(new Event('input', { bubbles:true }))
+  const button = (text:string) => Array.from(document.querySelectorAll<HTMLButtonElement>('.hook-dialog button')).find(el => el.textContent?.trim() === text)!
+  button('保存').click(); await flushPromises()
+  expect(saveWebhook).toHaveBeenCalledTimes(1); expect(dialog.textContent).toContain('地址无效'); expect(input.value).toBe('示例')
+  dialog.dispatchEvent(new KeyboardEvent('keydown', { key:'Escape', bubbles:true })); await flushPromises()
+  expect(document.activeElement?.textContent).toBe('取消'); expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain('未保存')
+  document.querySelector<HTMLButtonElement>('[role="alertdialog"] [data-cancel]')!.click(); await flushPromises(); expect(input.value).toBe('示例')
+  button('取消').click(); await flushPromises()
+  Array.from(document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find(el => el.textContent === '放弃更改')!.click(); await flushPromises()
+  expect(document.querySelector('.hook-dialog')).toBeNull(); expect(document.activeElement).toBe(opener.element); wrapper.unmount()
+})
+
+test('Webhook save, edit and delete use existing services', async () => {
+  let items: Array<{id:string;name:string;enabled:boolean;method:'POST'}> = []
+  const full = {id:'1',name:'测试',enabled:false,method:'POST',url:'https://example.invalid',template:'{}',headers:{}}
+  const saveWebhook = vi.fn(async () => { items = [{id:'1',name:'测试',enabled:false,method:'POST'}] })
+  const removeWebhook = vi.fn(async () => { items = [] })
+  window.desktopRunner = { listWebhooks:async () => items, getWebhook:async () => full, saveWebhook, removeWebhook } as unknown as typeof window.desktopRunner
+  const wrapper = mount(SettingsPage, { props, attachTo:document.body }); await flushPromises(); await wrapper.get('#settings-tab-notifications').trigger('click')
+  await wrapper.findAll('button').find(el => el.text() === '添加 Webhook')!.trigger('click'); await flushPromises()
+  Array.from(document.querySelectorAll<HTMLButtonElement>('.hook-dialog button')).find(el => el.textContent === '保存')!.click(); await flushPromises()
+  expect(document.querySelector('.hook-dialog')).toBeNull(); expect(wrapper.text()).toContain('测试')
+  await wrapper.findAll('button').find(el => el.text() === '编辑')!.trigger('click'); await flushPromises()
+  expect(document.querySelector<HTMLInputElement>('.hook-dialog input')?.value).toBe('测试')
+  document.querySelector<HTMLButtonElement>('[aria-label="关闭 Webhook 配置"]')!.click(); await flushPromises()
+  await wrapper.findAll('button').find(el => el.text() === '删除')!.trigger('click'); await flushPromises()
+  expect(removeWebhook).not.toHaveBeenCalled(); expect(document.activeElement?.textContent).toBe('取消')
+  Array.from(document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find(el => el.textContent === '确认删除')!.click(); await flushPromises()
+  expect(removeWebhook).toHaveBeenCalledWith('1'); expect(wrapper.text()).toContain('尚未添加 Webhook'); wrapper.unmount()
+})
+
+test('unreadable Webhook reset requires confirmation', async () => {
+  const resetUnreadableWebhooks = vi.fn(async () => undefined)
+  window.desktopRunner = { listWebhooks:async () => { throw new Error('无法读取') }, resetUnreadableWebhooks } as unknown as typeof window.desktopRunner
+  const wrapper = mount(SettingsPage, { props, attachTo:document.body }); await flushPromises(); await wrapper.get('#settings-tab-notifications').trigger('click')
+  await wrapper.findAll('button').find(el => el.text() === '重新配置')!.trigger('click'); await flushPromises()
+  expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain('保留无法读取的旧加密文件'); expect(resetUnreadableWebhooks).not.toHaveBeenCalled()
+  document.querySelector<HTMLButtonElement>('[role="alertdialog"] [data-cancel]')!.click(); await flushPromises(); expect(resetUnreadableWebhooks).not.toHaveBeenCalled(); wrapper.unmount()
+})
+
+
+test('Webhook dialog traps keyboard focus and stays open while saving', async () => {
+  let finish!: () => void
+  window.desktopRunner = { listWebhooks:async () => [], saveWebhook:() => new Promise<void>(resolve => { finish = resolve }) } as unknown as typeof window.desktopRunner
+  const wrapper = mount(SettingsPage, { props, attachTo:document.body }); await flushPromises(); await wrapper.get('#settings-tab-notifications').trigger('click')
+  await wrapper.findAll('button').find(el => el.text() === '添加 Webhook')!.trigger('click'); await flushPromises()
+  const dialog = document.querySelector<HTMLElement>('.hook-dialog')!
+  vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue([{}] as unknown as DOMRectList)
+  const first = dialog.querySelector<HTMLButtonElement>('[aria-label="关闭 Webhook 配置"]')!
+  const buttons = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')); const last = buttons[buttons.length - 1]
+  last.focus(); last.dispatchEvent(new KeyboardEvent('keydown', {key:'Tab', bubbles:true, cancelable:true})); expect(document.activeElement).toBe(first)
+  first.dispatchEvent(new KeyboardEvent('keydown', {key:'Tab',shiftKey:true,bubbles:true,cancelable:true})); expect(document.activeElement).toBe(last)
+  buttons.find(el => el.textContent?.trim() === '保存')!.click(); await flushPromises()
+  expect(first.disabled).toBe(true); dialog.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true})); await flushPromises(); expect(document.querySelector('.hook-dialog')).not.toBeNull()
+  finish(); await flushPromises(); expect(document.querySelector('.hook-dialog')).toBeNull(); wrapper.unmount()
+})

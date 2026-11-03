@@ -56,13 +56,69 @@ const deleteId = ref<string | null>(null)
 const hookBusy = ref(false)
 const hooksUnreadable = ref(false)
 const resetConfirmation = ref(false)
+const hookError = ref('')
+const confirmError = ref('')
+const confirmBusy = ref(false)
+const hookInitial = ref('')
+const discardHook = ref(false)
+const hookDialogElement = ref<HTMLElement | null>(null)
+const confirmDialogElement = ref<HTMLElement | null>(null)
+let hookOpener: HTMLElement | null = null
+let confirmOpener: HTMLElement | null = null
+function rememberOpener(event: Event) { hookOpener = event.currentTarget as HTMLElement }
+async function focusHook() { await nextTick(); hookDialogElement.value?.focus() }
+async function openConfirmation(kind: 'delete' | 'reset', event: Event, id?: string) {
+  confirmError.value = ''; confirmOpener = event.currentTarget as HTMLElement
+  if (kind === 'delete') deleteId.value = id || null
+  else resetConfirmation.value = true
+  await nextTick(); confirmDialogElement.value?.querySelector<HTMLElement>('[data-cancel]')?.focus()
+}
+async function closeConfirmation() { if (confirmBusy.value) return; deleteId.value = null; resetConfirmation.value = false; confirmError.value = ''; await nextTick(); if (confirmOpener?.isConnected) confirmOpener.focus(); else document.querySelector<HTMLElement>('[data-add-hook]')?.focus() }
+async function closeHook() { hookDraft.value = null; discardHook.value = false; hookError.value = ''; await nextTick(); hookOpener?.focus() }
+async function requestCloseHook() {
+  if (hookBusy.value) return
+  if (JSON.stringify(hookDraft.value) !== hookInitial.value) { discardHook.value = true; await nextTick(); confirmDialogElement.value?.querySelector<HTMLElement>('[data-cancel]')?.focus() }
+  else await closeHook()
+}
+async function keepEditing() { discardHook.value = false; await nextTick(); hookDialogElement.value?.focus() }
+function dialogKeydown(event: KeyboardEvent, dialog: HTMLElement | null, close: () => void) {
+  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); return }
+  if (event.key !== 'Tab' || !dialog) return
+  const controls = Array.from(dialog.querySelectorAll<HTMLElement>('button:not([disabled]), select:not([disabled]), input:not([disabled]), textarea:not([disabled]), summary, [href]')).filter(el => el.getClientRects().length > 0)
+  if (!controls.length) { event.preventDefault(); return }
+  const first = controls[0], last = controls[controls.length - 1]
+  if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog)) { event.preventDefault(); last.focus() }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+}
 async function loadHooks() { try { hooks.value = await window.desktopRunner?.listWebhooks?.() || []; hooksUnreadable.value = false } catch (error) { hooksUnreadable.value = true; actionNote.value = error instanceof Error ? error.message : '无法读取 Webhook 配置。' } }
-async function resetHooks() { try { if (!window.desktopRunner?.resetUnreadableWebhooks) throw new Error('Webhook 服务不可用。'); await window.desktopRunner.resetUnreadableWebhooks(); resetConfirmation.value = false; await loadHooks(); actionNote.value = '已保留无法读取的加密文件，请重新添加 Webhook。' } catch (error) { actionNote.value = error instanceof Error ? error.message : '无法重新配置。' } }
+async function resetHooks() {
+  if (confirmBusy.value) return
+  confirmBusy.value = true; confirmError.value = ''
+  try { if (!window.desktopRunner?.resetUnreadableWebhooks) throw new Error('Webhook 服务不可用。'); await window.desktopRunner.resetUnreadableWebhooks(); confirmBusy.value = false; await closeConfirmation(); await loadHooks(); actionNote.value = '已保留无法读取的加密文件，请重新添加 Webhook。' }
+  catch (error) { confirmError.value = error instanceof Error ? error.message : '无法重新配置。' } finally { confirmBusy.value = false }
+}
 onMounted(loadHooks)
-function newHook() { hookDraft.value = { name: '', enabled: false, method: 'POST', url: '', template: '{"title":"{title}","content":"{content}"}', headersText: '{}' } }
-async function editHook(id: string) { try { const item = await window.desktopRunner?.getWebhook?.(id); if (!item) throw new Error('Webhook 服务不可用。'); hookDraft.value = { ...item, headersText: JSON.stringify(item.headers, null, 2) } } catch (error) { actionNote.value = error instanceof Error ? error.message : '无法读取 Webhook。' } }
-async function saveHook() { if (!hookDraft.value) return; hookBusy.value = true; try { const { headersText, ...item } = hookDraft.value; const headers = JSON.parse(headersText); if (!window.desktopRunner?.saveWebhook) throw new Error('Webhook 服务不可用。'); await window.desktopRunner.saveWebhook({ ...item, headers }); hookDraft.value = null; await loadHooks(); actionNote.value = 'Webhook 已保存。' } catch (error) { actionNote.value = error instanceof Error ? error.message : '保存失败。' } finally { hookBusy.value = false } }
-async function removeHook() { if (!deleteId.value) return; try { await window.desktopRunner?.removeWebhook?.(deleteId.value); deleteId.value = null; await loadHooks(); actionNote.value = 'Webhook 已删除。' } catch (error) { actionNote.value = error instanceof Error ? error.message : '删除失败。' } }
+async function newHook(event: Event) { rememberOpener(event); hookError.value = ''; hookDraft.value = { name: '', enabled: false, method: 'POST', url: '', template: '{"title":"{title}","content":"{content}"}', headersText: '{}' }; hookInitial.value = JSON.stringify(hookDraft.value); await focusHook() }
+async function editHook(id: string, event: Event) { rememberOpener(event); hookError.value = ''; try { const item = await window.desktopRunner?.getWebhook?.(id); if (!item) throw new Error('Webhook 服务不可用。'); hookDraft.value = { ...item, headersText: JSON.stringify(item.headers, null, 2) }; hookInitial.value = JSON.stringify(hookDraft.value); await focusHook() } catch (error) { actionNote.value = error instanceof Error ? error.message : '无法读取 Webhook。' } }
+async function saveHook() {
+  if (!hookDraft.value || hookBusy.value) return
+  hookBusy.value = true; hookError.value = ''
+  try {
+    const { headersText, ...item } = hookDraft.value
+    let headers: unknown
+    try { headers = JSON.parse(headersText) } catch { throw new Error('请求头必须是有效的 JSON 对象。') }
+    if (!headers || typeof headers !== 'object' || Array.isArray(headers)) throw new Error('请求头必须是 JSON 对象。')
+    if (!window.desktopRunner?.saveWebhook) throw new Error('Webhook 服务不可用。')
+    await window.desktopRunner.saveWebhook({ ...item, headers: headers as Record<string, string> })
+    await closeHook(); await loadHooks(); actionNote.value = 'Webhook 已保存。'
+  } catch (error) { hookError.value = error instanceof Error ? error.message : '保存失败。' } finally { hookBusy.value = false }
+}
+async function removeHook() {
+  if (!deleteId.value || confirmBusy.value) return
+  confirmBusy.value = true; confirmError.value = ''
+  try { if (!window.desktopRunner?.removeWebhook) throw new Error('Webhook 服务不可用。'); await window.desktopRunner.removeWebhook(deleteId.value); await loadHooks(); confirmBusy.value = false; await closeConfirmation(); actionNote.value = 'Webhook 已删除。' }
+  catch (error) { confirmError.value = error instanceof Error ? error.message : '删除失败。' } finally { confirmBusy.value = false }
+}
 async function toggleHook(item: WebhookSummary, enabled: boolean) { try { const full = await window.desktopRunner?.getWebhook?.(item.id); if (!full || !window.desktopRunner?.saveWebhook) throw new Error('Webhook 服务不可用。'); await window.desktopRunner.saveWebhook({ ...full, enabled }); await loadHooks(); actionNote.value = 'Webhook 状态已保存。' } catch (error) { actionNote.value = error instanceof Error ? error.message : '保存失败。' } }
 async function testHook(id: string) { hookBusy.value = true; try { if (!window.desktopRunner?.testWebhook) throw new Error('Webhook 服务不可用。'); await window.desktopRunner.testWebhook(id); actionNote.value = '测试通知已发送。' } catch (error) { actionNote.value = error instanceof Error ? error.message : '测试通知发送失败。' } finally { hookBusy.value = false } }
 async function testSystem() { try { const result = await window.desktopRunner?.testSystemNotification?.(); actionNote.value = result?.shown ? '系统测试通知已发送。' : '当前系统不支持通知。' } catch { actionNote.value = '系统测试通知发送失败。' } }
@@ -114,13 +170,37 @@ async function exportPackage(kind: 'backup' | 'logs' | 'diagnostic', presetId?: 
       <template v-else-if="tab === 'notifications'">
         <section class="settings-section settings-card"><div class="settings-section-heading"><h3>通知内容</h3><p>运行结束后按所选条件向启用的渠道发送。</p></div><label class="notify-policy">推送任务结果时机<select :value="notifyMode" aria-label="推送任务结果时机" @change="changeNotifyMode(($event.target as HTMLSelectElement).value)"><option value="none">不推送</option><option value="all">全部结果</option><option value="failed">仅失败或停止</option><option v-if="notifyMode === 'legacy-success'" value="legacy-success">仅成功（原设置）</option></select></label></section>
         <div class="notify-actions"><button v-if="settings.notifications.system" @click="testSystem">测试系统通知</button><button v-if="qqState.enabled" @click="testQQ">测试 QQ 通知</button></div>
-        <section class="settings-section settings-card"><div class="settings-section-heading"><h3>已启用 {{ Number(settings.notifications.system) + Number(qqState.enabled) }} 个</h3></div><p v-if="!settings.notifications.system && !qqState.enabled">还没有启用的渠道，可在下方选择渠道进行配置。</p><div class="notify-channel-list"><div v-if="settings.notifications.system" class="webhook-row"><b>系统通知</b><span>已启用</span><button @click="update({ notifications:{ system:false } })">停用</button></div><button v-if="qqState.enabled" data-qq-channel class="qq-channel" @click="openQQ"><b>QQ 官方机器人</b><span>{{ qqState.state === 'connected' ? '已连接' : qqState.state === 'failed' ? '连接失败' : '正在连接' }}</span></button></div></section>
-        <section class="settings-section settings-card"><div class="settings-section-heading"><h3>未启用</h3></div><div class="notify-channel-list"><div v-if="!settings.notifications.system" class="webhook-row"><b>系统通知</b><button @click="update({ notifications:{ system:true } })">启用</button></div><button v-if="!qqState.enabled" data-qq-channel class="qq-channel" @click="openQQ"><b>QQ 官方机器人</b><span>{{ qqState.bound ? '已绑定，未启用' : '未绑定' }}</span></button><p v-if="settings.notifications.system && qqState.enabled">全部内置渠道已启用。</p></div></section>
+        <section class="settings-section settings-card"><div class="settings-section-heading"><h3>内置渠道 · 已启用 {{ Number(settings.notifications.system) + Number(qqState.enabled) }} 个</h3></div><p v-if="!settings.notifications.system && !qqState.enabled">还没有启用的渠道，可在下方选择渠道进行配置。</p><div class="notify-channel-list"><div v-if="settings.notifications.system" class="webhook-row"><b>系统通知</b><span>已启用</span><button @click="update({ notifications:{ system:false } })">停用</button></div><button v-if="qqState.enabled" data-qq-channel class="qq-channel" @click="openQQ"><b>QQ 官方机器人</b><span>{{ qqState.state === 'connected' ? '已连接' : qqState.state === 'failed' ? '连接失败' : '正在连接' }}</span></button></div></section>
+        <section class="settings-section settings-card"><div class="settings-section-heading"><h3>内置渠道 · 未启用</h3></div><div class="notify-channel-list"><div v-if="!settings.notifications.system" class="webhook-row"><b>系统通知</b><button @click="update({ notifications:{ system:true } })">启用</button></div><button v-if="!qqState.enabled" data-qq-channel class="qq-channel" @click="openQQ"><b>QQ 官方机器人</b><span>{{ qqState.bound ? '已绑定，未启用' : '未绑定' }}</span></button><p v-if="settings.notifications.system && qqState.enabled">全部内置渠道已启用。</p></div></section>
         <Teleport to="body"><div v-if="qqDialog" class="qq-dialog-overlay" @click.self="closeQQ"><section ref="qqDialogElement" class="qq-dialog" role="dialog" aria-modal="true" aria-labelledby="qq-dialog-title" tabindex="-1" @keydown="qqKeydown"><header class="qq-dialog-header"><div><h2 id="qq-dialog-title">{{ qrView ? 'QQ 扫码绑定' : 'QQ 官方机器人通知' }}</h2><p>{{ qrView ? '使用手机 QQ 扫描二维码并确认绑定。' : '使用 QQ 官方机器人接收任务通知。' }}</p></div><button aria-label="关闭 QQ 配置" @click="closeQQ">×</button></header><template v-if="qrView"><div class="qq-dialog-qr"><img v-if="qr" class="qq-qr" :src="qr.image" alt="手机 QQ 扫码绑定二维码"><p role="status">{{ qqNote }}</p></div><div class="qq-dialog-actions"><button :disabled="qrBusy" @click="startQR">刷新二维码</button><button @click="backFromQR">取消</button></div></template><template v-else><div class="qq-dialog-option"><div><b>启用通知</b><p>更改立即生效，无需保存。</p></div><select :value="String(qqState.enabled)" aria-label="启用 QQ 通知" :disabled="!qqState.bound" @change="enableQQ(($event.target as HTMLSelectElement).value === 'true')"><option value="false">否</option><option value="true">是</option></select></div><div class="qq-dialog-status"><h3>绑定状态</h3><p>{{ !qqState.bound ? '未绑定' : !qqState.enabled ? '已绑定，未启用' : qqState.state === 'connected' ? '已连接' : qqState.state === 'failed' ? '连接失败，正在重试' : '已绑定，正在连接' }}</p><div class="qq-dialog-actions"><button v-if="!qqState.bound" class="primary" @click="startQR">扫码绑定</button><button v-if="qqState.bound && qqState.enabled" @click="testQQ">发送测试通知</button><button v-if="qqState.bound && !confirmUnbind" @click="confirmUnbind = true">解绑</button></div><div v-if="confirmUnbind" role="alertdialog" aria-label="确认解绑 QQ"><p>解绑后将停止向此 QQ 发送通知，需要重新扫码绑定。</p><div class="qq-dialog-actions"><button @click="unbindQQ">确认解绑</button><button @click="confirmUnbind = false">取消</button></div></div></div><p v-if="qqNote" class="settings-action-note" role="status">{{ qqNote }}</p></template></section></div></Teleport>
-        <section class="settings-section settings-card"><div class="settings-section-heading"><h3>自定义 Webhook</h3><p>已启用 {{ hooks.filter(item => item.enabled).length }} 个；地址和请求头仅加密保存在当前 Windows 账户。</p></div><p v-if="hooksUnreadable">无法读取已有配置。请在原 Windows 账户中恢复，或保留旧加密文件后重新配置。</p><p v-else-if="!hooks.length">尚未添加 Webhook。</p><div v-for="item in hooks" :key="item.id" class="webhook-row"><b>{{ item.name }}</b><span>{{ item.method }} · {{ item.enabled ? '已启用' : '未启用' }}</span><label>启用 <select :value="String(item.enabled)" :aria-label="`${item.name} 启用`" @change="toggleHook(item, ($event.target as HTMLSelectElement).value === 'true')"><option value="false">否</option><option value="true">是</option></select></label><button :disabled="hookBusy" @click="testHook(item.id)">测试</button><button @click="editHook(item.id)">编辑</button><button @click="deleteId = item.id">删除</button></div><button v-if="hooksUnreadable" @click="resetConfirmation = true">重新配置</button><button v-else @click="newHook">添加 Webhook</button></section>
-        <section v-if="hookDraft" class="settings-section settings-card webhook-form" aria-label="Webhook 配置"><h3>{{ hookDraft.id ? '编辑 Webhook' : '添加 Webhook' }}</h3><label>名称<input v-model="hookDraft.name"></label><label>Webhook URL<input v-model="hookDraft.url" type="password" autocomplete="off"></label><label>方法<select v-model="hookDraft.method"><option>POST</option><option>GET</option></select></label><label>消息模板<textarea v-model="hookDraft.template" rows="4"></textarea></label><small>支持 {title}、{content}、{datetime}、{date}、{time}。</small><label>请求头（JSON 对象）<textarea v-model="hookDraft.headersText" rows="3"></textarea></label><label>启用<select v-model="hookDraft.enabled" aria-label="启用 Webhook"><option :value="false">否</option><option :value="true">是</option></select></label><div class="diagnostic-actions"><button :disabled="hookBusy" @click="saveHook">保存</button><button @click="hookDraft = null">取消</button></div></section>
-        <section v-if="deleteId" class="settings-section settings-card" role="alertdialog" aria-label="确认删除 Webhook"><p>确定删除此 Webhook？</p><div class="diagnostic-actions"><button @click="removeHook">确认删除</button><button @click="deleteId = null">取消</button></div></section>
-        <section v-if="resetConfirmation" class="settings-section settings-card" role="alertdialog" aria-label="确认重新配置 Webhook"><p>将保留无法读取的旧加密文件，并从空列表开始重新配置。</p><div class="diagnostic-actions"><button @click="resetHooks">确认重新配置</button><button @click="resetConfirmation = false">取消</button></div></section>
+        <section class="settings-section settings-card"><div class="settings-section-heading"><h3>自定义 Webhook</h3><p>已启用 {{ hooks.filter(item => item.enabled).length }} 个；地址和请求头仅加密保存在当前 Windows 账户。</p></div><p v-if="hooksUnreadable">无法读取已有配置。请在原 Windows 账户中恢复，或保留旧加密文件后重新配置。</p><p v-else-if="!hooks.length">尚未添加 Webhook。</p><div v-for="item in hooks" :key="item.id" class="webhook-row"><b>{{ item.name }}</b><span>{{ item.method }} · {{ item.enabled ? '已启用' : '未启用' }}</span><label>启用 <select :value="String(item.enabled)" :aria-label="`${item.name} 启用`" @change="toggleHook(item, ($event.target as HTMLSelectElement).value === 'true')"><option value="false">否</option><option value="true">是</option></select></label><button :disabled="hookBusy" @click="testHook(item.id)">测试</button><button @click="editHook(item.id, $event)">编辑</button><button @click="openConfirmation('delete', $event, item.id)">删除</button></div><button v-if="hooksUnreadable" @click="openConfirmation('reset', $event)">重新配置</button><button v-else data-add-hook @click="newHook">添加 Webhook</button></section>
+        <Teleport to="body">
+          <div v-if="hookDraft" class="qq-dialog-overlay">
+            <section ref="hookDialogElement" class="hook-dialog" role="dialog" aria-modal="true" aria-labelledby="hook-dialog-title" tabindex="-1" @keydown="dialogKeydown($event, hookDialogElement, () => void requestCloseHook())">
+              <header class="hook-dialog-header"><div><h2 id="hook-dialog-title">{{ hookDraft.id ? '编辑 Webhook' : '添加 Webhook' }}</h2><p>配置保存后生效，测试通知可在保存后发送。</p></div><button aria-label="关闭 Webhook 配置" :disabled="hookBusy" @click="requestCloseHook">×</button></header>
+              <div class="hook-dialog-body webhook-form">
+                <h3>基础配置</h3>
+                <label>名称<input v-model="hookDraft.name" autocomplete="off"></label>
+                <label>Webhook URL<input v-model="hookDraft.url" type="password" autocomplete="off"></label>
+                <label>方法<select v-model="hookDraft.method"><option>POST</option><option>GET</option></select></label>
+                <label>启用<select v-model="hookDraft.enabled" aria-label="启用 Webhook"><option :value="false">否</option><option :value="true">是</option></select></label>
+                <h3>高级配置</h3>
+                <label>消息模板<textarea v-model="hookDraft.template" rows="4"></textarea></label><small>支持 {title}、{content}、{datetime}、{date}、{time}。</small>
+                <label>请求头（JSON 对象）<textarea v-model="hookDraft.headersText" rows="3"></textarea></label>
+                <p v-if="hookError" class="hook-error" role="alert">{{ hookError }}</p>
+              </div>
+              <footer class="hook-dialog-actions"><button class="primary" :disabled="hookBusy" @click="saveHook">{{ hookBusy ? '正在保存…' : '保存' }}</button><button :disabled="hookBusy" @click="requestCloseHook">取消</button></footer>
+            </section>
+          </div>
+          <div v-if="discardHook || deleteId || resetConfirmation" class="qq-dialog-overlay hook-confirm-overlay">
+            <section ref="confirmDialogElement" class="hook-confirm" role="alertdialog" aria-modal="true" aria-labelledby="hook-confirm-title" tabindex="-1" @keydown="dialogKeydown($event, confirmDialogElement, () => discardHook ? void keepEditing() : void closeConfirmation())">
+              <h2 id="hook-confirm-title">{{ discardHook ? '放弃未保存的更改？' : deleteId ? '删除 Webhook？' : '重新配置 Webhook？' }}</h2>
+              <p>{{ discardHook ? '未保存的内容将丢失。' : deleteId ? '删除后将停止向此地址发送通知，且需要重新添加。' : '将保留无法读取的旧加密文件，并从空列表开始重新配置。' }}</p>
+              <p v-if="confirmError && !discardHook" class="hook-error" role="alert">{{ confirmError }}</p>
+              <div class="hook-dialog-actions"><button :disabled="confirmBusy" @click="discardHook ? closeHook() : deleteId ? removeHook() : resetHooks()">{{ discardHook ? '放弃更改' : deleteId ? '确认删除' : '确认重新配置' }}</button><button data-cancel :disabled="confirmBusy" @click="discardHook ? keepEditing() : closeConfirmation()">取消</button></div>
+            </section>
+          </div>
+        </Teleport>
       </template>
 
       <template v-else-if="tab === 'logs'">
