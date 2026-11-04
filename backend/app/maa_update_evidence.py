@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from datetime import datetime
 
 
 @dataclass(frozen=True)
 class UpdateEvent:
     kind: str
     detail: str
+    logged_at: float | None = None
 
 
 class MaaUpdateEvidence:
@@ -40,6 +43,12 @@ class MaaUpdateEvidence:
         for line in lines:
             event = self._classify(line.rstrip("\r"))
             if event:
+                stamp = re.match(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)\]", line)
+                if stamp:
+                    try:
+                        event = UpdateEvent(event.kind, event.detail, datetime.fromisoformat(stamp.group(1)).timestamp())
+                    except (ValueError, OverflowError, OSError):
+                        pass
                 events.append(event)
         return events
 
@@ -65,4 +74,29 @@ class MaaUpdateEvidence:
             return UpdateEvent("update_applied", "MAA 更新器报告完成，仍需确认程序状态")
         if "[Bootstrapper]" in line and "MaaAssistantArknights GUI exited" in line:
             return UpdateEvent("expected_exit" if self.restart_expected else "unexpected_exit", "MAA 主界面退出")
+        if self.restart_expected and "[Bootstrapper]" in line and "MaaAssistantArknights GUI started" in line:
+            return UpdateEvent("gui_started", "检测到 MAA 界面启动，仍需核对更新结果和进程身份")
         return None
+
+
+class MaaUpdaterLogEvidence:
+    """Parse updater output as observations only; file contents do not identify a writer."""
+
+    def __init__(self) -> None:
+        self._pending = ""
+
+    def clear_partial(self) -> None:
+        self._pending = ""
+
+    def feed(self, text: str) -> list[UpdateEvent]:
+        lines = (self._pending + text).split("\n")
+        self._pending = lines.pop()[-65536:]
+        events = []
+        for line in lines:
+            if "Update failed:" in line:
+                events.append(UpdateEvent("updater_failure_observed", "更新器日志出现失败信息，归属待确认，请检查"))
+            elif "Wrote success status file:" in line:
+                events.append(UpdateEvent("updater_success_observed", "更新器日志出现成功信息，归属待确认"))
+            elif "Relaunch succeeded." in line:
+                events.append(UpdateEvent("updater_relaunch_observed", "更新器日志报告重新启动，仍需确认进程身份"))
+        return events

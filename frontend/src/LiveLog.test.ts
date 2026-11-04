@@ -81,3 +81,13 @@ test('shows only converted events for the active task and resets on task switch'
   await wrapper.setProps({ runtime: next, scriptEvents: [other] })
   expect(wrapper.get('.script-live-list').text()).toContain('其他脚本事件')
 })
+
+test('shows time and folds repeated software status while translation is collapsed', () => {
+  const entry = { message: '任务失败', phase: 'failed' as const, timestamp: '2026-01-01T00:00:00Z' }
+  const wrapper = mount(LiveLog, { props: { logs: [entry, entry], runtime: runtime() } })
+  expect(wrapper.findAll('.scheduler-live-list li')).toHaveLength(1)
+  expect(wrapper.get('.scheduler-live-list time').text()).not.toBe('')
+  expect(wrapper.get('.scheduler-live-list').text()).toContain('×2')
+  expect(wrapper.get('.log-phase-failed').text()).toContain('失败')
+  expect(wrapper.get('details.script-details').attributes('open')).toBeUndefined()
+})

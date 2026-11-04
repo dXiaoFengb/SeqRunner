@@ -288,6 +288,8 @@ class ItemRecord(BaseModel):
     exit_code: int | None = None
     error_summary: str | None = None
     update_message: str | None = None
+    update_active: bool = False
+    manual_completion_available: bool = False
     log_summary: list[str] = Field(default_factory=list)
     detail_log_id: str | None = None
     detail_log_status: str | None = None

@@ -35,3 +35,29 @@ def test_restart_without_update_evidence_is_not_classified_as_update() -> None:
     parser = MaaUpdateEvidence()
     assert parser.feed("[INF][Bootstrapper] Shutdown and restart with custom StartInfo\n") == []
     assert parser.feed("[INF][Bootstrapper] MaaAssistantArknights GUI exited\n")[0].kind == "unexpected_exit"
+
+
+def test_restarted_gui_is_observation_not_update_completion() -> None:
+    from app.update_supervisor import UpdateSupervisor
+
+    parser = MaaUpdateEvidence()
+    monitor = UpdateSupervisor()
+    for event in parser.feed('[VersionUpdateDialogViewModel] New version found: fixture\n'
+                             '[Bootstrapper] Shutdown and restart with custom StartInfo\n'
+                             '[Bootstrapper] MaaAssistantArknights GUI started\n'):
+        monitor.observe_event(event, 1.0)
+    assert monitor.stage == 'restarting'
+    assert not monitor.update_applied
+    assert '界面启动' in monitor.message
+
+
+def test_updater_log_observations_are_not_success_proof() -> None:
+    from app.maa_update_evidence import MaaUpdaterLogEvidence
+
+    parser = MaaUpdaterLogEvidence()
+    assert parser.feed('Wrote success status ') == []
+    kinds = [event.kind for event in parser.feed('file: fixture\nRelaunch succeeded.\nUpdate failed: fixture\n')]
+    assert kinds == ['updater_success_observed', 'updater_relaunch_observed', 'updater_failure_observed']
+    parser.feed('Relaunch suc')
+    parser.clear_partial()
+    assert parser.feed('ceeded.\n') == []

@@ -41,3 +41,18 @@ def test_parent_proof_does_not_extend_to_newer_child(tmp_path) -> None:
     root = OwnedProcess(10, 100)
     lineage = UpdateLineage(root, exe)
     assert lineage.observe([ProcessSnapshot(11, 103, 10, exe)], {root: 102}) == []
+
+
+def test_updater_requires_verified_chain_full_path_and_creation_time(tmp_path) -> None:
+    exe = str(tmp_path / 'MAA.exe')
+    updater = str(tmp_path / 'MAA.Updater.exe')
+    lineage = UpdateLineage(OwnedProcess(10, 100), exe)
+    observations = [
+        ProcessSnapshot(10, 100, 1, exe),
+        ProcessSnapshot(11, 101, 10, updater),
+        ProcessSnapshot(12, 102, 99, updater),
+        ProcessSnapshot(13, 103, 10, str(tmp_path / 'other' / 'MAA.Updater.exe')),
+    ]
+    lineage.observe(observations)
+    assert lineage.observed_executables(observations, updater, 100.5) == [OwnedProcess(11, 101)]
+    assert lineage.observed_executables(observations, updater, 101.5) == []

@@ -15,9 +15,9 @@ from .completion_actions import CompletionActionDispatcher
 from .detail_logs import DetailLogs
 from .events import EventHub
 from .external_logs import ExternalLogWatcher
-from .logwatch import LogSignal
+from .logwatch import LogSignal, LogWatcher
 from .maa_region_capture import read_maa_region
-from .maa_update_evidence import MaaUpdateEvidence
+from .maa_update_evidence import MaaUpdateEvidence, MaaUpdaterLogEvidence, UpdateEvent
 from .models import (
     AppConfig,
     CompletionAction,
@@ -344,8 +344,10 @@ class RunnerEngine:
         if not self.is_busy or self._active_task_id != task_id or not self.current_run:
             raise ConfirmRejectedError("当前没有等待更新处理的任务")
         item = next((item for item in self.current_run.items if item.task_id == task_id), None)
-        if item is None or item.state != ItemState.WAITING_UPDATE or action not in ("wait", "fail"):
+        if item is None or not (item.update_active or item.state == ItemState.WAITING_UPDATE) or action not in ("wait", "fail", "handled", "complete"):
             raise ConfirmRejectedError("更新处理状态或操作无效")
+        if action == "complete" and not item.manual_completion_available:
+            raise ConfirmRejectedError("当前程序未启用人工完成确认")
         if self._update_action.is_set():
             raise ConfirmRejectedError("已有更新处理请求正在执行")
         self._update_choice = action
@@ -354,8 +356,6 @@ class RunnerEngine:
     async def _wait_for_update_decision(self, item: ItemRecord, message: str) -> str:
         """Pause the active item; waiting is never equivalent to task completion."""
         self._manual_accepting_task_id = None
-        self._update_choice = None
-        self._update_action.clear()
         item.state = ItemState.WAITING_UPDATE
         item.update_message = message
         await self._log(item, message)
@@ -529,6 +529,9 @@ class RunnerEngine:
             try:
                 # 必须先取得游标，后启动目标进程，避免历史成功行误判本轮。
                 await watcher.start_at_end()
+                if task.preset_id == "maa":
+                    watcher.maa_updater_log = LogWatcher(str(executable.parent / "debug" / "pending-update-applier.log"))
+                    await watcher.maa_updater_log.start_at_end()
                 item.external_log_files = watcher.paths
                 item.external_log_status = "已登记外部日志来源" if item.external_log_files else "日志目录中暂无匹配文件，运行期间会继续发现新文件"
             except (OSError, UnicodeError) as error:
@@ -693,6 +696,9 @@ class RunnerEngine:
         startup_tails: dict[Path, str] = {}
         stream_epochs: dict[Path, int] = {}
         original_callback = watcher.on_text
+        updater_log = watcher.maa_updater_log if task.preset_id == "maa" else None
+        updater_reader = MaaUpdaterLogEvidence()
+        updater_epoch = updater_log.stream_epoch if updater_log else 0
 
         async def capture(path: Path, text: str) -> None:
             if original_callback:
@@ -743,10 +749,13 @@ class RunnerEngine:
         candidates = []
         update_started_wall: float | None = None
         update_source: Path | None = None
+        observed_updaters: set[OwnedProcess] = set()
         startup_due = float(startup.wait_seconds) if startup else None
         start_attempted = False
         announcement_attempted = False
         startup_attention = False
+        manual_recovery_requested = False
+        item.manual_completion_available = task.allow_manual_confirmation
 
         async def wait_owned(owned: OwnedProcess) -> None:
             while await process_tree_alive(owned):
@@ -754,12 +763,17 @@ class RunnerEngine:
 
         try:
             while True:
-                waiters = [stop_task, log_task, event_task]
+                choice = None
+                waiters = [stop_task, log_task, event_task, asyncio.create_task(self._update_action.wait())]
                 if not exit_seen:
                     waiters.append(process_task)
                 if manual_task and monitor.stage in ("normal", "reattached"):
                     waiters.append(manual_task)
+                action_waiter = waiters[3]
                 await asyncio.wait(waiters, timeout=0.15, return_when=asyncio.FIRST_COMPLETED)
+                if not action_waiter.done():
+                    action_waiter.cancel()
+                await asyncio.gather(action_waiter, return_exceptions=True)
                 now = loop.time()
                 if monitor.stage in ("normal", "reattached"):
                     active_elapsed += max(0, now - previous)
@@ -776,11 +790,20 @@ class RunnerEngine:
                         await asyncio.sleep(0)
                         continue
                     if event.kind == "update_detected" and monitor.stage in ("normal", "reattached"):
-                        update_started_wall = time.time()
+                        now_wall = time.time()
+                        # GUI logging can be flushed after the updater is already
+                        # created. Accept its timestamp only within this run.
+                        if (task.preset_id == "maa" and event.logged_at is not None and watched_process is not None
+                                and watched_process.created_at <= event.logged_at <= now_wall):
+                            update_started_wall = event.logged_at
+                        else:
+                            update_started_wall = now_wall
+                        observed_updaters.clear()
                         if startup and not startup_signal_in_chunk:
                             startup_started.clear()
                             startup_tails.clear()
                     monitor.observe_event(event, now)
+                    item.update_active = monitor.stage not in ("normal", "reattached")
                     if monitor.stage not in ("normal", "reattached"):
                         self._manual_accepting_task_id = None
                         if item.state == ItemState.WAITING_MANUAL:
@@ -789,10 +812,35 @@ class RunnerEngine:
                             self._manual_confirmed.clear()
                         if manual_task and manual_task.done():
                             manual_task = asyncio.create_task(self._manual_confirmed.wait())
-                    item.update_message = monitor.message
+                    if item.update_message != monitor.message:
+                        item.update_message = monitor.message
+                        await self._log(item, monitor.message)
                     await self._publish_state()
                     event_task = asyncio.create_task(updates.get())
                     await asyncio.sleep(0)
+
+                if updater_log and monitor.stage in ("restarting", "applying", "awaiting_process"):
+                    try:
+                        await asyncio.to_thread(updater_log._read_new)
+                        if updater_epoch != updater_log.stream_epoch:
+                            updater_reader.clear_partial()
+                            updater_epoch = updater_log.stream_epoch
+                        updater_events = updater_reader.feed(updater_log.last_text)
+                    except (OSError, UnicodeError):
+                        updater_events = []
+                        monitor.attention("无法读取更新器日志，请人工检查")
+                    for updater_event in updater_events:
+                        if updater_event.kind == "updater_failure_observed":
+                            monitor.attention(updater_event.detail)
+                            break
+                        # Updater logs are shared by installation. Even a matching
+                        # process snapshot does not identify the writer of a line.
+                        detail = updater_event.detail
+                        if observed_updaters:
+                            detail += "；已观察到本轮更新器，但无法证明该行由其写入"
+                        item.update_message = detail
+                        await self._log(item, detail)
+                        await self._publish_state()
 
                 if log_task.done():
                     signal = log_task.result()
@@ -823,11 +871,18 @@ class RunnerEngine:
 
                 if lineage and now - last_snapshot >= 0.25:
                     try:
-                        def observe_lineage():
+                        def observe_lineage(started_wall=update_started_wall):
                             verified = lineage.verified_live_parents()
-                            return lineage.observe(snapshot_processes(lineage.known_pids()), verified)
+                            processes = snapshot_processes(lineage.known_pids())
+                            matches = lineage.observe(processes, verified)
+                            updaters = []
+                            if task.preset_id == "maa" and started_wall is not None:
+                                updaters = lineage.observed_executables(
+                                    processes, str(Path(task.executable).parent / "MAA.Updater.exe"), started_wall)
+                            return matches, updaters
 
-                        candidates = await asyncio.to_thread(observe_lineage)
+                        candidates, updaters = await asyncio.to_thread(observe_lineage)
+                        observed_updaters.update(updaters)
                         candidates = [candidate for candidate in candidates if candidate != watched_process
                                       and update_started_wall is not None and candidate.created_at >= update_started_wall]
                     except (OSError, RuntimeError):
@@ -836,6 +891,9 @@ class RunnerEngine:
 
                 if exit_seen and monitor.stage == "awaiting_process":
                     candidate = monitor.choose_candidate(candidates)
+                    if not candidate and manual_recovery_requested and monitor.stage != "needs_attention":
+                        monitor.attention("未找到唯一且归属可验证的重启进程，请人工处理")
+                    manual_recovery_requested = False
                     if candidate:
                         from .processes import owns_process
 
@@ -844,10 +902,16 @@ class RunnerEngine:
                             monitor.attention("重启进程身份已变化，请人工检查")
                         else:
                             try:
-                                same_path = os.path.normcase(os.path.realpath(target.exe())) == os.path.normcase(os.path.realpath(task.executable))
+                                same_path = (target.create_time() == candidate.created_at and
+                                             os.path.normcase(os.path.realpath(target.exe())) == os.path.normcase(os.path.realpath(task.executable)))
                             except (OSError, __import__("psutil").Error):
                                 same_path = False
-                            if not same_path or await asyncio.to_thread(owns_process, candidate) is None:
+                            rechecked = await asyncio.to_thread(owns_process, candidate)
+                            try:
+                                same_identity = rechecked is not None and rechecked.create_time() == candidate.created_at
+                            except (OSError, __import__("psutil").Error):
+                                same_identity = False
+                            if not same_path or not same_identity:
                                 monitor.attention("无法确认重启程序路径或身份")
                             else:
                                 watched_process = self._owned_process = candidate
@@ -863,20 +927,66 @@ class RunnerEngine:
                                     start_attempted = False
                                     announcement_attempted = False
                                 item.update_message = monitor.message
+                                item.update_active = False
                                 item.state = ItemState.WAITING_MANUAL if task.allow_manual_confirmation else ItemState.MONITORING
                                 self._manual_accepting_task_id = task.id if task.allow_manual_confirmation else None
                                 await self._log(item, "已确认重启进程，继续等待任务完成信号")
                                 await self._publish_state()
 
-                if monitor.stage == "needs_attention" or monitor.check_deadlines(now).stage == "needs_attention":
-                    choice = await self._wait_for_update_decision(item, monitor.message)
-                    previous = loop.time()
-                    if choice == "stop":
-                        return "stopped", "stopped", None
+                if self._update_action.is_set() and monitor.stage != "needs_attention":
+                    choice = self._update_choice
+                    self._update_action.clear()
+                    self._update_choice = None
                     if choice == "fail":
                         return "failure", "用户确认更新未完成，结束当前项", None
+                    if choice == "complete":
+                        return "success", CompletionSource.MANUAL, None
+                    if choice == "handled":
+                        monitor.attention("用户确认已处理更新，正在核对进程身份")
+                    elif choice == "wait":
+                        monitor.progress(now)
+
+                if monitor.stage == "needs_attention" or monitor.check_deadlines(now).stage == "needs_attention":
+                    choice = choice if choice == "handled" else await self._wait_for_update_decision(item, monitor.message)
+                    choice_from_user = choice
+                    choice = None
+                    previous = loop.time()
+                    if choice_from_user == "stop":
+                        return "stopped", "stopped", None
+                    if choice_from_user == "fail":
+                        return "failure", "用户确认更新未完成，结束当前项", None
+                    if choice_from_user == "complete":
+                        return "success", CompletionSource.MANUAL, None
                     monitor.continue_waiting(previous)
-                    item.state = ItemState.MONITORING
+                    if choice_from_user == "handled":
+                        monitor.observe_event(UpdateEvent("update_applied", "用户确认更新已处理"), previous)
+                        manual_recovery_requested = exit_seen
+                        if not exit_seen:
+                            from .processes import owns_process
+                            target = await asyncio.to_thread(owns_process, watched_process) if watched_process else None
+                            try:
+                                valid = (target is not None and watched_process is not None and
+                                         target.create_time() == watched_process.created_at and
+                                         os.path.normcase(os.path.realpath(target.exe())) == os.path.normcase(os.path.realpath(task.executable)))
+                                if valid and watched_process:
+                                    rechecked = await asyncio.to_thread(owns_process, watched_process)
+                                    valid = rechecked is not None and rechecked.create_time() == watched_process.created_at
+                            except (OSError, __import__("psutil").Error):
+                                valid = False
+                            if valid:
+                                monitor.stage = "reattached"
+                                monitor.message = "已核对程序身份，继续监控任务"
+                                item.update_active = False
+                                if startup:
+                                    startup_due = active_elapsed + startup.wait_seconds
+                                    start_attempted = False
+                                    announcement_attempted = False
+                                item.state = ItemState.WAITING_MANUAL if task.allow_manual_confirmation else ItemState.MONITORING
+                                self._manual_accepting_task_id = task.id if task.allow_manual_confirmation else None
+                            else:
+                                monitor.attention("无法确认当前程序身份，请人工处理")
+                    if monitor.stage != "reattached":
+                        item.state = ItemState.MONITORING
                     item.update_message = monitor.message
                     await self._publish_state()
                     continue
@@ -931,6 +1041,8 @@ class RunnerEngine:
                                 return "stopped", "stopped", None
                             if choice == "fail":
                                 return "failure", "用户确认启动未完成，结束当前项", None
+                            if choice == "complete":
+                                return "success", CompletionSource.MANUAL, None
                             startup_due = active_elapsed + startup.wait_seconds
                             startup_attention = False
                             item.state = ItemState.MONITORING
@@ -966,6 +1078,10 @@ class RunnerEngine:
                         else:
                             return "failure", "目标进程退出，未获得完成信号", None
         finally:
+            item.update_active = False
+            item.manual_completion_available = False
+            self._update_choice = None
+            self._update_action.clear()
             watcher.on_text = original_callback
             for pending in (stop_task, manual_task, process_task, log_task, event_task):
                 if pending and not pending.done():
@@ -1143,7 +1259,7 @@ class RunnerEngine:
                 f"{item.task_name}：{text}",
                 summary_message=text,
                 task_id=item.task_id,
-                phase=self._summary_phase(item.state),
+                phase="failed" if any(word in text for word in ("失败", "错误", "无法读取")) else self._summary_phase(item.state),
             )
         self._logger.info("任务 %s (%s): %s", item.task_name, item.task_id, text)
 
@@ -1163,6 +1279,7 @@ class RunnerEngine:
             ItemState.STARTING: "running",
             ItemState.MONITORING: "running",
             ItemState.WAITING_MANUAL: "waiting",
+            ItemState.WAITING_UPDATE: "waiting",
             ItemState.CLOSING: "closing",
             ItemState.FORCE_CLOSING: "closing",
             ItemState.COOLING_DOWN: "cooling",
@@ -1344,6 +1461,7 @@ class RunnerEngine:
             "taskId": task_id,
             "message": summary_message or text,
             "phase": phase,
+            "timestamp": datetime.now(UTC).isoformat(),
         }
         self._live_summary_logs = [*self._live_summary_logs[-(SUMMARY_LOG_LIMIT - 1):], entry]
         await self.events.publish("log", entry)

@@ -117,6 +117,13 @@ class UpdateLineage:
     def known_pids(self) -> set[int]:
         return {process.pid for process in self._known}
 
+    def observed_executables(self, processes: list[ProcessSnapshot], executable: str, since: float) -> list[OwnedProcess]:
+        """Return only matching, currently observed members of the verified chain."""
+        expected = os.path.normcase(os.path.realpath(executable))
+        return [item.identity for item in processes
+                if item.identity in self._known and item.created_at >= since and item.executable
+                and os.path.normcase(os.path.realpath(item.executable)) == expected]
+
     def observe(self, processes: list[ProcessSnapshot], verified_parents: dict[OwnedProcess, float] | None = None) -> list[OwnedProcess]:
         # Only a parent whose exact PID and creation time are visible in this
         # snapshot can establish a new child. A vanished or reused PID proves nothing.

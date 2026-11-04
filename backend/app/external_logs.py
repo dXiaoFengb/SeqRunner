@@ -62,6 +62,8 @@ class ExternalLogWatcher:
         self.last_text = ""
         self._last_progress_at: float | None = None
         self._consecutive_read_failures = 0
+        # Optional, separate cursor: updater output must never trigger task rules.
+        self.maa_updater_log: LogWatcher | None = None
 
     @property
     def paths(self) -> list[str]:

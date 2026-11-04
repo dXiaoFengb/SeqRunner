@@ -96,3 +96,15 @@ test('keeps one stable run-center layout while runtime state updates', async () 
   await wrapper.setProps({ runtime: empty })
   expect(wrapper.find('.run-center').exists()).toBe(false)
 })
+
+test('shows distinct update and completion actions while update monitoring is active', async () => {
+  const updating = structuredClone(runtime)
+  updating.runCenter!.currentState = 'monitoring'
+  updating.run!.items = [{ task_id: 'task-1', task_name: '程序', state: 'monitoring', update_active: true, manual_completion_available: true }]
+  const wrapper = mount(RunCenter, { props: { runtime: updating, countdown: 0, confirmationPending: false } })
+  await wrapper.findAll('button').find(button => button.text() === '确认更新已处理，继续监控')!.trigger('click')
+  await wrapper.findAll('button').find(button => button.text() === '确认当前程序完成')!.trigger('click')
+  expect(wrapper.emitted('updateDecision')).toEqual([['task-1', 'handled'], ['task-1', 'complete']])
+  await wrapper.setProps({ updatePending: true })
+  expect(wrapper.findAll('button').filter(button => button.text().includes('确认')).every(button => button.attributes('disabled') !== undefined)).toBe(true)
+})
