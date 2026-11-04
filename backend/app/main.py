@@ -20,6 +20,7 @@ from .models import AppConfig, QueueDefinition, StartupMode, TaskDefinition, UiL
 from .presets import apply_preset, public_presets
 from .processes import OwnedProcess
 from .scheduler import QueueScheduler
+from .startup_control import ControlSelector, query_uia
 from .storage import JsonStore
 from .ui_log_region import list_windows_for_executable
 
@@ -37,6 +38,11 @@ class ConfirmIn(BaseModel):
     task_id: str
 
 
+class UpdateDecisionIn(BaseModel):
+    task_id: str
+    action: str
+
+
 class PresetApplyIn(BaseModel):
     executable: str
     task_id: str
@@ -50,6 +56,13 @@ class AdbCheckIn(BaseModel):
 
 class WindowListIn(BaseModel):
     executable: str
+
+
+class StartupControlsIn(BaseModel):
+    executable: str
+    pid: int
+    created_at: float
+    window_title: str
 
 
 class RegionWindowIn(BaseModel):
@@ -266,6 +279,21 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
         except RuntimeError as error:
             raise HTTPException(422, str(error)) from error
 
+    @app.post("/api/startup-controls")
+    async def startup_controls(payload: StartupControlsIn):
+        if engine.is_busy:
+            raise HTTPException(409, "运行期间不能配置启动控件")
+        try:
+            windows = await asyncio.to_thread(list_windows_for_executable, payload.executable)
+            matches = [window for window in windows if window.pid == payload.pid
+                       and abs(window.created_at - payload.created_at) < 1 and window.title == payload.window_title]
+            if len(matches) != 1:
+                raise RuntimeError("目标窗口身份不明确或已变化")
+            return await query_uia(OwnedProcess(payload.pid, payload.created_at),
+                                   ControlSelector(payload.window_title, control_name="inspect"))
+        except (RuntimeError, ValueError, OSError) as error:
+            raise HTTPException(422, str(error)) from error
+
     @app.post("/api/ui-log/select")
     async def ui_log_select(payload: RegionWindowIn):
         if engine.is_busy:
@@ -401,6 +429,14 @@ def create_app(data_directory: Path | None = None, *, instance_id: str = "develo
     async def confirm(payload: ConfirmIn):
         try:
             await engine.confirm(payload.task_id)
+        except ConfirmRejectedError as error:
+            raise HTTPException(409, str(error)) from error
+        return {"status": "accepted"}
+
+    @app.post("/api/update-decision")
+    async def update_decision(payload: UpdateDecisionIn):
+        try:
+            await engine.decide_update(payload.task_id, payload.action)
         except ConfirmRejectedError as error:
             raise HTTPException(409, str(error)) from error
         return {"status": "accepted"}

@@ -90,11 +90,11 @@ function dialogKeydown(event: KeyboardEvent, dialog: HTMLElement | null, close: 
   if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog)) { event.preventDefault(); last.focus() }
   else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
 }
-async function loadHooks() { try { hooks.value = await window.desktopRunner?.listWebhooks?.() || []; hooksUnreadable.value = false } catch (error) { hooksUnreadable.value = true; actionNote.value = error instanceof Error ? error.message : '无法读取 Webhook 配置。' } }
+async function loadHooks(): Promise<boolean> { try { hooks.value = await window.desktopRunner?.listWebhooks?.() || []; hooksUnreadable.value = false; return true } catch (error) { hooksUnreadable.value = true; actionNote.value = error instanceof Error ? error.message : '无法读取 Webhook 配置。'; return false } }
 async function resetHooks() {
   if (confirmBusy.value) return
   confirmBusy.value = true; confirmError.value = ''
-  try { if (!window.desktopRunner?.resetUnreadableWebhooks) throw new Error('Webhook 服务不可用。'); await window.desktopRunner.resetUnreadableWebhooks(); confirmBusy.value = false; await closeConfirmation(); await loadHooks(); actionNote.value = '已保留无法读取的加密文件，请重新添加 Webhook。' }
+  try { if (!window.desktopRunner?.resetUnreadableWebhooks) throw new Error('Webhook 服务不可用。'); await window.desktopRunner.resetUnreadableWebhooks(); confirmBusy.value = false; await closeConfirmation(); if (await loadHooks()) actionNote.value = '已保留无法读取的加密文件，请重新添加 Webhook。' }
   catch (error) { confirmError.value = error instanceof Error ? error.message : '无法重新配置。' } finally { confirmBusy.value = false }
 }
 onMounted(loadHooks)
@@ -110,16 +110,16 @@ async function saveHook() {
     if (!headers || typeof headers !== 'object' || Array.isArray(headers)) throw new Error('请求头必须是 JSON 对象。')
     if (!window.desktopRunner?.saveWebhook) throw new Error('Webhook 服务不可用。')
     await window.desktopRunner.saveWebhook({ ...item, headers: headers as Record<string, string> })
-    await closeHook(); await loadHooks(); actionNote.value = 'Webhook 已保存。'
+    await closeHook(); if (await loadHooks()) actionNote.value = 'Webhook 已保存。'
   } catch (error) { hookError.value = error instanceof Error ? error.message : '保存失败。' } finally { hookBusy.value = false }
 }
 async function removeHook() {
   if (!deleteId.value || confirmBusy.value) return
   confirmBusy.value = true; confirmError.value = ''
-  try { if (!window.desktopRunner?.removeWebhook) throw new Error('Webhook 服务不可用。'); await window.desktopRunner.removeWebhook(deleteId.value); await loadHooks(); confirmBusy.value = false; await closeConfirmation(); actionNote.value = 'Webhook 已删除。' }
+  try { if (!window.desktopRunner?.removeWebhook) throw new Error('Webhook 服务不可用。'); await window.desktopRunner.removeWebhook(deleteId.value); const loaded = await loadHooks(); confirmBusy.value = false; await closeConfirmation(); if (loaded) actionNote.value = 'Webhook 已删除。' }
   catch (error) { confirmError.value = error instanceof Error ? error.message : '删除失败。' } finally { confirmBusy.value = false }
 }
-async function toggleHook(item: WebhookSummary, enabled: boolean) { try { const full = await window.desktopRunner?.getWebhook?.(item.id); if (!full || !window.desktopRunner?.saveWebhook) throw new Error('Webhook 服务不可用。'); await window.desktopRunner.saveWebhook({ ...full, enabled }); await loadHooks(); actionNote.value = 'Webhook 状态已保存。' } catch (error) { actionNote.value = error instanceof Error ? error.message : '保存失败。' } }
+async function toggleHook(item: WebhookSummary, enabled: boolean) { try { const full = await window.desktopRunner?.getWebhook?.(item.id); if (!full || !window.desktopRunner?.saveWebhook) throw new Error('Webhook 服务不可用。'); await window.desktopRunner.saveWebhook({ ...full, enabled }); if (await loadHooks()) actionNote.value = 'Webhook 状态已保存。' } catch (error) { actionNote.value = error instanceof Error ? error.message : '保存失败。' } }
 async function testHook(id: string) { hookBusy.value = true; try { if (!window.desktopRunner?.testWebhook) throw new Error('Webhook 服务不可用。'); await window.desktopRunner.testWebhook(id); actionNote.value = '测试通知已发送。' } catch (error) { actionNote.value = error instanceof Error ? error.message : '测试通知发送失败。' } finally { hookBusy.value = false } }
 async function testSystem() { try { const result = await window.desktopRunner?.testSystemNotification?.(); actionNote.value = result?.shown ? '系统测试通知已发送。' : '当前系统不支持通知。' } catch { actionNote.value = '系统测试通知发送失败。' } }
 const tabs: Array<{ id: SettingsTab; label: string; icon: typeof Settings2 }> = [

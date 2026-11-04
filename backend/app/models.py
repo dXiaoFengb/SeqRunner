@@ -27,6 +27,7 @@ class ItemState(str, Enum):
     STARTING = "starting"
     MONITORING = "monitoring"
     WAITING_MANUAL = "waiting_manual"
+    WAITING_UPDATE = "waiting_update"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CLOSING = "closing"
@@ -107,6 +108,57 @@ class UiLogRegion(BaseModel):
         return self
 
 
+class UpdateMonitoringConfig(BaseModel):
+    """用户显式启用的通用软件更新信号，旧配置默认关闭。"""
+
+    enabled: bool = False
+    checking: str = ""
+    downloading: str = ""
+    applying: str = ""
+    restarting: str = ""
+    restart_exit: str = Field(default="", max_length=512)
+    failed: str = ""
+    recovered: str = ""
+    idle_seconds: int = Field(default=600, ge=1, le=86400)
+    total_seconds: int = Field(default=3600, ge=1, le=86400)
+
+    @model_validator(mode="after")
+    def valid_rules(self) -> UpdateMonitoringConfig:
+        if self.enabled:
+            from .update_rules import UpdateRules
+
+            UpdateRules(self.checking, self.downloading, self.applying, self.restarting, self.failed, self.recovered)
+        return self
+
+
+class StartupControlConfig(BaseModel):
+    window_title: str = Field(min_length=1, max_length=512)
+    automation_id: str = Field(default="", max_length=512)
+    control_name: str = Field(default="", max_length=512)
+
+    @model_validator(mode="after")
+    def has_identifier(self) -> StartupControlConfig:
+        if not self.window_title.strip() or not (self.automation_id.strip() or self.control_name.strip()):
+            raise ValueError("必须指定窗口标题和控件标识")
+        return self
+
+
+class StartupFallbackConfig(BaseModel):
+    enabled: bool = False
+    started_signal: str = Field(default="", max_length=512)
+    wait_seconds: int = Field(default=30, ge=1, le=3600)
+    announcement: StartupControlConfig | None = None
+    start: StartupControlConfig | None = None
+
+    @model_validator(mode="after")
+    def valid_enabled(self) -> StartupFallbackConfig:
+        if self.enabled and (not self.started_signal.strip() or self.start is None):
+            raise ValueError("启用启动后备须提供启动信号和启动控件")
+        if self.enabled and self.announcement is not None and self.announcement == self.start:
+            raise ValueError("公告关闭控件与启动控件不能相同")
+        return self
+
+
 class TaskDefinition(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     name: str = Field(min_length=1, max_length=120)
@@ -130,6 +182,8 @@ class TaskDefinition(BaseModel):
     timeout_seconds: int = Field(default=600, ge=1, le=86_400)
     # 空值表示关闭。仅外部文件日志的自动模式使用，避免改变旧脚本和人工确认语义。
     log_idle_timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
+    update_monitor: UpdateMonitoringConfig | None = None
+    startup_fallback: StartupFallbackConfig | None = None
     maa_adapter: MAAAdapterConfig | None = None
     maaend_adapter: MaaEndAdapterConfig | None = None
 
@@ -137,6 +191,12 @@ class TaskDefinition(BaseModel):
     def validate_log_idle_timeout(self) -> TaskDefinition:
         if self.log_idle_timeout_seconds is not None and self.log_idle_timeout_seconds > self.timeout_seconds:
             raise ValueError("日志无新增保护不能超过总超时")
+        if self.update_monitor and self.update_monitor.enabled and not self.log_path:
+            raise ValueError("更新监控需要配置日志来源")
+        if self.startup_fallback and self.startup_fallback.enabled and not self.log_path:
+            raise ValueError("启动后备需要配置日志来源以确认启动信号")
+        if self.startup_fallback and self.startup_fallback.enabled and self.startup_fallback.wait_seconds >= self.timeout_seconds:
+            raise ValueError("启动后备等待时间必须小于任务总超时")
         return self
 
     def has_success_log(self) -> bool:
@@ -227,6 +287,7 @@ class ItemRecord(BaseModel):
     ended_at: datetime | None = None
     exit_code: int | None = None
     error_summary: str | None = None
+    update_message: str | None = None
     log_summary: list[str] = Field(default_factory=list)
     detail_log_id: str | None = None
     detail_log_status: str | None = None

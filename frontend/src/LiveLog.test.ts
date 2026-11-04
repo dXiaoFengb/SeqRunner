@@ -12,6 +12,19 @@ function scriptEvent(sequence: number, message = '脚本正在加载配置。'):
   return { runId: 'run', taskId: 'task', sequence, truncated: false, event: { timestamp: '2026-01-01T00:00:00Z', task_id: 'task', task_name: 'MAA', source: 'script', sequence, phase: '脚本日志', severity: sequence === 2 ? 'warning' : 'info', event_type: 'script.log.translated', message, rule_id: 'script.module.configurationhelper' } }
 }
 
+test('compact status control toggles the panel and Escape returns focus', async () => {
+  const wrapper = mount(LiveLog, { props: { logs: ['运行状态'] }, attachTo: document.body })
+  const toggle = wrapper.get('.side-live-toggle')
+  await toggle.trigger('click')
+  expect(toggle.attributes('aria-expanded')).toBe('true')
+  expect(wrapper.classes()).toContain('compact-open')
+  await wrapper.get('.side-live-log').trigger('keydown', { key: 'Escape' })
+  await nextTick()
+  expect(toggle.attributes('aria-expanded')).toBe('false')
+  expect(document.activeElement).toBe(toggle.element)
+  wrapper.unmount()
+})
+
 test('always follows new software-status logs even after manual scrolling', async () => {
   const wrapper = mount(LiveLog, { props: { logs: ['第一条'] } })
   const list = wrapper.get('.scheduler-live-list').element as HTMLElement

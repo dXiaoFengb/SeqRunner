@@ -15,6 +15,9 @@ const readableProgress = computed(() => props.runtime?.runCenter?.readableProgre
 const summary = computed(() => { const run = props.runtime?.run; if (!run || !['completed', 'stopped'].includes(run.state) || !run.started_at || !run.ended_at) return ''; const seconds = Math.max(0, Math.floor((Date.parse(run.ended_at) - Date.parse(run.started_at)) / 1000)); if (!Number.isFinite(seconds)) return ''; const state = run.state === 'stopped' ? '本轮已停止' : run.items.some(item => item.state === 'failed') ? '本轮完成，存在失败项' : '本轮执行完成'; return `${state}，总耗时 ${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds % 3600 / 60)} 分 ${seconds % 60} 秒` })
 const list = ref<HTMLElement | null>(null)
 const scriptList = ref<HTMLElement | null>(null)
+const compactOpen = ref(false)
+const compactButton = ref<HTMLButtonElement | null>(null)
+function closeCompact() { if (!compactOpen.value) return; compactOpen.value = false; void nextTick(() => compactButton.value?.focus()) }
 function scrollToEnd(element: HTMLElement | null) { if (element) element.scrollTop = element.scrollHeight }
 async function scrollSummaryToEnd() { await nextTick(); scrollToEnd(list.value) }
 async function scrollScriptToEnd() { await nextTick(); scrollToEnd(scriptList.value) }
@@ -26,18 +29,29 @@ watch(() => [scriptEvents.value, current.value?.task_id] as const, scrollScriptT
 </script>
 
 <template>
-  <section class="side-live-log" :class="{ 'has-script-log': runtime?.busy && hasScriptLog }" aria-label="本软件运行状态">
+  <section class="side-live-log" :class="{ 'has-script-log': runtime?.busy && hasScriptLog, 'compact-open': compactOpen }" aria-label="本软件运行状态" @keydown.esc.stop="closeCompact">
+    <button ref="compactButton" class="side-live-toggle" :aria-expanded="compactOpen" aria-controls="side-live-panel" @click="compactOpen = !compactOpen">状态</button>
+    <div id="side-live-panel" class="side-live-panel">
     <div class="side-live-header scheduler-header"><b>本软件运行状态</b><small v-if="readableProgress" class="readable-progress">{{ readableProgress }}</small></div>
     <div ref="list" class="side-live-list scheduler-live-list" tabindex="0"><span v-if="!entries.length" class="side-live-empty">暂无本软件运行状态</span><ol v-else><li v-for="(entry, index) in entries" :key="index" :class="'log-phase-' + entry.phase"><b class="log-phase">{{ phaseLabels[entry.phase] }}</b><span>{{ logLabel(entry.message) }}</span></li></ol><span v-if="summary" class="side-live-summary">{{ summary }}</span></div>
     <template v-if="runtime?.busy && hasScriptLog">
       <div class="side-live-header script-header"><b>{{ current ? `${current.task_name} · 脚本实时转译` : '脚本实时转译' }}</b></div>
       <div ref="scriptList" class="side-live-list script-live-list script-event-list" tabindex="0"><span v-if="scriptEvents.some(entry => entry.truncated)" class="script-truncated">实时转译缓冲已截断；请在历史详情查看脚本内部日志原文件。</span><span v-if="!scriptEvents.length" class="side-live-empty">等待脚本内部日志产生可转译事件。</span><ol v-else><li v-for="entry in scriptEvents" :key="entry.sequence" :class="'script-severity-' + entry.event.severity"><b class="script-severity">{{ levelLabel(entry) }}</b><span>{{ entry.event.message }}<small v-if="(entry.event.occurrence_count || 1) > 1" class="event-occurrences"> ×{{ entry.event.occurrence_count }}</small></span></li></ol></div>
     </template>
+    </div>
   </section>
 </template>
 
 <style scoped>
 .script-live-list { background: #10241f; border-color: #327d65; }
+.side-live-toggle { display: none; }
+.side-live-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+@media (max-width: 1080px) {
+  .side-live-log { height: auto; min-height: 0; }
+  .side-live-toggle { display: block; width: 100%; padding: 7px 2px; font-size: 11px; }
+  .side-live-panel { display: none; }
+  .compact-open .side-live-panel { display: flex; position: fixed; z-index: 50; left: calc(var(--nav-width) + 8px); bottom: 12px; width: min(360px, calc(100vw - var(--nav-width) - 20px)); height: min(48vh, 400px); padding: 12px; border: 1px solid #345064; border-radius: 7px; background: #10202e; box-shadow: 0 8px 30px #000a; }
+}
 .readable-progress{display:block;margin-top:4px;color:#8ce0bf;font-size:12px;font-weight:400;line-height:1.35}
 .has-script-log .script-live-list { flex: 2 1 0; }
 .has-script-log .scheduler-live-list { flex: 1 1 0; }

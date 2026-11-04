@@ -153,3 +153,18 @@ test('Webhook dialog traps keyboard focus and stays open while saving', async ()
   expect(first.disabled).toBe(true); dialog.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true})); await flushPromises(); expect(document.querySelector('.hook-dialog')).not.toBeNull()
   finish(); await flushPromises(); expect(document.querySelector('.hook-dialog')).toBeNull(); wrapper.unmount()
 })
+
+test('Webhook refresh errors remain visible after saving', async () => {
+  let reads = 0
+  window.desktopRunner = {
+    listWebhooks: async () => { if (++reads > 1) throw new Error('重新读取失败'); return [] },
+    saveWebhook: async () => undefined,
+  } as unknown as typeof window.desktopRunner
+  const wrapper = mount(SettingsPage, { props, attachTo:document.body }); await flushPromises()
+  await wrapper.get('#settings-tab-notifications').trigger('click')
+  await wrapper.findAll('button').find(el => el.text() === '添加 Webhook')!.trigger('click'); await flushPromises()
+  Array.from(document.querySelectorAll<HTMLButtonElement>('.hook-dialog button')).find(el => el.textContent === '保存')!.click(); await flushPromises()
+  expect(wrapper.text()).toContain('重新读取失败')
+  expect(wrapper.text()).not.toContain('Webhook 已保存。')
+  wrapper.unmount()
+})

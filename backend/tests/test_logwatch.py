@@ -44,6 +44,20 @@ async def test_failure_priority_and_no_old_context_repeat(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_all_failures_in_same_chunk_are_preserved(tmp_path: Path) -> None:
+    from app.models import LogRule
+
+    path = tmp_path / "job.log"
+    path.write_bytes(b"")
+    watcher = LogWatcher(str(path), failure_rules=[LogRule(pattern="GUI exited"), LogRule(pattern="REAL ERROR")])
+    await watcher.start_at_end()
+    append(path, b"GUI exited\nREAL ERROR\n")
+    signal = watcher._read_new()
+    assert signal is not None and signal.kind == "failure"
+    assert signal.matches == ("GUI exited", "REAL ERROR")
+
+
+@pytest.mark.asyncio
 async def test_split_failure_and_new_read_anchor(tmp_path: Path) -> None:
     path = tmp_path / "job.log"
     path.write_bytes(b"")

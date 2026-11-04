@@ -28,6 +28,19 @@ test('emits confirmation only while the active program is waiting', async () => 
   expect(wrapper.emitted('confirm')?.[0]).toEqual(['task-1'])
 })
 
+test('update choices are separate from task completion confirmation', async () => {
+  const waiting = structuredClone(runtime)
+  waiting.runCenter!.currentState = 'waiting_update'
+  waiting.run!.items = [{ task_id: 'task-1', task_name: '程序', state: 'waiting_update', update_message: '更新需要人工处理' }]
+  const wrapper = mount(RunCenter, { props: { runtime: waiting, countdown: 0, confirmationPending: false } })
+  expect(wrapper.text()).toContain('更新需要人工处理')
+  expect(wrapper.find('button.confirm').exists()).toBe(false)
+  await wrapper.findAll('button').find(button => button.text() === '继续等待')!.trigger('click')
+  await wrapper.findAll('button').find(button => button.text() === '标记失败并继续')!.trigger('click')
+  expect(wrapper.emitted('updateDecision')).toEqual([['task-1', 'wait'], ['task-1', 'fail']])
+  expect(wrapper.emitted('confirm')).toBeUndefined()
+})
+
 test('reports completed runs with a failed final program without a cooldown', () => {
   const finished = structuredClone(runtime)
   finished.busy = false

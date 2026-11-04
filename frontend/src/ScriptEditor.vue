@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import UiLogRegionEditor from './UiLogRegionEditor.vue'
-import type { MaaEndAdapter, MAAAdapter, Preset, Queue, Task } from './types'
+import StartupFallbackEditor from './StartupFallbackEditor.vue'
+import type { MaaEndAdapter, MAAAdapter, Preset, Queue, Task, UpdateMonitoring } from './types'
 
 const props = defineProps<{
   script: Queue
@@ -40,6 +41,9 @@ const props = defineProps<{
 const isMaa = () => props.task.preset_id === 'maa'
 const isMaaEnd = () => props.task.preset_id === 'maaend'
 function rename(event: Event) { const value = (event.target as HTMLInputElement).value; props.task.name = value; props.script.name = value; void props.save() }
+function ensureUpdate(): UpdateMonitoring { return props.task.update_monitor ||= { enabled:false, checking:'', downloading:'', applying:'', restarting:'', restart_exit:'', failed:'', recovered:'', idle_seconds:600, total_seconds:3600 } }
+function setUpdate(field: keyof UpdateMonitoring, event: Event) { const input = event.target as HTMLInputElement; const value = field === 'enabled' ? input.checked : input.type === 'number' ? Number(input.value) : input.value; Object.assign(ensureUpdate(), { [field]:value }); void props.save() }
+const updateSignals: Array<{key: keyof UpdateMonitoring; label: string}> = [ {key:'checking',label:'检查到更新'}, {key:'downloading',label:'开始下载'}, {key:'applying',label:'应用更新'}, {key:'restarting',label:'请求重启'}, {key:'restart_exit',label:'重启时的退出（可选）'}, {key:'failed',label:'更新失败'}, {key:'recovered',label:'更新完成'} ]
 </script>
 
 <template>
@@ -55,7 +59,10 @@ function rename(event: Event) { const value = (event.target as HTMLInputElement)
 
       <section class="editor-section editor-run-config"><div class="section-heading"><div><h3>3. 常用运行设置</h3></div><small>保留默认值即可；需要时再设置参数、工作目录或超时。</small></div><div class="grid"><label>超时（秒）<input v-model.number="task.timeout_seconds" type="number" min="1" :disabled="busy" @change="save"></label><label>启动参数<input :value="task.arguments.join(' ')" :disabled="busy" @change="setArgs(task, $event)"></label><label>工作目录<input :value="task.working_directory || ''" :disabled="busy" @change="setText(task, 'working_directory', $event)"></label></div></section>
 
+      <section class="editor-section"><div class="section-heading"><div><h3>更新与重启监控</h3></div><small>依靠本次运行新增的日志；更新不等于任务完成。</small></div><p v-if="isMaa()">MAA 使用内置更新信号，需配置对应日志来源。</p><label v-else><input type="checkbox" :checked="task.update_monitor?.enabled || false" :disabled="busy" @change="setUpdate('enabled', $event)"> 启用自定义更新监控</label><div v-if="isMaa() || task.update_monitor?.enabled" class="grid"><label>无进展等待（秒）<input type="number" min="1" max="86400" :value="task.update_monitor?.idle_seconds ?? 600" :disabled="busy" @change="setUpdate('idle_seconds', $event)"></label><label>更新总等待（秒）<input type="number" min="1" max="86400" :value="task.update_monitor?.total_seconds ?? 3600" :disabled="busy" @change="setUpdate('total_seconds', $event)"></label><template v-if="!isMaa()"><label v-for="signal in updateSignals" :key="signal.key">{{ signal.label }}日志关键词<input :value="task.update_monitor?.[signal.key] || ''" :disabled="busy" @change="setUpdate(signal.key, $event)"></label></template></div></section>
+
       <section class="editor-section"><div class="section-heading"><div><h3>4. 日志来源</h3></div><small>可读取单文件或直接子文件夹；脚本内部日志不会复制到本软件目录。</small></div><div class="grid"><label class="path">日志文件或文件夹<div><input :value="task.log_path || ''" :disabled="busy" @change="setText(task, 'log_path', $event)"><button :disabled="busy" @click="chooseLogDirectory(task)">选择文件夹</button></div></label><label>日志文件匹配<input :value="task.log_patterns || '*.log;*.txt'" placeholder="*.log;*.txt" :disabled="busy" @change="setLogPatterns(task, $event)"></label></div><UiLogRegionEditor :task="task" :busy="busy" :request="request" @save="save" /></section>
+      <StartupFallbackEditor :task="task" :busy="busy" :request="request" @save="save" />
 
       <section class="editor-section"><div class="section-heading"><div><h3>5. 完成信号</h3></div><small>{{ task.allow_manual_confirmation ? '人工确认优先；成功日志和正常退出不会自动结束。' : '按启用的完成方式和成功日志判断。' }}</small></div><fieldset><legend>完成方式</legend><div class="signals"><label><input v-model="task.allow_manual_confirmation" type="checkbox" :disabled="busy" @change="save">人工确认</label><label><input v-model="task.allow_process_exit" type="checkbox" :disabled="busy" @change="save">正常退出</label><label>日志无新增保护（秒）<input :value="task.log_idle_timeout_seconds ?? ''" type="number" min="1" :max="task.timeout_seconds" placeholder="留空关闭" :disabled="busy || task.allow_manual_confirmation || !task.log_path" @change="setIdleTimeout(task, $event)"><small>仅已发现外部文件且非人工确认时生效；不是总运行超时。</small></label></div><details class="custom-rules"><summary>添加自定义规则</summary><div class="signals"><label>自定义成功<input :value="task.success_log || ''" :disabled="busy" @change="setText(task, 'success_log', $event)"><select v-model="task.success_log_mode" :disabled="busy" @change="save"><option value="keyword">关键字</option><option value="regex">正则</option></select></label><label>自定义失败<input :value="task.failure_log || ''" :disabled="busy" @change="setText(task, 'failure_log', $event)"><select v-model="task.failure_log_mode" :disabled="busy" @change="save"><option value="keyword">关键字</option><option value="regex">正则</option></select></label></div></details></fieldset></section>
 

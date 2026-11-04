@@ -13,6 +13,7 @@ from .models import LogRule, MatchMode
 class LogSignal:
     kind: str
     text: str
+    matches: tuple[str, ...] = ()
 
 
 class LogWatcher:
@@ -43,6 +44,7 @@ class LogWatcher:
         self._anchor = b""
         self._context = ""
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self.stream_epoch = 0
         self.last_text = ""
         # 与 last_text 分开：即使新字节暂未构成可显示文本，也算日志仍在推进。
         self.last_progress = False
@@ -50,6 +52,7 @@ class LogWatcher:
     def _reset_stream(self) -> None:
         self._context = ""
         self._decoder.reset()
+        self.stream_epoch += 1
 
     @staticmethod
     def _compile_all(rules: list[LogRule]) -> list[re.Pattern[str]]:
@@ -96,7 +99,8 @@ class LogWatcher:
         elif identity != self._identity:
             # 常见轮转会把旧文件改名后新建同名文件。先按旧 identity 排空尾部，
             # 再切换，避免刚写出的完成或失败标记落在两次轮询之间。
-            if signal := self._drain_renamed_tail(self._identity):
+            signal = self._drain_renamed_tail(self._identity)
+            if signal is not None or self.last_progress:
                 return signal
             self._offset = 0
             self._identity = identity
@@ -132,7 +136,9 @@ class LogWatcher:
                 continue
             with candidate.open("rb") as handle:
                 handle.seek(self._offset)
-                return self._consume(handle.read())
+                data = handle.read()
+                self._offset = handle.tell()
+                return self._consume(data)
         return None
 
     def _consume(self, data: bytes) -> LogSignal | None:
@@ -144,17 +150,23 @@ class LogWatcher:
         self.last_text += text
         previous = self._context
         combined = previous + text
+        selected: LogSignal | None = None
         for kind, rules in (("failure", self.failure), ("success", self.success)):
+            found: list[str] = []
             for rule in rules:
+                before = len(found)
                 old = {(m.span(), m.group(0)) for m in rule.finditer(previous)}
                 for match in rule.finditer(combined):
                     if (match.span(), match.group(0)) not in old:
-                        return LogSignal(kind, match.group(0))
+                        found.append(match.group(0))
                 # Preserve patterns anchored to the beginning of a read.
-                if match := rule.search(text):
-                    return LogSignal(kind, match.group(0))
+                if len(found) == before and (match := rule.search(text)):
+                    found.append(match.group(0))
+            if found:
+                selected = LogSignal(kind, found[0], tuple(found))
+                break
         self._context = combined.encode("utf-8")[-65536:].decode("utf-8", errors="ignore")
-        return None
+        return selected
 
     def _anchor_changed(self) -> bool:
         with self.path.open("rb") as handle:

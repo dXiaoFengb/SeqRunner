@@ -71,6 +71,15 @@ class ExternalLogWatcher:
     def has_sources(self) -> bool:
         return bool(self.watchers)
 
+    def reset_idle_clock(self) -> None:
+        if self.has_sources:
+            self._last_progress_at = time.monotonic()
+
+    def idle_for(self) -> float | None:
+        if self._last_progress_at is None or not self.has_sources:
+            return None
+        return time.monotonic() - self._last_progress_at
+
     async def start_at_end(self) -> None:
         await self._discover_new(at_end=True)
 
@@ -108,7 +117,12 @@ class ExternalLogWatcher:
                 # not let discovery order turn a simultaneous failure into a
                 # success: terminal failure evidence always wins this pass.
                 if signals:
-                    return next((signal for signal in signals if signal.kind != "success"), signals[0])
+                    failures = [signal for signal in signals if signal.kind != "success"]
+                    if failures:
+                        first = failures[0]
+                        all_matches = tuple(value for signal in failures for value in (signal.matches or (signal.text,)))
+                        return LogSignal(first.kind, first.text, all_matches)
+                    return signals[0]
             except (OSError, UnicodeError) as error:
                 self._consecutive_read_failures += 1
                 if self._consecutive_read_failures >= 5:

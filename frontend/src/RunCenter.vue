@@ -4,7 +4,7 @@ import { CheckCircle2, CircleAlert, ListChecks, XCircle } from '@lucide/vue'
 import type { RunItem, Runtime } from './types'
 
 const props = defineProps<{ runtime: Runtime; countdown: number; confirmationPending: boolean }>()
-const emit = defineEmits<{ confirm: [taskId: string]; showFailures: [runId: string]; cancelCompletionAction: [] }>()
+const emit = defineEmits<{ confirm: [taskId: string]; updateDecision: [taskId: string, action: 'wait' | 'fail']; showFailures: [runId: string]; cancelCompletionAction: [] }>()
 
 const center = computed(() => props.runtime.runCenter)
 const visible = computed(() => Boolean(props.runtime.run))
@@ -24,6 +24,9 @@ const stateText = computed(() => {
   if (props.runtime.run.state === 'completed') return failures.value.length ? '整轮执行完成，存在失败项' : '整轮执行完成'
   if (props.runtime.run.state === 'stopped') return '本轮已停止，不会启动下一程序'
   if (center.value?.currentState === 'waiting_manual') return '等待人工确认当前程序完成'
+  if (center.value?.currentState === 'waiting_update') return props.runtime.run.items.find(item => item.task_id === props.runtime.activeTaskId)?.update_message || '等待人工处理更新'
+  const updateMessage = props.runtime.run.items.find(item => item.task_id === props.runtime.activeTaskId)?.update_message
+  if (updateMessage) return updateMessage
   return center.value?.currentState || props.runtime.run.state
 })
 const statusKind = computed(() => {
@@ -33,7 +36,7 @@ const statusKind = computed(() => {
   return center.value?.currentState || 'running'
 })
 const statusLabel = computed(() => ({
-  idle: '空闲', validating: '校验中', starting: '启动中', monitoring: '运行中', waiting_manual: '等待确认',
+  idle: '空闲', validating: '校验中', starting: '启动中', monitoring: '运行中', waiting_manual: '等待确认', waiting_update: '需要处理',
   closing: '正在收尾', force_closing: '正在收尾', cooling_down: '冷却中', completed: '已完成', failed: '存在失败', stopped: '已停止',
 }[statusKind.value] || '运行中'))
 const skips = computed(() => props.runtime.run?.scheduler_skips || [])
@@ -57,7 +60,7 @@ const shouldStick = computed(() => Boolean(props.runtime.busy || ['delaying', 'c
       <div class="run-center-title"><span class="run-state-badge"><CheckCircle2 v-if="statusKind === 'completed'" aria-hidden="true" /><CircleAlert v-else-if="statusKind === 'failed'" aria-hidden="true" />{{ statusLabel }}</span><div><b><ListChecks aria-hidden="true" />运行中心</b><small>{{ runtime.run?.run_mode === 'plan' ? `计划：${runtime.run?.queue_name}` : runtime.run?.run_mode === 'all_scripts' ? '全部脚本' : runtime.run?.queue_name }}</small></div></div>
       <div class="run-center-progress"><b>{{ progress }}/{{ center?.totalPrograms || runtime.run?.items.length || 0 }}</b><span>{{ currentScript }}</span><strong>{{ currentTask }}</strong></div>
       <div class="run-center-state"><span>{{ stateText }}</span><b v-if="countdown > 0" class="countdown">{{ countdown }} 秒</b></div>
-      <div class="run-center-actions"><button v-if="runtime.activeTaskId && center?.currentState === 'waiting_manual'" class="confirm" :disabled="confirmationPending" @click="emit('confirm', runtime.activeTaskId)">{{ confirmationPending ? '确认已接收' : '确认当前程序完成' }}</button><template v-if="completionText"><span class="completion-inline">{{ completionText }}</span><button v-if="completionPending" class="cancel-completion" @click="emit('cancelCompletionAction')">取消完成后操作</button></template></div>
+      <div class="run-center-actions"><button v-if="runtime.activeTaskId && center?.currentState === 'waiting_manual'" class="confirm" :disabled="confirmationPending" @click="emit('confirm', runtime.activeTaskId)">{{ confirmationPending ? '确认已接收' : '确认当前程序完成' }}</button><template v-if="runtime.activeTaskId && center?.currentState === 'waiting_update'"><button @click="emit('updateDecision', runtime.activeTaskId, 'wait')">继续等待</button><button @click="emit('updateDecision', runtime.activeTaskId, 'fail')">标记失败并继续</button></template><template v-if="completionText"><span class="completion-inline">{{ completionText }}</span><button v-if="completionPending" class="cancel-completion" @click="emit('cancelCompletionAction')">取消完成后操作</button></template></div>
     </div>
     <div class="run-center-detail">
       <div v-if="failures.length" class="run-center-failures" role="alert"><b><XCircle aria-hidden="true" />失败项</b><ul><li v-for="item in failures" :key="item.task_id"><span>{{ item.script_name ? `${item.script_name} / ` : '' }}{{ item.task_name }}</span><small>{{ itemReason(item) }}</small></li></ul><button @click="runtime.run && emit('showFailures', runtime.run.id)">查看失败详情</button></div>
