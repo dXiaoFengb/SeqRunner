@@ -67,14 +67,14 @@ svg { width: 1.05em; height: 1.05em; flex: 0 0 auto; stroke-width: 1.8; }
 .run-center-sentinel { height: 1px; margin-top: 14px; }
 .run-center { display: grid; gap: 10px; margin: 0 0 14px; padding: 13px 16px; border: 1px solid #315574; border-radius: 8px; background: #15191e; box-shadow: inset 0 1px rgba(255, 255, 255, .045), inset 0 -1px rgba(0, 0, 0, .28), 0 8px 21px rgba(0, 0, 0, .19); }
 .run-center.is-sticky { position: sticky; top: 10px; z-index: 6; }
-.run-center-primary { display: grid; grid-template-columns: minmax(130px, .7fr) minmax(220px, 1.2fr) minmax(210px, 1fr) auto auto; gap: 14px; align-items: center; }
+.run-center-primary { display: grid; grid-template-columns: minmax(130px, .8fr) minmax(150px, 1fr) minmax(0, 1.4fr); gap: 12px 14px; align-items: center; }
 .run-center.has-failures { border-color: #a45a59; background: #2a1d27; }
 .run-center-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .run-center-title b, .run-center-failures b { display: inline-flex; align-items: center; gap: 6px; }
 .run-center-title > div { display: grid; gap: 3px; min-width: 0; }
 .run-center-title small { color: #91c4ca; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-state-badge { display: inline-flex; min-width: 56px; min-height: 32px; align-items: center; justify-content: center; gap: 4px; padding: 4px 7px; border: 1px solid #2f7bad; border-radius: 5px; color: #b3e2ff; background: #142c40; font-size: 12px; font-weight: 700; white-space: nowrap; }
-.state-waiting_manual .run-state-badge { border-color: #a98542; color: #f3c971; background: #3c311d; }
+.state-waiting_manual .run-state-badge, .state-waiting_update .run-state-badge { border-color: #a98542; color: #f3c971; background: #3c311d; }
 .state-closing .run-state-badge, .state-force_closing .run-state-badge, .state-cooling_down .run-state-badge { border-color: #4a7890; color: #b4dcf2; background: #173447; }
 .state-failed .run-state-badge { border-color: #a45a59; color: #ffc1ba; background: #422732; }
 .state-stopped .run-state-badge { border-color: #697b87; color: #cbd6dc; background: #293842; }
@@ -86,7 +86,8 @@ svg { width: 1.05em; height: 1.05em; flex: 0 0 auto; stroke-width: 1.8; }
 .run-center-progress strong { color: #f0fafb; font-size: 14px; }
 .run-center-state { display: flex; align-items: center; gap: 10px; justify-content: space-between; color: #d4e6ea; font-size: 13px; }
 .countdown { border: 1px solid #3f876e; border-radius: 999px; padding: 4px 9px; background: #19372f; color: #b3efd1; white-space: nowrap; }
-.run-center-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+.run-center-actions { display: flex; grid-column: 1 / -1; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; min-width: 0; }
+.run-center-actions button { flex: 0 0 auto; white-space: nowrap; }
 .confirm { border-color: #42c6f1; background: var(--teal-strong); color: #031b29; font-weight: 700; white-space: nowrap; }
 .completion-inline { color: #f3d080; font-size: 12px; line-height: 1.4; }
 .cancel-completion { border-color: #92733c; background: #3b321d; color: #ffe1a2; white-space: nowrap; }

@@ -108,3 +108,12 @@ test('shows distinct update and completion actions while update monitoring is ac
   await wrapper.setProps({ updatePending: true })
   expect(wrapper.findAll('button').filter(button => button.text().includes('确认')).every(button => button.attributes('disabled') !== undefined)).toBe(true)
 })
+
+test('explains skipped automatic startup when waiting for confirmation', () => {
+  const waiting = structuredClone(runtime)
+  waiting.runCenter!.currentState = 'waiting_manual'
+  waiting.run!.items = [{ task_id: 'task-1', task_name: '程序', state: 'waiting_manual', update_message: '更新后软件跳过自动运行，请启动任务' }]
+  const wrapper = mount(RunCenter, { props: { runtime: waiting, countdown: 0, confirmationPending: false } })
+  expect(wrapper.text()).toContain('跳过自动运行')
+  expect(wrapper.get('button.confirm').text()).toContain('确认当前程序完成')
+})

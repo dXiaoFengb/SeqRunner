@@ -47,6 +47,7 @@ from .ui_logs import WindowLogCapture, ocr_appended
 from .update_lineage import UpdateLineage, snapshot_processes
 from .update_rules import UpdateRuleReader, UpdateRules
 from .update_supervisor import UpdateSupervisor
+from .windows_job import JobObservationError, WindowsJobObserver
 
 
 class RunBusyError(RuntimeError):
@@ -103,6 +104,7 @@ class RunnerEngine:
         self._update_action = asyncio.Event()
         self._update_choice: str | None = None
         self._owned_process: OwnedProcess | None = None
+        self._process_job: WindowsJobObserver | None = None
         self._auxiliary_owned_processes: list[OwnedProcess] = []
         self._active_task_id: str | None = None
         self._manual_accepting_task_id: str | None = None
@@ -558,6 +560,14 @@ class RunnerEngine:
             )
             self._owned_process = await capture_owned_process(process.pid)
             await self._log(item, f"已启动受管进程 PID {process.pid}")
+            if os.name == "nt" and watcher and (task.preset_id == "maa" or
+                    (task.update_monitor and task.update_monitor.enabled)):
+                try:
+                    self._process_job = await asyncio.to_thread(WindowsJobObserver, self._owned_process)
+                    await self._log(item, "已启用进程组辅助观察，脱离进程仍需单独核验")
+                except (JobObservationError, OSError) as error:
+                    self._process_job = None
+                    await self._log(item, f"进程组观察不可用，继续使用进程快照：{error}")
         except (OSError, RuntimeError, ValueError) as error:  # 启动错误是可记录的单项失败。
             await self._fail_then_cool(item, f"启动失败：{error}", has_next=has_next, task=task)
             return
@@ -606,6 +616,9 @@ class RunnerEngine:
                 item.external_log_files = watcher.paths
                 item.external_log_status = "已读取外部日志" if item.external_log_files else "运行期间未发现匹配的外部日志"
         finally:
+            if self._process_job:
+                self._process_job.close()
+                self._process_job = None
             if ui_capture:
                 try:
                     await ui_capture.finish()
@@ -754,7 +767,8 @@ class RunnerEngine:
         start_attempted = False
         announcement_attempted = False
         startup_attention = False
-        manual_recovery_requested = False
+        maa_startup_skipped = False
+        manual_recovery_deadline: float | None = None
         item.manual_completion_available = task.allow_manual_confirmation
 
         async def wait_owned(owned: OwnedProcess) -> None:
@@ -799,9 +813,12 @@ class RunnerEngine:
                         else:
                             update_started_wall = now_wall
                         observed_updaters.clear()
+                        maa_startup_skipped = False
                         if startup and not startup_signal_in_chunk:
                             startup_started.clear()
                             startup_tails.clear()
+                    if event.kind == "startup_skipped":
+                        maa_startup_skipped = True
                     monitor.observe_event(event, now)
                     item.update_active = monitor.stage not in ("normal", "reattached")
                     if monitor.stage not in ("normal", "reattached"):
@@ -842,6 +859,8 @@ class RunnerEngine:
                         await self._log(item, detail)
                         await self._publish_state()
 
+                if self._stop_requested.is_set():
+                    return "stopped", "stopped", None
                 if log_task.done():
                     signal = log_task.result()
                     if isinstance(signal, LogSignal):
@@ -890,13 +909,45 @@ class RunnerEngine:
                     last_snapshot = now
 
                 if exit_seen and monitor.stage == "awaiting_process":
-                    candidate = monitor.choose_candidate(candidates)
-                    if not candidate and manual_recovery_requested and monitor.stage != "needs_attention":
-                        monitor.attention("未找到唯一且归属可验证的重启进程，请人工处理")
-                    manual_recovery_requested = False
-                    if candidate:
-                        from .processes import owns_process
+                    job_candidates: list[OwnedProcess] = []
+                    if self._process_job and update_started_wall is not None:
+                        try:
+                            job_candidates = await asyncio.to_thread(self._process_job.members, task.executable, update_started_wall)
+                            job_candidates = [p for p in job_candidates if p != watched_process]
+                        except (JobObservationError, OSError) as error:
+                            self._process_job.close()
+                            self._process_job = None
+                            await self._log(item, f"进程组观察中断，继续使用进程快照：{error}")
+                    if self._stop_requested.is_set():
+                        return "stopped", "stopped", None
+                    combined_candidates = list(dict.fromkeys([*candidates, *job_candidates]))
+                    # A snapshot can contain a process that has already exited.
+                    # Revalidate before deciding whether candidates are ambiguous.
+                    from .processes import owns_process
 
+                    current_candidates = []
+                    for possible in combined_candidates:
+                        target = await asyncio.to_thread(owns_process, possible)
+                        if target is None:
+                            if await asyncio.to_thread(__import__("psutil").pid_exists, possible.pid):
+                                monitor.attention("候选进程仍存在但无法确认身份，请人工检查")
+                                break
+                            continue
+                        try:
+                            if target.create_time() != possible.created_at:
+                                monitor.attention("重启候选的进程身份已变化，请人工检查")
+                                break
+                            current_candidates.append(possible)
+                        except __import__("psutil").NoSuchProcess:
+                            continue
+                        except (OSError, __import__("psutil").Error):
+                            monitor.attention("无法读取候选进程身份，请人工检查")
+                            break
+                    candidate = monitor.choose_candidate(current_candidates)
+                    if not candidate and manual_recovery_deadline is not None and now >= manual_recovery_deadline and monitor.stage != "needs_attention":
+                        monitor.attention("等待后仍未找到唯一且归属可验证的重启进程，请人工处理")
+                        manual_recovery_deadline = None
+                    if candidate:
                         target = await asyncio.to_thread(owns_process, candidate)
                         if target is None:
                             monitor.attention("重启进程身份已变化，请人工检查")
@@ -911,10 +962,19 @@ class RunnerEngine:
                                 same_identity = rechecked is not None and rechecked.create_time() == candidate.created_at
                             except (OSError, __import__("psutil").Error):
                                 same_identity = False
-                            if not same_path or not same_identity:
+                            job_identity = True
+                            if candidate in job_candidates and candidate not in candidates and self._process_job:
+                                try:
+                                    job_identity = await asyncio.to_thread(self._process_job.contains, candidate)
+                                except (JobObservationError, OSError):
+                                    job_identity = False
+                            if self._stop_requested.is_set():
+                                return "stopped", "stopped", None
+                            if not same_path or not same_identity or not job_identity:
                                 monitor.attention("无法确认重启程序路径或身份")
                             else:
                                 watched_process = self._owned_process = candidate
+                                manual_recovery_deadline = None
                                 process_task = asyncio.create_task(wait_owned(candidate))
                                 exit_seen = False
                                 exit_pending_at = gui_exit_pending_at = None
@@ -927,12 +987,18 @@ class RunnerEngine:
                                     start_attempted = False
                                     announcement_attempted = False
                                 item.update_message = monitor.message
+                                if maa_startup_skipped and not startup:
+                                    item.update_message = "更新后软件跳过自动运行，请启动任务；任务尚未确认完成"
                                 item.update_active = False
                                 item.state = ItemState.WAITING_MANUAL if task.allow_manual_confirmation else ItemState.MONITORING
                                 self._manual_accepting_task_id = task.id if task.allow_manual_confirmation else None
                                 await self._log(item, "已确认重启进程，继续等待任务完成信号")
+                                if maa_startup_skipped and not startup:
+                                    await self._log(item, item.update_message)
                                 await self._publish_state()
 
+                if self._stop_requested.is_set():
+                    return "stopped", "stopped", None
                 if self._update_action.is_set() and monitor.stage != "needs_attention":
                     choice = self._update_choice
                     self._update_action.clear()
@@ -960,7 +1026,10 @@ class RunnerEngine:
                     monitor.continue_waiting(previous)
                     if choice_from_user == "handled":
                         monitor.observe_event(UpdateEvent("update_applied", "用户确认更新已处理"), previous)
-                        manual_recovery_requested = exit_seen
+                        manual_recovery_deadline = previous + min(30, monitor.idle_seconds) if exit_seen else None
+                        if exit_seen:
+                            monitor.message = "正在重新检查重启进程，将持续观察后再提示"
+                            last_snapshot = 0.0
                         if not exit_seen:
                             from .processes import owns_process
                             target = await asyncio.to_thread(owns_process, watched_process) if watched_process else None
@@ -973,6 +1042,8 @@ class RunnerEngine:
                                     valid = rechecked is not None and rechecked.create_time() == watched_process.created_at
                             except (OSError, __import__("psutil").Error):
                                 valid = False
+                            if self._stop_requested.is_set():
+                                return "stopped", "stopped", None
                             if valid:
                                 monitor.stage = "reattached"
                                 monitor.message = "已核对程序身份，继续监控任务"

@@ -76,6 +76,8 @@ class MaaUpdateEvidence:
             return UpdateEvent("expected_exit" if self.restart_expected else "unexpected_exit", "MAA 主界面退出")
         if self.restart_expected and "[Bootstrapper]" in line and "MaaAssistantArknights GUI started" in line:
             return UpdateEvent("gui_started", "检测到 MAA 界面启动，仍需核对更新结果和进程身份")
+        if self.restart_expected and "Startup auto-run will be skipped due to --skip-startup-auto-run" in line:
+            return UpdateEvent("startup_skipped", "更新重启后软件跳过自动运行，仍需确认任务已启动")
         return None
 
 

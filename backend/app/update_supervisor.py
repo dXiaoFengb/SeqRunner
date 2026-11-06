@@ -57,7 +57,7 @@ class UpdateSupervisor:
             self.message = "更新器报告完成，等待确认重启程序"
         elif event.kind == "expected_exit" and self.started_at is not None:
             self.message = "程序因更新退出，等待更新和重启"
-        elif event.kind == "gui_started" and self.started_at is not None:
+        elif event.kind in ("gui_started", "startup_skipped") and self.started_at is not None:
             self.message = event.detail
         else:
             return self.status()

@@ -322,3 +322,14 @@ test('replaces folded script events and restores a script-event sequence gap fro
   expect(wrapper.get('.script-live-list').text()).toContain('脚本记录了警告级信息')
   wrapper.unmount()
 })
+
+test('marks a script waiting for update handling instead of stopped', async () => {
+  installBackend(config(), { busy: true, activeTaskId: 't1', cooldownSeconds: 0,
+    run: { id: 'run-1', queue_name: '第一软件', state: 'running',
+      items: [{ task_id: 't1', task_name: '第一软件', state: 'waiting_update', update_message: '等待处理' }] } })
+  const wrapper = runner(); await flushPromises()
+  const card = wrapper.get('.script-summary')
+  expect(card.text()).toContain('需要处理')
+  expect(card.text()).not.toContain('已停止')
+  wrapper.unmount()
+})
