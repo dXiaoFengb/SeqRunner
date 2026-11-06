@@ -25,6 +25,8 @@ const summary = computed(() => { const run = props.runtime?.run; if (!run || !['
 const list = ref<HTMLElement | null>(null)
 const scriptList = ref<HTMLElement | null>(null)
 const compactOpen = ref(false)
+const scriptOpen = ref(false)
+function onScriptToggle(event: Event) { scriptOpen.value = (event.target as HTMLDetailsElement).open }
 const compactButton = ref<HTMLButtonElement | null>(null)
 function closeCompact() { if (!compactOpen.value) return; compactOpen.value = false; void nextTick(() => compactButton.value?.focus()) }
 function scrollToEnd(element: HTMLElement | null) { if (element) element.scrollTop = element.scrollHeight }
@@ -43,10 +45,11 @@ watch(() => [scriptEvents.value, current.value?.task_id] as const, scrollScriptT
     <div id="side-live-panel" class="side-live-panel">
     <div class="side-live-header scheduler-header"><b>本软件运行状态</b><small v-if="readableProgress" class="readable-progress">{{ readableProgress }}</small></div>
     <div ref="list" class="side-live-list scheduler-live-list" tabindex="0"><span v-if="!entries.length" class="side-live-empty">暂无本软件运行状态</span><ol v-else><li v-for="(entry, index) in entries" :key="index" :class="'log-phase-' + entry.phase"><time v-if="displayTime(entry.timestamp)" class="log-time">{{ displayTime(entry.timestamp) }}</time><b class="log-phase">{{ phaseLabels[entry.phase] }}</b><span>{{ logLabel(entry.message) }}<small v-if="entry.count" class="event-occurrences"> ×{{ entry.count }}</small></span></li></ol><span v-if="summary" class="side-live-summary">{{ summary }}</span></div>
-    <details v-if="runtime?.busy && hasScriptLog" class="script-details"><summary>查看脚本实时转译</summary>
+    <details v-if="runtime?.busy && hasScriptLog" class="script-details" @toggle="onScriptToggle"><summary aria-controls="script-live-panel">查看脚本实时转译</summary></details>
+    <div v-if="runtime?.busy && hasScriptLog" v-show="scriptOpen" id="script-live-panel" class="script-panel">
       <div class="side-live-header script-header"><b>{{ current ? `${current.task_name} · 脚本实时转译` : '脚本实时转译' }}</b></div>
       <div ref="scriptList" class="side-live-list script-live-list script-event-list" tabindex="0"><span v-if="scriptEvents.some(entry => entry.truncated)" class="script-truncated">实时转译缓冲已截断；请在历史详情查看脚本内部日志原文件。</span><span v-if="!scriptEvents.length" class="side-live-empty">等待脚本内部日志产生可转译事件。</span><ol v-else><li v-for="entry in scriptEvents" :key="entry.sequence" :class="'script-severity-' + entry.event.severity"><b class="script-severity">{{ levelLabel(entry) }}</b><span>{{ entry.event.message }}<small v-if="(entry.event.occurrence_count || 1) > 1" class="event-occurrences"> ×{{ entry.event.occurrence_count }}</small></span></li></ol></div>
-    </details>
+    </div>
     </div>
   </section>
 </template>
@@ -54,7 +57,9 @@ watch(() => [scriptEvents.value, current.value?.task_id] as const, scrollScriptT
 <style scoped>
 .log-time { color: #a8bbc7; font-size: 11px; flex: none; }
 .script-details { min-height: 0; color: #a8bbc7; }
-.script-details[open] { display: flex; flex-direction: column; flex: 1; }
+.script-details summary { cursor: pointer; }
+.script-panel { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; }
+.script-live-list { height: calc(100% - 55px); }
 .script-live-list { background: #10241f; border-color: #327d65; }
 .side-live-toggle { display: none; }
 .side-live-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; }
@@ -64,13 +69,14 @@ watch(() => [scriptEvents.value, current.value?.task_id] as const, scrollScriptT
   .side-live-panel { display: none; }
   .compact-open .side-live-panel { display: flex; position: fixed; z-index: 50; left: calc(var(--nav-width) + 8px); bottom: 12px; width: min(360px, calc(100vw - var(--nav-width) - 20px)); height: min(48vh, 400px); padding: 12px; border: 1px solid #345064; border-radius: 7px; background: #10202e; box-shadow: 0 8px 30px #000a; }
 }
+.scheduler-header { flex-wrap: wrap; }
 .readable-progress{display:block;margin-top:4px;color:#8ce0bf;font-size:12px;font-weight:400;line-height:1.35}
-.has-script-log .script-live-list { flex: 2 1 0; }
-.has-script-log .scheduler-live-list { flex: 2 1 0; }
+.has-script-log .script-live-list { flex: 1 1 0; }
+.has-script-log .scheduler-live-list { flex: 1 1 0; }
 .has-script-log .script-header { margin-top: 8px; }
 .side-live-summary { display: block; color: #8ce0bf; padding-top: 6px; }
 .script-truncated { display:block; margin-bottom:6px; color:#ffe098; font-size:12px; }
 .event-occurrences{margin-left:4px;color:#9bc9d7;font-weight:700}
 .script-event-list ol{display:grid;gap:6px;margin:0;padding:0;list-style:none}.script-event-list li{display:flex;align-items:flex-start;gap:6px;line-height:1.45}.script-severity{flex:none;min-width:36px;padding:1px 4px;border:1px solid #496577;border-radius:3px;background:#1a2b37;color:#b7cfdd;font-size:11px;text-align:center}.script-severity-info .script-severity{border-color:#287f8b;background:#123f45;color:#8cf1e6}.script-severity-warning .script-severity{border-color:#9a792e;background:#3a2d12;color:#ffe098}.script-severity-error .script-severity{border-color:#9d505b;background:#3a1e25;color:#ffb5bd}
-.scheduler-live-list ol{display:grid;gap:6px;margin:0;padding-left:0;list-style:none}.scheduler-live-list li{display:flex;align-items:flex-start;gap:6px;line-height:1.45}.log-phase{flex:none;min-width:48px;padding:1px 4px;border:1px solid #496577;border-radius:3px;background:#1a2b37;color:#b7cfdd;font-size:11px;text-align:center}.log-phase-validation .log-phase{border-color:#3a7896;background:#123448;color:#9ce4ff}.log-phase-running .log-phase{border-color:#287f8b;background:#123f45;color:#8cf1e6}.log-phase-waiting .log-phase{border-color:#9a792e;background:#3a2d12;color:#ffe098}.log-phase-closing .log-phase{border-color:#8b658f;background:#32223a;color:#e7c0f1}.log-phase-cooling .log-phase{border-color:#6972a2;background:#242943;color:#c3ccff}.log-phase-success .log-phase{border-color:#398161;background:#123525;color:#9af0c1}.log-phase-failed .log-phase{border-color:#9d505b;background:#3a1e25;color:#ffb5bd}
+.scheduler-live-list ol{display:grid;gap:6px;margin:0;padding-left:0;list-style:none}.scheduler-live-list li{display:grid;grid-template-columns:max-content minmax(0,1fr);align-items:center;gap:2px 6px;line-height:1.45}.scheduler-live-list li > span{grid-column:1 / -1;min-width:0}.log-phase{justify-self:start;flex:none;min-width:48px;padding:1px 4px;border:1px solid #496577;border-radius:3px;background:#1a2b37;color:#b7cfdd;font-size:11px;text-align:center}.log-phase-validation .log-phase{border-color:#3a7896;background:#123448;color:#9ce4ff}.log-phase-running .log-phase{border-color:#287f8b;background:#123f45;color:#8cf1e6}.log-phase-waiting .log-phase{border-color:#9a792e;background:#3a2d12;color:#ffe098}.log-phase-closing .log-phase{border-color:#8b658f;background:#32223a;color:#e7c0f1}.log-phase-cooling .log-phase{border-color:#6972a2;background:#242943;color:#c3ccff}.log-phase-success .log-phase{border-color:#398161;background:#123525;color:#9af0c1}.log-phase-failed .log-phase{border-color:#9d505b;background:#3a1e25;color:#ffb5bd}
 </style>

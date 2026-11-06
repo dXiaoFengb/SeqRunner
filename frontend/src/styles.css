@@ -67,7 +67,7 @@ svg { width: 1.05em; height: 1.05em; flex: 0 0 auto; stroke-width: 1.8; }
 .run-center-sentinel { height: 1px; margin-top: 14px; }
 .run-center { display: grid; gap: 10px; margin: 0 0 14px; padding: 13px 16px; border: 1px solid #315574; border-radius: 8px; background: #15191e; box-shadow: inset 0 1px rgba(255, 255, 255, .045), inset 0 -1px rgba(0, 0, 0, .28), 0 8px 21px rgba(0, 0, 0, .19); }
 .run-center.is-sticky { position: sticky; top: 10px; z-index: 6; }
-.run-center-primary { display: grid; grid-template-columns: minmax(130px, .8fr) minmax(150px, 1fr) minmax(0, 1.4fr); gap: 12px 14px; align-items: center; }
+.run-center-primary { display: grid; grid-template-columns: minmax(130px, .8fr) minmax(120px, 1fr) minmax(0, 1.4fr) auto; gap: 12px 14px; align-items: center; }
 .run-center.has-failures { border-color: #a45a59; background: #2a1d27; }
 .run-center-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .run-center-title b, .run-center-failures b { display: inline-flex; align-items: center; gap: 6px; }
@@ -86,7 +86,9 @@ svg { width: 1.05em; height: 1.05em; flex: 0 0 auto; stroke-width: 1.8; }
 .run-center-progress strong { color: #f0fafb; font-size: 14px; }
 .run-center-state { display: flex; align-items: center; gap: 10px; justify-content: space-between; color: #d4e6ea; font-size: 13px; }
 .countdown { border: 1px solid #3f876e; border-radius: 999px; padding: 4px 9px; background: #19372f; color: #b3efd1; white-space: nowrap; }
-.run-center-actions { display: flex; grid-column: 1 / -1; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; min-width: 0; }
+.run-center-primary:has(.run-center-actions .danger) { grid-template-columns: minmax(130px, .8fr) minmax(150px, 1fr) minmax(0, 1.4fr); }
+.run-center-primary:has(.run-center-actions .danger) .run-center-actions { grid-column: 1 / -1; }
+.run-center-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
 .run-center-actions button { flex: 0 0 auto; white-space: nowrap; }
 .confirm { border-color: #42c6f1; background: var(--teal-strong); color: #031b29; font-weight: 700; white-space: nowrap; }
 .completion-inline { color: #f3d080; font-size: 12px; line-height: 1.4; }
@@ -363,7 +365,8 @@ dd { margin: 0; }
   .side nav button span { display: none; }
   .content { padding: 22px; }
   .grid { grid-template-columns: 1fr; }
-  .run-center-primary { grid-template-columns: 1fr 1fr; }
+  .run-center-primary, .run-center-primary:has(.run-center-actions .danger) { grid-template-columns: 1fr 1fr; }
+  .run-center-actions { grid-column: 1 / -1; }
   .run-center-actions { justify-content: flex-start; }
 }
 @media (max-width: 960px) {
@@ -381,7 +384,7 @@ dd { margin: 0; }
   .signals label:has(input[placeholder]) { grid-template-columns: 1fr; }
   .path > div { align-items: stretch; flex-direction: column; }
   .actions { justify-content: flex-start; }
-  .run-center-primary { grid-template-columns: 1fr; gap: 7px; }
+  .run-center-primary, .run-center-primary:has(.run-center-actions .danger) { grid-template-columns: 1fr; gap: 7px; }
   .run-center-title small { display: none; }
   .run-center-progress { grid-template-columns: auto 1fr; }
   .run-center-state { justify-content: flex-start; }
@@ -415,7 +418,7 @@ dd { margin: 0; }
   .settings-tabs { margin-top: 14px; }.settings-tabs button { min-height: 38px; padding: 8px 10px; }.settings-stage-heading { align-items: flex-start; flex-direction: column; gap: 8px; padding: 21px 0 18px; }.settings-card { padding: 16px; }.settings-option { min-height: 78px; }.settings-export-section { grid-template-columns: 1fr; align-items: start; }.settings-export-section button { width: 100%; }.settings-facts { grid-template-columns: 1fr; gap: 4px; }.settings-facts dd { margin-bottom: 10px; }
 }
 
-.side-live-log { display: flex; flex-direction: column; min-height: 100px; height: min(48vh, 400px); margin-top: auto; padding-top: 15px; color: #c8d7e2; }
+.side-live-log { display: flex; flex-direction: column; min-height: 0; height: min(48vh, 400px); max-height: 400px; flex: 1 1 0; margin-top: auto; padding-top: 15px; color: #c8d7e2; }
 .side-live-header { display: flex; justify-content: space-between; align-items: center; gap: 4px; font-size: 13px; }
 .side-live-header button { padding: 3px 5px; font-size: 11px; white-space: nowrap; }
 .side-live-list { flex: 1; min-height: 0; overflow: auto; margin-top: 8px; padding: 8px; border: 1px solid #303b45; border-radius: 5px; background: #0a1722; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
