@@ -17,6 +17,9 @@ public sealed class TaskSpec
     public string SuccessText { get; set; } = "";
     public bool ContinueOnFailure { get; set; }
     public bool TrustCompletion { get; set; }
+    public bool SharedLog { get; set; }
+    public int TimeoutMinutes { get; set; }
+    public TaskSpec Copy() => (TaskSpec)MemberwiseClone();
 }
 
 public sealed class RunRecord
@@ -34,6 +37,7 @@ public sealed class Store
     static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
     public ObservableCollection<TaskSpec> Tasks { get; set; } = [];
     public List<RunRecord> History { get; set; } = [];
+    public bool NoticeSeen { get; set; }
     public Store(string dir) { this.dir = dir; Directory.CreateDirectory(dir); }
     public void Load()
     {
@@ -44,20 +48,28 @@ public sealed class Store
         if (!document.RootElement.TryGetProperty("Format", out var format) || format.GetString() != "SequentialRunnerV3/1") throw new InvalidDataException("数据格式不属于本软件，拒绝覆盖");
         var data = JsonSerializer.Deserialize<StoreData>(bytes, Json) ?? throw new InvalidDataException("数据为空");
         knownHash = SHA256.HashData(bytes);
-        Tasks = new(data.Tasks); History = data.History;
+        Tasks = new(data.Tasks); History = data.History; NoticeSeen = data.NoticeSeen;
         foreach (var r in History.Where(r => r.State == "运行中")) { r.State = "中断"; r.Events.Add($"{DateTimeOffset.Now:O} 异常中断；请核实，不会自动重跑"); }
         Save();
     }
     public void Save()
     {
+        string lockId = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(dir).ToUpperInvariant())));
+        using var gate = new Mutex(false, "Global\\SequentialRunnerV3-Store-" + lockId);
+        bool acquired = false;
+        try { try { acquired = gate.WaitOne(TimeSpan.FromSeconds(5)); } catch (AbandonedMutexException) { acquired = true; } if (!acquired) throw new IOException("数据保存正被占用，请稍后重试"); SaveLocked(); }
+        finally { if (acquired) gate.ReleaseMutex(); }
+    }
+    void SaveLocked()
+    {
         string path = Path.Combine(dir, "data.json");
         string tmp = Path.Combine(dir, $"data.{Guid.NewGuid():N}.tmp");
         bool exists = File.Exists(path);
         if (exists != (knownHash != null) || (exists && !CryptographicOperations.FixedTimeEquals(SHA256.HashData(File.ReadAllBytes(path)), knownHash!))) throw new IOException("数据文件被其他程序更改，请核实后重新打开；未覆盖");
-        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(new StoreData { Tasks = [.. Tasks], History = History }, Json);
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(new StoreData { Tasks = [.. Tasks], History = History, NoticeSeen = NoticeSeen }, Json);
         using (var f = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { f.Write(bytes); f.Flush(true); }
         File.Move(tmp, path, exists);
         knownHash = SHA256.HashData(bytes);
     }
-    public sealed class StoreData { public string Format { get; set; } = "SequentialRunnerV3/1"; public List<TaskSpec> Tasks { get; set; } = []; public List<RunRecord> History { get; set; } = []; }
+    public sealed class StoreData { public string Format { get; set; } = "SequentialRunnerV3/1"; public List<TaskSpec> Tasks { get; set; } = []; public List<RunRecord> History { get; set; } = []; public bool NoticeSeen { get; set; } }
 }

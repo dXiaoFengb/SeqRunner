@@ -3,7 +3,7 @@
   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="140"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
   <WrapPanel Orientation="Horizontal" Margin="0,0,0,10">
    <Button Content="新增" Click="Add" Padding="12,6"/><Button Content="删除" Click="Delete" Padding="12,6" Margin="5,0,0,0"/><Button Content="上移" Click="Up" Padding="12,6" Margin="5,0,0,0"/><Button Content="下移" Click="Down" Padding="12,6" Margin="5,0,0,0"/><Button Content="保存配置" Click="Save" Padding="12,6" Margin="14,0,0,0"/>
-   <Button Content="启动队列" Click="Start" Padding="12,6" Margin="14,0,0,0"/><Button Content="停止" Click="Stop" Padding="12,6" Margin="5,0,0,0"/><Button Content="确认当前任务完成" Click="Confirm" Padding="12,6" Margin="5,0,0,0"/><Button Content="跳过并继续" Click="Continue" Padding="12,6" Margin="5,0,0,0"/><Button Content="确认中断已核实" Click="ResolveRecovery" Padding="12,6" Margin="5,0,0,0"/>
+   <Button Content="注意事项" Click="ShowNotice" Padding="12,6" Margin="5,0,0,0"/><Button Content="启动队列" Click="Start" Padding="12,6" Margin="14,0,0,0"/><Button Content="停止" Click="Stop" Padding="12,6" Margin="5,0,0,0"/><Button Content="确认当前任务完成" Click="Confirm" Padding="12,6" Margin="5,0,0,0"/><Button Content="跳过并继续" Click="Continue" Padding="12,6" Margin="5,0,0,0"/><Button Content="确认中断已核实" Click="ResolveRecovery" Padding="12,6" Margin="5,0,0,0"/>
   </WrapPanel>
   <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="230"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
    <ListBox x:Name="TaskList" DisplayMemberPath="Name" SelectionChanged="SelectionChanged"/>
@@ -18,6 +18,8 @@
     <TextBlock Text="日志来源（仅日志信号适用）"/><ComboBox SelectedValue="{Binding LogSource}" SelectedValuePath="Content" Margin="0,2,0,8"><ComboBoxItem Content="程序输出"/><ComboBoxItem Content="日志文件"/></ComboBox>
     <TextBlock Text="日志文件路径"/><TextBox Text="{Binding LogPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"/>
     <TextBlock Text="成功信号（区分大小写）"/><TextBox Text="{Binding SuccessText, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"/>
+    <CheckBox Content="日志可能被多个实例共享（需要人工核实）" IsChecked="{Binding SharedLog}" Margin="0,0,0,8"/>
+    <TextBlock Text="最长运行时间（分钟，0 表示不限制）"/><TextBox x:Name="TimeoutInput" Text="{Binding TimeoutMinutes, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}" Margin="0,2,0,8"/>
     <CheckBox Content="普通失败后继续下一项（证据冲突和结果不明始终暂停）" IsChecked="{Binding ContinueOnFailure}"/>
    </StackPanel></ScrollViewer>
   </Grid>
