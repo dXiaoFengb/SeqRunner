@@ -1,8 +1,6 @@
 # 项目启动说明
 
-这是顺序任务调度器 V2 的开发目录，继承原项目 v0.17.1 源码与 Git 历史。规则模块按动作读取；真实业务、外部通知、EXE 打包和发布遵守当前项目授权边界。
-
-后续开发在本 V2 目录进行；原项目作为历史保存。V2 本地 Git 的 `origin` 为 `https://github.com/dXiaoFengb/SeqRunner.git`。远程连接和分支跟踪以实际 Git 状态为准；推送须另行明确授权。
+这是顺序化软件执行工具 V3 的开发目录。项目规则模块随项目保留，按动作读取。
 
 ## 文件怎么分工
 
@@ -59,22 +57,20 @@ Windows EXE 项目仅在明确要求时打包：工作位置 `产物/工作/<开
 
 ## 项目档案
 
-- 项目名称 / 定位：顺序任务调度器；Windows 本地桌面程序，按用户配置的顺序执行软件任务，并通过计划、日志与运行历史管理执行。
-- 技术栈：Python 3.13、FastAPI、Pydantic、Uvicorn、Vue 3、TypeScript、Vite、Electron。
-- 目录结构（源 / 测试 / 产物 / 发布）：`backend/`、`frontend/`、`electron/` 分别为后端、前端和桌面主进程，测试与源码相邻；`scripts/`、`tools/` 为开发和验收工具。`data/`、`node_modules/`、`backend/.venv/`、`frontend/dist/` 和 `产物/工作/`、`产物/验证/`、`产物/发布/` 不进入 Git。
-- 构建命令：`npm run build` 构建前端。免安装文件夹打包工具已重建，仅经模拟测试；真实构建须用户明确要求打包验证。
-- 测试命令：`backend\.venv\Scripts\python.exe -m pytest backend/tests`、`backend\.venv\Scripts\python.exe -m ruff check backend`、`npm run typecheck`、`npm run test:frontend`、`node --test electron/*.test.cjs`、`npm run validate:audit-coverage`、`npm run test:packaging`。`npm run validate:audit-coverage` 仅核查测试文件映射，不执行测试或代表验收；`npm run test:packaging` 执行打包工具模拟测试。
+- 项目名称 / 定位：顺序化软件执行工具 V3；Windows 本地顺序任务执行器（开发中）
+- 技术栈：C#、.NET 10、WPF；本机 SDK 10.0.403
+- 目录结构（源 / 测试 / 产物 / 发布）：`src/Runner/`、`tests/Runner.Checks/`；`产物/验证/`、`产物/工作/`、`产物/发布/` 仅按实际打包或发布规则使用。
+- 构建命令：`dotnet build src/Runner/Runner.csproj -p:RestoreSources=.`（需要 .NET 10 Windows 桌面开发环境，使用本地来源）
+- 测试命令：`dotnet run --project tests/Runner.Checks/Runner.Checks.csproj -p:RestoreSources=.`（仅隔离夹具）
 - 发布路径与动作：见 `VERSION.md`
 - Git 与记录策略：见 `CONSTRAINTS.md`
 
 本文件的已确认项目事实、实际命令和失效引用可据实更新，不得借此改变规则；涉及规则含义时先按治理修改模块处理。
 
-## 源码预览与依赖
+## 本轮源码预览与限制
 
-在 Windows 安装 Python 3.13 和 Node.js 后，运行 `py -3.13 -m venv backend\.venv`、`backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt` 和 `npm ci`。依赖安装受当前项目的来源和脚本授权约束。双击 `验证审查器.cmd`，入口会选择动态本机端口并为每次启动创建新的隔离临时数据目录；关闭程序窗口即可退出。该预览不会使用项目原有 `data/`，不会打包；每次启动的数据互不继承。
+双击根目录 `验证审查器.cmd`，使用 .NET 10 SDK 打开源码；每次使用 `.build/preview-<随机标识>/` 下独立数据目录，不使用 V2 数据。关闭窗口转入托盘；通过托盘菜单或界面“退出软件”退出。自动烟测启动并退出成功，用户人工查看尚未完成。
 
-旧 `tools/feature-preview/` 和 `tools/ui-acceptance/` 包含迁移参考脚本；旧的历史证据门禁不作为 V2 的验证或发布入口。开发者旧启动器位于 `tools/启动器.bat`，使用项目 `data/`，与隔离预览不同。项目人工验收方法见 `人工验收流程.md`。
+预览可配置并运行受控夹具。执行器在创建进程时建立 Job 归属，等待该 Job 的受管进程结束；无归属证据、日志被替换、已识别的更新或重启线索、证据冲突等情况暂停或要求人工核实。按退出码或日志信号判定时，默认暂停等待检查；只有用户确认完成信号确实代表任务结束，并逐任务勾选“完成后自动进行下一项”，才自动推进。人工确认方式另按确认结果处理。关闭窗口不结束队列，退出软件前应先停止并等待受管进程结束。
 
-## 免安装文件夹打包
-
-仅用户明确要求打包验证时，先安装锁定的本地构建依赖；执行 `npm run package:validation:prepare -- --attempt <唯一标识> --confirm-packaging`，在独立工作目录准备文件夹与清单。按 `人工验收流程.md` 完成全部适用检查并填写工作目录中的验收记录；验证期间通过 `RUNNER_USER_DATA_DIR` 将测试数据指向工作目录外的独立临时位置，避免在产品目录生成 UserData 并改变清单；验收记录按条填写结果及证据，未完成项不能最终化；仅在符合 `规则/打包验证.md` 后执行 `npm run validation:finalize -- --attempt <同一标识> --confirm-packaging`。本轮没有实际打包；若依赖或缓存缺失，不应静默下载或以模拟结果冒充真实产品验证。
+Job 不能保证覆盖由外部服务等方式创建的进程，更新线索也不能保证全部识别；对可能自行更新或依赖外部进程的第三方程序，不能仅凭退出码推断业务完成。真实第三方程序、实际更新重启、人工验收、安装包和联网均未验证。人工查看方法见 `人工验收流程.md`。
