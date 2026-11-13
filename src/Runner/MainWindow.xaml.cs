@@ -17,6 +17,9 @@ public partial class MainWindow : Window
     readonly Mutex instanceLock;
     Scheduler scheduler = null!;
     StartupCoordinator startup = null!;
+    CompletionCoordinator completion = null!;
+    PlanWindow? activePlanWindow;
+    Forms.ToolStripMenuItem? completionTrayStatus;
     System.Windows.Threading.DispatcherTimer scheduleTimer = null!;
     EventWaitHandle? activation, activationAck;
     RegisteredWaitHandle? activationWait;
@@ -52,8 +55,9 @@ public partial class MainWindow : Window
         drafts = new(store.Tasks.Select(t => t.Copy()));
         TaskList.ItemsSource = drafts;
         engine = new RunnerEngine(store, Refresh);
-        startup = new StartupCoordinator(store, engine, Refresh);
-        scheduler = new Scheduler(store, engine, Refresh, () => startup.IsActive || startup.Blocked);
+        completion = new CompletionCoordinator(store, Refresh, DispatchCompletion);
+        startup = new StartupCoordinator(store, engine, Refresh, completion);
+        scheduler = new Scheduler(store, engine, Refresh, () => startup.IsActive || startup.Blocked, completion);
         scheduleTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         scheduleTimer.Tick += (_, _) => scheduler.Tick(DateTimeOffset.UtcNow, TimeZoneInfo.Local);
         scheduler.Tick(DateTimeOffset.UtcNow, TimeZoneInfo.Local);
@@ -61,7 +65,7 @@ public partial class MainWindow : Window
         Microsoft.Win32.SystemEvents.PowerModeChanged += PowerChanged;
         HistoryList.ItemsSource = store.History;
         tray = new Forms.NotifyIcon { Text = "顺序化软件执行工具 V3", Icon = System.Drawing.SystemIcons.Application, Visible = true };
-        var menu = new Forms.ContextMenuStrip(); menu.Items.Add("打开", null, (_, _) => ShowWindow()); menu.Items.Add("退出", null, (_, _) => RequestExit()); tray.ContextMenuStrip = menu;
+        var menu = new Forms.ContextMenuStrip(); menu.Items.Add("打开", null, (_, _) => ShowWindow()); completionTrayStatus = new Forms.ToolStripMenuItem("完成后操作：无") { Enabled=false }; menu.Items.Add(completionTrayStatus); menu.Items.Add("取消完成后操作", null, (_, _) => completion.Cancel("用户通过托盘取消")); menu.Items.Add("退出", null, (_, _) => RequestExit()); tray.ContextMenuStrip = menu;
         tray.DoubleClick += (_, _) => ShowWindow();
         Refresh();
         if (!store.NoticeSeen) Loaded += (_, _) => { if (Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE") != "1") ShowNoticeCore(true); };
@@ -72,13 +76,23 @@ public partial class MainWindow : Window
             Loaded += (_, _) => { var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(seconds) }; timer.Tick += (_, _) => { timer.Stop(); RequestExit(); }; timer.Start(); };
         }
     }
-    void Refresh() { Status.Text = engine.Status + (scheduler != null && !string.IsNullOrEmpty(scheduler.Status) ? "；" + scheduler.Status : "") + (startup != null && !string.IsNullOrEmpty(startup.Status) ? "；" + startup.Status : ""); HistoryList.Items.Refresh(); if (HistoryList.SelectedItem == null && store.History.Count > 0) HistoryList.SelectedItem = store.History[^1]; ShowHistory(); }
+    void Refresh() { Status.Text = engine.Status + (scheduler != null && !string.IsNullOrEmpty(scheduler.Status) ? "；" + scheduler.Status : "") + (startup != null && !string.IsNullOrEmpty(startup.Status) ? "；" + startup.Status : "") + (completion != null && !string.IsNullOrEmpty(completion.Status) ? "；" + completion.Status : ""); if(completionTrayStatus!=null) completionTrayStatus.Text="完成后操作："+(string.IsNullOrEmpty(completion?.Status) ? "无" : completion.Status); HistoryList.Items.Refresh(); if (HistoryList.SelectedItem == null && store.History.Count > 0) HistoryList.SelectedItem = store.History[^1]; ShowHistory(); }
     void HistoryChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e) => ShowHistory();
     void ShowHistory() { if (Events == null || HistoryList == null) return; Events.Text = string.Join(Environment.NewLine, (HistoryList.SelectedItem as RunRecord)?.Events ?? []); Events.ScrollToEnd(); }
     void ShowWindow() { Show(); WindowState = WindowState.Normal; Activate(); }
     void OnClosing(object? sender, CancelEventArgs e) { if (!exiting) { e.Cancel = true; Hide(); } }
-    void PowerChanged(object sender, Microsoft.Win32.PowerModeChangedEventArgs e) { if (e.Mode == Microsoft.Win32.PowerModes.Resume) Dispatcher.BeginInvoke(() => { scheduler.MarkResumed(); scheduler.Tick(DateTimeOffset.UtcNow, TimeZoneInfo.Local); }); }
-    void OpenPlans(object sender, RoutedEventArgs e) { var window=new PlanWindow(store,engine,Refresh,()=>startup.IsActive || startup.Blocked,()=> { if(startup.IsActive) startup.Stop(); else engine.Stop(); }) { Owner=this }; window.ShowDialog(); }
+    void PowerChanged(object sender, Microsoft.Win32.PowerModeChangedEventArgs e) { if (e.Mode == Microsoft.Win32.PowerModes.Suspend) Dispatcher.BeginInvoke(() => { if(completion.Pending) completion.Cancel("系统进入睡眠或休眠"); }); if (e.Mode == Microsoft.Win32.PowerModes.Resume) Dispatcher.BeginInvoke(() => { scheduler.MarkResumed(); scheduler.Tick(DateTimeOffset.UtcNow, TimeZoneInfo.Local); }); }
+    void OpenPlans(object sender, RoutedEventArgs e) { var window=new PlanWindow(store,engine,Refresh,()=>startup.IsActive || startup.Blocked,StopAll,completion) { Owner=this }; activePlanWindow=window; try { window.ShowDialog(); } finally { activePlanWindow=null; } }
+    async Task<string> DispatchCompletion(string action)
+    {
+        if(action!="exit") return await WindowsPowerActions.RequestAsync(action);
+        if(engine.Running || startup.IsActive || HasDraftChanges || (activePlanWindow?.HasUnsavedChanges ?? false)) throw new CompletionNotSentException("仍有运行或未保存的配置，未退出软件");
+        activePlanWindow?.Close(); RequestExit(true);
+        if(!exiting) throw new CompletionNotSentException("软件退出被取消或失败");
+        return "已请求退出软件；退出状态由下次启动核实";
+    }
+    void CancelCompletion(object sender, RoutedEventArgs e) => completion.Cancel("用户取消");
+    void StopAll() { if(startup.IsActive) startup.Stop(); else engine.Stop(); completion.Cancel("用户停止"); }
     void ShowNoticeCore(bool first)
     {
         System.Windows.MessageBox.Show(Notice, "使用注意事项", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -109,7 +123,7 @@ public partial class MainWindow : Window
         if (selected != null) { editor = selected.Copy(); Editor.DataContext = editor; }
         TaskList.Items.Refresh(); Status.Text = "配置已保存"; return true;
     }
-    void RequestExit() { if (engine.Running || startup.IsActive) { System.Windows.MessageBox.Show("队列仍在运行。请先停止并等待受管程序退出。"); ShowWindow(); return; } if (!ResolveChanges()) return; try { store.Save(); } catch (Exception e) { System.Windows.MessageBox.Show("保存失败，软件保持打开：" + e.Message); return; } exiting = true; scheduleTimer.Stop(); Microsoft.Win32.SystemEvents.PowerModeChanged -= PowerChanged; tray.Visible = false; tray.Dispose(); activationWait?.Unregister(null); activation?.Dispose(); activationAck?.Dispose(); instanceLock.ReleaseMutex(); instanceLock.Dispose(); Close(); System.Windows.Application.Current.Shutdown(); }
+    void RequestExit(bool fromCompletion=false) { if (!fromCompletion && !completion.Cancel("用户退出软件")) return; if (engine.Running || startup.IsActive) { System.Windows.MessageBox.Show("队列仍在运行。请先停止并等待受管程序退出。"); ShowWindow(); return; } if (!ResolveChanges()) return; try { store.Save(); } catch (Exception e) { System.Windows.MessageBox.Show("保存失败，软件保持打开：" + e.Message); return; } exiting = true; scheduleTimer.Stop(); Microsoft.Win32.SystemEvents.PowerModeChanged -= PowerChanged; tray.Visible = false; tray.Dispose(); activationWait?.Unregister(null); activation?.Dispose(); activationAck?.Dispose(); instanceLock.ReleaseMutex(); instanceLock.Dispose(); Close(); System.Windows.Application.Current.Shutdown(); }
     void Exit(object sender, RoutedEventArgs e) => RequestExit();
     void SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
@@ -129,8 +143,8 @@ public partial class MainWindow : Window
     void Up(object sender, RoutedEventArgs e) => Move(-1);
     void Down(object sender, RoutedEventArgs e) => Move(1);
     void Save(object sender, RoutedEventArgs e) => SaveDraft();
-    async void Start(object sender, RoutedEventArgs e) { try { if (startup.IsActive || startup.Blocked) { System.Windows.MessageBox.Show("启动计划正在运行或需要人工核实。"); return; } if (!ResolveChanges()) return; await engine.Start(); } catch (Exception ex) { System.Windows.MessageBox.Show("运行失败：" + ex.Message); } }
-    void Stop(object sender, RoutedEventArgs e) { if(startup.IsActive) startup.Stop(); else engine.Stop(); }
+    async void Start(object sender, RoutedEventArgs e) { try { if (startup.IsActive || startup.Blocked) { System.Windows.MessageBox.Show("启动计划正在运行或需要人工核实。"); return; } if (!completion.Cancel("手动启动队列")) { System.Windows.MessageBox.Show(completion.Status); return; } if (!ResolveChanges()) return; await engine.Start(); } catch (Exception ex) { System.Windows.MessageBox.Show("运行失败：" + ex.Message); } }
+    void Stop(object sender, RoutedEventArgs e) => StopAll();
     void Confirm(object sender, RoutedEventArgs e) => engine.Confirm();
     void Continue(object sender, RoutedEventArgs e) => engine.Continue();
     void ResolveRecovery(object sender, RoutedEventArgs e)

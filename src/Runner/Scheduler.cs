@@ -8,6 +8,8 @@ public sealed class SchedulePlan
     public string Name { get; set; } = "新计划";
     public bool Enabled { get; set; }
     public string StartupMode { get; set; } = "never";
+    public string CompletionAction { get; set; } = "none";
+    public int CompletionDelayMinutes { get; set; }
     public DateTimeOffset EffectiveFrom { get; set; } = DateTimeOffset.UtcNow;
     public List<ScheduleItem> Items { get; set; } = [];
     public List<ScheduleSlot> Slots { get; set; } = [];
@@ -40,12 +42,13 @@ public sealed class Scheduler
     readonly RunnerEngine engine;
     readonly Action changed;
     readonly Func<bool> startupBusy;
+    readonly CompletionCoordinator? completion;
     bool first = true;
     bool resumed;
     DateTimeOffset? lastTick;
     bool failed;
     public string Status { get; private set; } = "";
-    public Scheduler(Store store, RunnerEngine engine, Action changed, Func<bool>? startupBusy = null) { this.store = store; this.engine = engine; this.changed = changed; this.startupBusy = startupBusy ?? (() => false); }
+    public Scheduler(Store store, RunnerEngine engine, Action changed, Func<bool>? startupBusy = null, CompletionCoordinator? completion = null) { this.store = store; this.engine = engine; this.changed = changed; this.startupBusy = startupBusy ?? (() => false); this.completion=completion; }
     public void MarkResumed() => resumed = true;
     static DateTimeOffset Minute(DateTimeOffset value) => new(value.UtcTicks - value.UtcTicks % TimeSpan.TicksPerMinute, TimeSpan.Zero);
     public void Tick(DateTimeOffset utcNow, TimeZoneInfo zone)
@@ -91,7 +94,8 @@ public sealed class Scheduler
             }
             if (missed > 0) store.History.Add(new RunRecord { Trigger="定时", PlanName=plan.Name, State="已错过", Due=earliest, Events=[$"未自动补跑：{missed} 个时间点；{TimeZoneInfo.ConvertTime(earliest!.Value, zone):O} 至 {TimeZoneInfo.ConvertTime(latest!.Value, zone):O}"] });
         }
-        RunRecord? reservation = null; List<TaskSpec>? selected = null; List<int>? intervals = null;
+        if (due.Count > 0 && completion != null && !completion.Cancel("定时计划到点")) { store.History.RemoveRange(originalCount,store.History.Count-originalCount); failed=true; Status="无法安全取消完成后操作，定时调度已停止"; changed(); return; }
+        RunRecord? reservation = null; List<TaskSpec>? selected = null; List<int>? intervals = null; SchedulePlan? selectedPlan = null;
         foreach (var candidate in due.GroupBy(x => x.Plan.Id).Select(g => g.First()))
         {
             var plan = candidate.Plan;
@@ -102,12 +106,18 @@ public sealed class Scheduler
             var entry = new RunRecord { Trigger="定时", PlanName=plan.Name, Due=candidate.Time, State=reason == null ? "运行中" : "已跳过" };
             entry.Events.Add(reason == null ? $"已保存定时触发意图；预定时间 {TimeZoneInfo.ConvertTime(candidate.Time, zone):O}" : $"定时跳过：{reason}；预定时间 {TimeZoneInfo.ConvertTime(candidate.Time, zone):O}");
             store.History.Add(entry);
-            if (reason == null) { reservation=entry; selected=chosen.Select(t => t!.Copy()).ToList(); intervals=items.Select(i => i.IntervalSeconds).ToList(); }
+            if (reason == null) { reservation=entry; selected=chosen.Select(t => t!.Copy()).ToList(); intervals=items.Select(i => i.IntervalSeconds).ToList(); selectedPlan=new SchedulePlan { Name=plan.Name, CompletionAction=plan.CompletionAction, CompletionDelayMinutes=plan.CompletionDelayMinutes }; }
         }
         store.ScheduleCursorUtc = now;
         try { store.Save(); }
         catch (Exception e) { store.ScheduleCursorUtc = previous; store.History.RemoveRange(originalCount, store.History.Count-originalCount); failed=true; Status="定时记录保存失败，自动调度已停止："+e.Message; changed(); return; }
         Status = ""; changed();
-        if (reservation != null && selected != null) _ = engine.StartTasks(selected, reservation, intervals);
+        if (reservation != null && selected != null && selectedPlan != null) _ = RunScheduled(selected, reservation, intervals, selectedPlan);
     }
+    async Task RunScheduled(List<TaskSpec> tasks, RunRecord run, List<int>? intervals, SchedulePlan plan)
+    {
+        await engine.StartTasks(tasks,run,intervals);
+        completion?.Offer(plan,run);
+    }
+
 }

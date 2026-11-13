@@ -15,15 +15,17 @@ public partial class PlanWindow : Window
     readonly Action changed;
     readonly Func<bool> startupBusy;
     readonly Action stopAll;
+    readonly CompletionCoordinator? completion;
     ObservableCollection<SchedulePlan> plans;
     bool loading;
     static string Json(object value) => JsonSerializer.Serialize(value);
     static List<SchedulePlan> Clone(IEnumerable<SchedulePlan> value) => JsonSerializer.Deserialize<List<SchedulePlan>>(Json(value))!;
     SchedulePlan? Current => PlansList.SelectedItem as SchedulePlan;
-    bool Dirty => Json(plans) != Json(store.Plans);
-    public PlanWindow(Store store, RunnerEngine engine, Action changed, Func<bool>? startupBusy = null, Action? stopAll = null)
+    bool Dirty => Json(plans) != Json(store.Plans) || (Current != null && !ValidDelay());
+    public bool HasUnsavedChanges => Dirty;
+    public PlanWindow(Store store, RunnerEngine engine, Action changed, Func<bool>? startupBusy = null, Action? stopAll = null, CompletionCoordinator? completion = null)
     {
-        InitializeComponent(); this.store=store; this.engine=engine; this.changed=changed; this.startupBusy=startupBusy ?? (()=>false); this.stopAll=stopAll ?? engine.Stop;
+        InitializeComponent(); this.store=store; this.engine=engine; this.changed=changed; this.startupBusy=startupBusy ?? (()=>false); this.stopAll=stopAll ?? engine.Stop; this.completion=completion;
         foreach (var day in Enum.GetValues<DayOfWeek>())
         {
             SlotDays.Children.Add(new CheckBox { Content="周" + "日一二三四五六"[(int)day], Tag=day, IsChecked=true, Margin=new Thickness(3,0,0,0) });
@@ -31,19 +33,22 @@ public partial class PlanWindow : Window
         }
         plans = new(Clone(store.Plans)); PlansList.ItemsSource=plans; TaskChoices.ItemsSource=store.Tasks; Details.IsEnabled=false;
         var statusTimer = new System.Windows.Threading.DispatcherTimer { Interval=TimeSpan.FromMilliseconds(250) };
-        statusTimer.Tick += (_, _) => PlanRunStatus.Text=engine.Status;
+        statusTimer.Tick += (_, _) => PlanRunStatus.Text=engine.Status + (completion != null && !string.IsNullOrEmpty(completion.Status) ? "；"+completion.Status : "");
         statusTimer.Start(); Closed += (_, _) => statusTimer.Stop();
     }
     static List<DayOfWeek> Days(StackPanel panel) => panel.Children.OfType<CheckBox>().Where(c => c.IsChecked == true).Select(c => (DayOfWeek)c.Tag).ToList();
     static void SetDays(StackPanel panel, IEnumerable<DayOfWeek> days) { var selected=days.ToHashSet(); foreach (var c in panel.Children.OfType<CheckBox>()) c.IsChecked=selected.Contains((DayOfWeek)c.Tag); }
     void SelectPlan(object sender, SelectionChangedEventArgs e)
     {
-        loading=true; var p=Current; Details.IsEnabled=p!=null; PlanName.Text=p?.Name ?? ""; Enabled.IsChecked=p?.Enabled ?? false; StartupMode.SelectedValue=p?.StartupMode ?? "never";
+        loading=true; var p=Current; Details.IsEnabled=p!=null; PlanName.Text=p?.Name ?? ""; Enabled.IsChecked=p?.Enabled ?? false; StartupMode.SelectedValue=p?.StartupMode ?? "never"; CompletionAction.SelectedValue=p?.CompletionAction ?? "none"; CompletionDelay.Text=(p?.CompletionDelayMinutes ?? 0).ToString(CultureInfo.InvariantCulture);
         SlotsList.ItemsSource=p?.Slots; ItemsList.ItemsSource=p?.Items; loading=false;
     }
     void NameChanged(object sender, TextChangedEventArgs e) { if (!loading && Current is { } p) { p.Name=PlanName.Text; PlansList.Items.Refresh(); } }
     void EnabledChanged(object sender, RoutedEventArgs e) { if (!loading && Current is { } p) { p.Enabled=Enabled.IsChecked==true; PlansList.Items.Refresh(); } }
     void StartupChanged(object sender, SelectionChangedEventArgs e) { if (!loading && Current is { } p && StartupMode.SelectedValue is string mode) p.StartupMode=mode; }
+    void CompletionChanged(object sender, SelectionChangedEventArgs e) { if (!loading && Current is { } p && CompletionAction.SelectedValue is string action) p.CompletionAction=action; }
+    bool ValidDelay() => int.TryParse(CompletionDelay.Text, out var value) && value>=0 && value<=10080;
+    void CompletionDelayChanged(object sender, TextChangedEventArgs e) { if (!loading && Current is { } p && ValidDelay()) p.CompletionDelayMinutes=int.Parse(CompletionDelay.Text, CultureInfo.InvariantCulture); }
     void NewPlan(object sender, RoutedEventArgs e) { var p=new SchedulePlan(); plans.Add(p); PlansList.SelectedItem=p; }
     void DeletePlan(object sender, RoutedEventArgs e) { if (Current is { } p && MessageBox.Show("删除该计划？保存后生效。", "删除计划", MessageBoxButton.YesNo)==MessageBoxResult.Yes) plans.Remove(p); }
     void MovePlan(int delta) { int i=PlansList.SelectedIndex, j=i+delta; if(i>=0 && j>=0 && j<plans.Count) { plans.Move(i,j); PlansList.SelectedIndex=j; } }
@@ -78,6 +83,7 @@ public partial class PlanWindow : Window
     void ItemDown(object sender, RoutedEventArgs e)=>MoveItem(1);
     bool SavePlans()
     {
+        if (Current != null && !ValidDelay()) { MessageBox.Show("额外等待请输入 0 至 10080 分钟。"); return false; }
         foreach(var p in plans)
         {
             if(string.IsNullOrWhiteSpace(p.Name)) { MessageBox.Show("计划名称不能为空。"); return false; }
@@ -100,6 +106,7 @@ public partial class PlanWindow : Window
     void Save(object sender, RoutedEventArgs e)=>SavePlans();
     async void RunPlan(object sender, RoutedEventArgs e)
     {
+        if (completion != null && !completion.Cancel("手动启动计划")) { MessageBox.Show(completion.Status); return; }
         if(Dirty) { MessageBox.Show("请先保存计划，再手动运行。"); return; }
         if(Current is not { } selected) { MessageBox.Show("请先选择计划。"); return; }
         if(engine.Running || engine.NeedsRecovery || startupBusy()) { MessageBox.Show("当前有运行或待核实的中断，不能启动。"); return; }
@@ -110,7 +117,9 @@ public partial class PlanWindow : Window
         var run=new RunRecord { Trigger="手动计划", PlanName=p.Name, State="运行中" }; run.Events.Add("已保存手动计划运行意图"); store.History.Add(run);
         try { store.Save(); } catch(Exception ex) { store.History.Remove(run); MessageBox.Show("运行记录保存失败，未启动："+ex.Message); return; }
         await engine.StartTasks(tasks.Select(t=>t!.Copy()).ToList(),run,items.Select(i=>i.IntervalSeconds).ToList());
+        completion?.Offer(p,run);
     }
+    void CancelCompletion(object sender, RoutedEventArgs e) => completion?.Cancel("用户取消");
     void Stop(object sender, RoutedEventArgs e)=>stopAll();
     void Confirm(object sender, RoutedEventArgs e)=>engine.Confirm();
     void Continue(object sender, RoutedEventArgs e)=>engine.Continue();

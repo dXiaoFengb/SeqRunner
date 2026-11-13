@@ -7,11 +7,12 @@ public sealed class StartupCoordinator
     readonly Store store;
     readonly RunnerEngine engine;
     readonly Action changed;
+    readonly CompletionCoordinator? completion;
     bool started, stop;
     public bool IsActive { get; private set; }
     public bool Blocked { get; private set; }
     public string Status { get; private set; } = "";
-    public StartupCoordinator(Store store, RunnerEngine engine, Action changed) { this.store=store; this.engine=engine; this.changed=changed; }
+    public StartupCoordinator(Store store, RunnerEngine engine, Action changed, CompletionCoordinator? completion = null) { this.store=store; this.engine=engine; this.changed=changed; this.completion=completion; }
     public void Stop() { if (!IsActive) return; stop=true; engine.Stop(); }
     public async Task StartAsync(DateTimeOffset now, TimeZoneInfo zone)
     {
@@ -31,6 +32,7 @@ public sealed class StartupCoordinator
         IsActive=true; var batch=new RunRecord { Trigger="启动队列", State="运行中" };
         batch.Events.Add($"{local:O} 启动计划已排队："+string.Join("、",plans.Select(p=>p.Name))); store.History.Add(batch);
         try { store.Save(); } catch(Exception ex) { store.History.Remove(batch); Blocked=true; IsActive=false; Status="启动队列保存失败，未启动："+ex.Message; changed(); return; }
+        var completed=new List<(SchedulePlan Plan,RunRecord Run)>(); bool batchOk=true;
         try
         {
             var previousRun = engine.Running ? store.History.LastOrDefault(r => !ReferenceEquals(r,batch) && r.State=="运行中") : null;
@@ -44,6 +46,7 @@ public sealed class StartupCoordinator
                 var items=plan.Items.Where(i=>i.Days.Contains(local.DayOfWeek)).ToList();
                 if(reason==null && items.Count==0) reason="当天没有任务";
                 if(reason==null && items.Any(i=>!tasks.ContainsKey(i.TaskId))) reason="计划引用的任务不存在";
+                if(reason == "计划引用的任务不存在") batchOk=false;
                 if(reason!=null) { batch.Events.Add($"{DateTimeOffset.Now:O} {plan.Name} 已跳过：{reason}"); store.Save(); changed(); continue; }
                 var run=new RunRecord { Trigger="启动计划",PlanName=plan.Name,State="运行中",Due=now };
                 run.Events.Add($"{DateTimeOffset.Now:O} 已保存启动计划触发意图");store.History.Add(run);
@@ -53,12 +56,14 @@ public sealed class StartupCoordinator
                 catch { store.History.Remove(run); if(plan.StartupMode=="daily") { if(had) store.StartupDates[plan.Id]=oldDate!; else store.StartupDates.Remove(plan.Id); } throw; }
                 batch.Events.Add($"{DateTimeOffset.Now:O} 开始启动计划：{plan.Name}");
                 await engine.StartTasks(items.Select(i=>tasks[i.TaskId].Copy()).ToList(),run,items.Select(i=>i.IntervalSeconds).ToList());
+                completed.Add((plan,run));
                 if(engine.StopRequested) stop=true;
                 if(run.State is "异常" or "需人工核实" or "中断") { Blocked=true; break; }
             }
             batch.State=Blocked || engine.NeedsRecovery ? "需人工核实" : stop ? "已停止" : "已结束";
             batch.Events.Add($"{DateTimeOffset.Now:O} 启动队列{batch.State}；未启动的计划不会自动接续");
             store.Save();
+            completion?.OfferBatch(completed,batchOk && batch.State=="已结束","启动队列");
         }
         catch(Exception ex) { Blocked=true; batch.State="需人工核实"; Status="启动计划记录失败，已停止自动推进："+ex.Message; }
         finally { IsActive=false; changed(); }

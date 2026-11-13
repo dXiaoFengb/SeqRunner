@@ -63,6 +63,7 @@ public sealed class RunnerEngine
         if (intervals != null && (intervals.Count != tasks.Count || intervals.Any(i => i < 0 || i > 86400))) throw new ArgumentException("任务间隔无效");
         var snapshot = tasks.Select(t => t.Copy()).ToList();
         stopDelay = new CancellationTokenSource();
+        bool allSucceeded = true;
         Running = true; StopRequested = false; storageFailed = false; run = reserved ?? new RunRecord(); if (reserved == null) store.History.Add(run); Event("队列开始");
         try
         {
@@ -71,7 +72,8 @@ public sealed class RunnerEngine
                 var task=snapshot[index];
                 if (StopRequested || storageFailed || uncertainOwnership) break;
                 string result = await RunOne(task);
-                if (StopRequested || storageFailed || uncertainOwnership) break;
+                if (StopRequested || storageFailed || uncertainOwnership) { allSucceeded=false; break; }
+                if (result != "成功") allSucceeded=false;
                 if (result == "失败" && task.ContinueOnFailure) Event("任务失败，按配置继续：" + task.Name);
                 else if (result != "成功" && !await WaitForUser($"{task.Name}：{result}")) break;
                 int seconds=intervals == null ? 0 : intervals[index];
@@ -85,9 +87,11 @@ public sealed class RunnerEngine
                 }
             }
             run.State = uncertainOwnership || storageFailed ? "需人工核实" : StopRequested ? "已停止" : "已结束";
+            run.AllSucceeded = allSucceeded && !StopRequested && !storageFailed && !uncertainOwnership;
             Event("队列" + run.State);
+            if (storageFailed) { run.AllSucceeded=false; run.State="需人工核实"; }
         }
-        catch (Exception ex) { run.State = "异常"; Event("运行异常：" + ex.Message); }
+        catch (Exception ex) { run.AllSucceeded=false; run.State = "异常"; Event("运行异常：" + ex.Message); }
         finally { active = null; Running = false; Waiting = false; stopDelay?.Dispose(); stopDelay=null; changed(); run = null; }
     }
     async Task<string> RunOne(TaskSpec task)
