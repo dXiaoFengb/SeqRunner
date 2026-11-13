@@ -16,6 +16,7 @@ public partial class MainWindow : Window
     readonly Forms.NotifyIcon tray = null!;
     readonly Mutex instanceLock;
     Scheduler scheduler = null!;
+    StartupCoordinator startup = null!;
     System.Windows.Threading.DispatcherTimer scheduleTimer = null!;
     EventWaitHandle? activation, activationAck;
     RegisteredWaitHandle? activationWait;
@@ -51,7 +52,8 @@ public partial class MainWindow : Window
         drafts = new(store.Tasks.Select(t => t.Copy()));
         TaskList.ItemsSource = drafts;
         engine = new RunnerEngine(store, Refresh);
-        scheduler = new Scheduler(store, engine, Refresh);
+        startup = new StartupCoordinator(store, engine, Refresh);
+        scheduler = new Scheduler(store, engine, Refresh, () => startup.IsActive || startup.Blocked);
         scheduleTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         scheduleTimer.Tick += (_, _) => scheduler.Tick(DateTimeOffset.UtcNow, TimeZoneInfo.Local);
         scheduler.Tick(DateTimeOffset.UtcNow, TimeZoneInfo.Local);
@@ -63,19 +65,20 @@ public partial class MainWindow : Window
         tray.DoubleClick += (_, _) => ShowWindow();
         Refresh();
         if (!store.NoticeSeen) Loaded += (_, _) => { if (Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE") != "1") ShowNoticeCore(true); };
+        Loaded += async (_, _) => await startup.StartAsync(DateTimeOffset.UtcNow, TimeZoneInfo.Local);
         if (Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE") == "1")
         {
             int seconds = int.TryParse(Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE_SECONDS"), out int configured) ? Math.Clamp(configured, 2, 30) : 2;
             Loaded += (_, _) => { var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(seconds) }; timer.Tick += (_, _) => { timer.Stop(); RequestExit(); }; timer.Start(); };
         }
     }
-    void Refresh() { Status.Text = engine.Status + (scheduler != null && !string.IsNullOrEmpty(scheduler.Status) ? "；" + scheduler.Status : ""); HistoryList.Items.Refresh(); if (HistoryList.SelectedItem == null && store.History.Count > 0) HistoryList.SelectedItem = store.History[^1]; ShowHistory(); }
+    void Refresh() { Status.Text = engine.Status + (scheduler != null && !string.IsNullOrEmpty(scheduler.Status) ? "；" + scheduler.Status : "") + (startup != null && !string.IsNullOrEmpty(startup.Status) ? "；" + startup.Status : ""); HistoryList.Items.Refresh(); if (HistoryList.SelectedItem == null && store.History.Count > 0) HistoryList.SelectedItem = store.History[^1]; ShowHistory(); }
     void HistoryChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e) => ShowHistory();
     void ShowHistory() { if (Events == null || HistoryList == null) return; Events.Text = string.Join(Environment.NewLine, (HistoryList.SelectedItem as RunRecord)?.Events ?? []); Events.ScrollToEnd(); }
     void ShowWindow() { Show(); WindowState = WindowState.Normal; Activate(); }
     void OnClosing(object? sender, CancelEventArgs e) { if (!exiting) { e.Cancel = true; Hide(); } }
     void PowerChanged(object sender, Microsoft.Win32.PowerModeChangedEventArgs e) { if (e.Mode == Microsoft.Win32.PowerModes.Resume) Dispatcher.BeginInvoke(() => { scheduler.MarkResumed(); scheduler.Tick(DateTimeOffset.UtcNow, TimeZoneInfo.Local); }); }
-    void OpenPlans(object sender, RoutedEventArgs e) { var window=new PlanWindow(store,engine,Refresh) { Owner=this }; window.ShowDialog(); }
+    void OpenPlans(object sender, RoutedEventArgs e) { var window=new PlanWindow(store,engine,Refresh,()=>startup.IsActive || startup.Blocked,()=> { if(startup.IsActive) startup.Stop(); else engine.Stop(); }) { Owner=this }; window.ShowDialog(); }
     void ShowNoticeCore(bool first)
     {
         System.Windows.MessageBox.Show(Notice, "使用注意事项", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -106,7 +109,7 @@ public partial class MainWindow : Window
         if (selected != null) { editor = selected.Copy(); Editor.DataContext = editor; }
         TaskList.Items.Refresh(); Status.Text = "配置已保存"; return true;
     }
-    void RequestExit() { if (engine.Running) { System.Windows.MessageBox.Show("队列仍在运行。请先停止并等待受管程序退出。"); ShowWindow(); return; } if (!ResolveChanges()) return; try { store.Save(); } catch (Exception e) { System.Windows.MessageBox.Show("保存失败，软件保持打开：" + e.Message); return; } exiting = true; scheduleTimer.Stop(); Microsoft.Win32.SystemEvents.PowerModeChanged -= PowerChanged; tray.Visible = false; tray.Dispose(); activationWait?.Unregister(null); activation?.Dispose(); activationAck?.Dispose(); instanceLock.ReleaseMutex(); instanceLock.Dispose(); Close(); System.Windows.Application.Current.Shutdown(); }
+    void RequestExit() { if (engine.Running || startup.IsActive) { System.Windows.MessageBox.Show("队列仍在运行。请先停止并等待受管程序退出。"); ShowWindow(); return; } if (!ResolveChanges()) return; try { store.Save(); } catch (Exception e) { System.Windows.MessageBox.Show("保存失败，软件保持打开：" + e.Message); return; } exiting = true; scheduleTimer.Stop(); Microsoft.Win32.SystemEvents.PowerModeChanged -= PowerChanged; tray.Visible = false; tray.Dispose(); activationWait?.Unregister(null); activation?.Dispose(); activationAck?.Dispose(); instanceLock.ReleaseMutex(); instanceLock.Dispose(); Close(); System.Windows.Application.Current.Shutdown(); }
     void Exit(object sender, RoutedEventArgs e) => RequestExit();
     void SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
@@ -126,8 +129,8 @@ public partial class MainWindow : Window
     void Up(object sender, RoutedEventArgs e) => Move(-1);
     void Down(object sender, RoutedEventArgs e) => Move(1);
     void Save(object sender, RoutedEventArgs e) => SaveDraft();
-    async void Start(object sender, RoutedEventArgs e) { try { if (!ResolveChanges()) return; await engine.Start(); } catch (Exception ex) { System.Windows.MessageBox.Show("运行失败：" + ex.Message); } }
-    void Stop(object sender, RoutedEventArgs e) => engine.Stop();
+    async void Start(object sender, RoutedEventArgs e) { try { if (startup.IsActive || startup.Blocked) { System.Windows.MessageBox.Show("启动计划正在运行或需要人工核实。"); return; } if (!ResolveChanges()) return; await engine.Start(); } catch (Exception ex) { System.Windows.MessageBox.Show("运行失败：" + ex.Message); } }
+    void Stop(object sender, RoutedEventArgs e) { if(startup.IsActive) startup.Stop(); else engine.Stop(); }
     void Confirm(object sender, RoutedEventArgs e) => engine.Confirm();
     void Continue(object sender, RoutedEventArgs e) => engine.Continue();
     void ResolveRecovery(object sender, RoutedEventArgs e)

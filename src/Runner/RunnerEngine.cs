@@ -21,6 +21,7 @@ public sealed class RunnerEngine
     bool storageFailed;
     public bool NeedsRecovery => uncertainOwnership;
     TaskCompletionSource<bool>? decision;
+    CancellationTokenSource? stopDelay;
     RunRecord? run;
 
     void Event(string text)
@@ -44,6 +45,7 @@ public sealed class RunnerEngine
     {
         if (!Running) return;
         StopRequested = true;
+        stopDelay?.Cancel();
         decision?.TrySetResult(false);
         Event("已请求停止，不再启动后续任务；尝试请求当前程序关闭");
         try { if (active is { HasExited: false }) active.CloseMainWindow(); }
@@ -55,27 +57,38 @@ public sealed class RunnerEngine
         bool result = await decision.Task; Waiting = false; decision = null; if (result) Event("用户决定跳过当前未成功项并继续；该项未判定成功"); else changed(); return result;
     }
     public Task Start() => StartTasks(store.Tasks.Select(t => t.Copy()).ToList());
-    public async Task StartTasks(IReadOnlyList<TaskSpec> tasks, RunRecord? reserved = null)
+    public async Task StartTasks(IReadOnlyList<TaskSpec> tasks, RunRecord? reserved = null, IReadOnlyList<int>? intervals = null)
     {
         if (Running || uncertainOwnership || tasks.Count == 0) return;
+        if (intervals != null && (intervals.Count != tasks.Count || intervals.Any(i => i < 0 || i > 86400))) throw new ArgumentException("任务间隔无效");
         var snapshot = tasks.Select(t => t.Copy()).ToList();
+        stopDelay = new CancellationTokenSource();
         Running = true; StopRequested = false; storageFailed = false; run = reserved ?? new RunRecord(); if (reserved == null) store.History.Add(run); Event("队列开始");
         try
         {
-            foreach (var task in snapshot)
+            for (int index=0; index<snapshot.Count; index++)
             {
+                var task=snapshot[index];
                 if (StopRequested || storageFailed || uncertainOwnership) break;
                 string result = await RunOne(task);
                 if (StopRequested || storageFailed || uncertainOwnership) break;
-                if (result == "成功") continue;
-                if (result == "失败" && task.ContinueOnFailure) { Event("任务失败，按配置继续：" + task.Name); continue; }
-                if (!await WaitForUser($"{task.Name}：{result}")) break;
+                if (result == "失败" && task.ContinueOnFailure) Event("任务失败，按配置继续：" + task.Name);
+                else if (result != "成功" && !await WaitForUser($"{task.Name}：{result}")) break;
+                int seconds=intervals == null ? 0 : intervals[index];
+                if (index+1 < snapshot.Count && seconds>0 && !StopRequested && !storageFailed)
+                {
+                    Event($"{task.Name} 已结束，等待 {seconds} 秒后进入下一项");
+                    var timer=Stopwatch.StartNew();
+                    try { while (!storageFailed && timer.Elapsed < TimeSpan.FromSeconds(seconds)) { int remaining=(int)Math.Ceiling(seconds-timer.Elapsed.TotalSeconds); Status=$"等待下一项，剩余 {remaining} 秒"; changed(); await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(1000,Math.Max(1,(seconds-timer.Elapsed.TotalSeconds)*1000))),stopDelay.Token); } }
+                    catch (OperationCanceledException) when (StopRequested) { break; }
+                    if (!StopRequested && !storageFailed) Event("任务间隔结束");
+                }
             }
             run.State = uncertainOwnership || storageFailed ? "需人工核实" : StopRequested ? "已停止" : "已结束";
             Event("队列" + run.State);
         }
         catch (Exception ex) { run.State = "异常"; Event("运行异常：" + ex.Message); }
-        finally { active = null; Running = false; Waiting = false; changed(); run = null; }
+        finally { active = null; Running = false; Waiting = false; stopDelay?.Dispose(); stopDelay=null; changed(); run = null; }
     }
     async Task<string> RunOne(TaskSpec task)
     {
