@@ -86,6 +86,7 @@ class Program
         await StartupAndIntervalTests();
         await CompletionTests();
         await RecoveryTests();
+        await BoundedOutputTests();
         var x=NewStore("concurrent-store"); x.Save(); var y=NewStore("concurrent-store"); y.Load(); x.Tasks.Add(Spec("writer-one", "echo 1")); y.Tasks.Add(Spec("writer-two", "echo 2"));
         var writes=await Task.WhenAll(Task.Run(()=>TrySave(x)), Task.Run(()=>TrySave(y))); var verify=NewStore("concurrent-store"); verify.Load(); Check(writes.Count(v=>v)==1 && verify.Tasks.Count==1, "cooperating stores reject conflicting simultaneous save");
     }
@@ -183,8 +184,42 @@ class Program
         var pre=NewStore("recovery-request-boundary");pre.History.Add(new RunRecord {Trigger="完成后操作",State="操作等待"});pre.History.Add(new RunRecord {Trigger="完成后操作",State="操作请求中"});pre.Save();var post=NewStore("recovery-request-boundary");post.Load();Check(post.History[0].State=="操作已取消" && post.History[1].State=="操作结果不明" && Recovery.Pending(post).Count==1,"restart distinguishes cancelled wait from unknown dispatched request");
         var runtime=NewStore("recovery-dispatch-failure");var fc=new FakeClock();Task Delay(TimeSpan t,CancellationToken ct){fc.Seconds+=(long)Math.Ceiling(t.TotalSeconds);return Task.CompletedTask;} var cc=new CompletionCoordinator(runtime,()=>{},_=>throw new InvalidOperationException("unknown"),fc,Delay);cc.Offer(new SchedulePlan {CompletionAction="sleep"},new RunRecord {State="已结束",AllSucceeded=true});var rr=new RunnerEngine(runtime,()=>{});Check(cc.Blocked && rr.NeedsRecovery,"runtime unknown system request is recoverable and blocks starts");rr.AcknowledgeRecovery(Recovery.Pending(runtime).Single());cc.RecoveryAcknowledged();Check(!rr.NeedsRecovery && !cc.Blocked && runtime.History.Single().State=="操作失败或结果不明","verified runtime unknown can clear its own block without replay");
     }
+    static async Task BoundedOutputTests()
+    {
+        var lines=new List<string>();var segments=new List<string>();await BoundedOutputReader.ReadAsync(new SmallReader("\r\nabc\rdef\n\nghi",1), segments.Add, lines.Add, 4);
+        Check(lines.SequenceEqual(new[]{"", "abc", "def", "", "ghi"}), "bounded reader preserves CR LF CRLF empty and EOF lines");
+        var longLines=new List<string>();bool found=false;int observedMax=0;string huge=new string('x',100000)+"REA"+"DY";
+        await BoundedOutputReader.ReadAsync(new SmallReader(huge,3), x=>{observedMax=Math.Max(observedMax,x.Length);found|=x.Contains("READY",StringComparison.Ordinal);},longLines.Add,4);
+        Check(found && observedMax<=7 && longLines.Count==1 && longLines[0].Length==4097 && longLines[0].EndsWith("…"),"bounded reader finds split signal and limits long line prefix");
+        string maxSignal=new string('A',4095)+"Z";bool maxFound=false;int maxWindow=0;await BoundedOutputReader.ReadAsync(new SmallReader("prefix"+maxSignal,17),x=>{maxFound|=x.Contains(maxSignal,StringComparison.Ordinal);maxWindow=Math.Max(maxWindow,x.Length);},_=>{},4095);Check(maxFound && maxWindow<=8191,"maximum length success signal survives many chunk boundaries");
+        bool crossed=false;await BoundedOutputReader.ReadAsync(new SmallReader("REA\nDY",1),x=>crossed|=x.Contains("READY",StringComparison.Ordinal),_=>{},4);Check(!crossed,"bounded reader never joins signals across lines");
+        foreach(int size in new[]{16777216,33554432})
+        {
+            var store=NewStore("bounded-"+size);store.Tasks.Add(new TaskSpec{Name="long",Program=Environment.ProcessPath!,Arguments="fixture-long-output "+size,WorkingDirectory=AppContext.BaseDirectory,Completion="日志信号",LogSource="程序输出",SuccessText="READY",TrustCompletion=true});
+            await new RunnerEngine(store,()=>{}).Start();var result=store.History.Single();var output=result.Events.FirstOrDefault(x=>x.Contains("long 输出："));Check(result.AllSucceeded==true && result.Events.Any(x=>x.Contains("long 成功")) && output!=null && output.EndsWith("…") && output.Length<4200,"long unbroken output has bounded record and final signal "+size);
+        }
+        var utf=NewStore("bounded-utf8");utf.Tasks.Add(new TaskSpec{Name="utf",Program=Environment.ProcessPath!,Arguments="fixture-split-utf8",WorkingDirectory=AppContext.BaseDirectory,Completion="日志信号",SuccessText="完成",TrustCompletion=true});await new RunnerEngine(utf,()=>{}).Start();Check(utf.History.Single().AllSucceeded==true,"split UTF-8 stdout retains success evidence");
+        var split=NewStore("bounded-stream-split");split.Tasks.Add(new TaskSpec{Name="split",Program=Environment.ProcessPath!,Arguments="fixture-stream-split",WorkingDirectory=AppContext.BaseDirectory,Completion="日志信号",SuccessText="READY",TrustCompletion=true});var se=new RunnerEngine(split,()=>{});var st=se.Start();for(int i=0;i<150 && !se.Waiting;i++)await Task.Delay(30);Check(se.Waiting && se.Status.Contains("未发现"),"stdout and stderr cannot combine into success signal");se.Stop();await st;
+        var stderr=NewStore("bounded-stderr-only");stderr.Tasks.Add(new TaskSpec{Name="stderr",Program=Environment.ProcessPath!,Arguments="fixture-stderr-ready",WorkingDirectory=AppContext.BaseDirectory,Completion="日志信号",SuccessText="READY",TrustCompletion=true});var ee=new RunnerEngine(stderr,()=>{});var et=ee.Start();for(int i=0;i<150 && !ee.Waiting;i++)await Task.Delay(30);Check(ee.Waiting && ee.Status.Contains("未发现"),"stderr alone cannot satisfy stdout success signal");ee.Stop();await et;
+        var update=NewStore("bounded-update");update.Tasks.Add(new TaskSpec{Name="update",Program=Environment.ProcessPath!,Arguments="fixture-split-update",WorkingDirectory=AppContext.BaseDirectory,TrustCompletion=true});var ue=new RunnerEngine(update,()=>{});var ut=ue.Start();for(int i=0;i<150 && !ue.Waiting;i++)await Task.Delay(30);Check(ue.Waiting && update.History.Single().Events.Any(x=>x.Contains("检测到更新或重启")),"update marker split across stdout chunks pauses");ue.Stop();await ut;
+        var longUpdate=NewStore("bounded-long-update");longUpdate.Tasks.Add(new TaskSpec{Name="longupdate",Program=Environment.ProcessPath!,Arguments="fixture-long-update",WorkingDirectory=AppContext.BaseDirectory,TrustCompletion=true});var lu=new RunnerEngine(longUpdate,()=>{});var lt=lu.Start();for(int i=0;i<200 && !lu.Waiting;i++)await Task.Delay(30);Check(lu.Waiting && longUpdate.History.Single().Events.Any(x=>x.Contains("检测到更新或重启")),"update marker at end of long line pauses");lu.Stop();await lt;
+        var both=NewStore("bounded-both-streams");both.Tasks.Add(new TaskSpec{Name="both",Program=Environment.ProcessPath!,Arguments="fixture-both-streams",WorkingDirectory=AppContext.BaseDirectory,Completion="日志信号",SuccessText="READY",TrustCompletion=true});await new RunnerEngine(both,()=>{}).Start();Check(both.History.Single().AllSucceeded==true && both.History.Single().Events.Any(x=>x.Contains("both 成功")),"simultaneous stdout and stderr drain without losing stdout signal");
+        var stop=NewStore("bounded-stop");stop.Tasks.Add(new TaskSpec{Name="longstop",Program=Environment.ProcessPath!,Arguments="fixture-long-wait",WorkingDirectory=AppContext.BaseDirectory,TrustCompletion=true});stop.Tasks.Add(Spec("must-not-start","echo wrong"));var be=new RunnerEngine(stop,()=>{});var bt=be.Start();for(int i=0;i<100 && !be.Status.Contains("已启动 longstop");i++)await Task.Delay(30);be.Stop();await bt;Check(!stop.History.Single().Events.Any(x=>x.Contains("已启动 must-not-start")),"stop during long output prevents later task");
+    }
+    sealed class SmallReader(string data, int chunk) : StringReader(data)
+    {
+        public override Task<int> ReadAsync(char[] buffer, int index, int count) => Task.FromResult(Read(buffer,index,Math.Min(count,chunk)));
+    }
     [STAThread] static int Main(string[] args)
     {
+        if (args.Length > 1 && args[0] == "fixture-long-output") { var output=Console.OpenStandardOutput();byte[] chunk=Enumerable.Repeat((byte)'x',8192).ToArray();int remaining=int.Parse(args[1]);while(remaining>0){int n=Math.Min(remaining,chunk.Length);output.Write(chunk,0,n);remaining-=n;}output.Write(Encoding.UTF8.GetBytes("READY"));output.Flush();return 0; }
+        if (args.Length > 0 && args[0] == "fixture-long-update") { var output=Console.OpenStandardOutput();byte[] chunk=Enumerable.Repeat((byte)'x',8192).ToArray();for(int i=0;i<2048;i++)output.Write(chunk);output.Write(Encoding.UTF8.GetBytes("UPDATING"));output.Flush();return 0; }
+        if (args.Length > 0 && args[0] == "fixture-both-streams") { var a=Task.Run(()=>{for(int i=0;i<3000;i++)Console.Out.WriteLine("normal-"+i);Console.Out.WriteLine("READY");});var b=Task.Run(()=>{for(int i=0;i<3000;i++)Console.Error.WriteLine("error-"+i);});Task.WaitAll(a,b);return 0; }
+        if (args.Length > 0 && args[0] == "fixture-split-utf8") { var output=Console.OpenStandardOutput();var b=Encoding.UTF8.GetBytes("完成");foreach(byte c in b){output.WriteByte(c);output.Flush();Thread.Sleep(30);}return 0; }
+        if (args.Length > 0 && args[0] == "fixture-stream-split") { Console.Out.Write("REA");Console.Out.Flush();Console.Error.Write("DY");Console.Error.Flush();return 0; }
+        if (args.Length > 0 && args[0] == "fixture-stderr-ready") { Console.Error.Write("READY");Console.Error.Flush();return 0; }
+        if (args.Length > 0 && args[0] == "fixture-split-update") { Console.Out.Write("UPDAT");Console.Out.Flush();Thread.Sleep(300);Console.Out.Write("ING");Console.Out.Flush();return 0; }
+        if (args.Length > 0 && args[0] == "fixture-long-wait") { Console.Out.Write(new string('x',30000));Console.Out.Flush();Thread.Sleep(1500);return 0; }
         if (args.Length > 0 && args[0] == "fixture-flood") { for (int i=0; i<12000; i++) Console.WriteLine("output " + i); return 0; }
         if (args.Length > 0 && args[0] == "fixture-wait") { Thread.Sleep(1500); return 0; }
         if (args.Length > 0 && args[0] == "fixture-child") { Thread.Sleep(4000); return 0; }

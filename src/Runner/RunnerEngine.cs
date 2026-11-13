@@ -131,15 +131,18 @@ public sealed class RunnerEngine
                 try { store.Save(); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { storageFailed = true; Status = "记录保存失败，停止启动后续任务：" + e.Message; }
                 changed();
             }
-            void Observe(string line)
+            void ObserveEvidence(string text, bool isStandardOutput)
             {
-                CheckUpdate(line);
-                if (task.Completion == "日志信号" && task.LogSource == "程序输出" && line.Contains(task.SuccessText, StringComparison.Ordinal)) found = true;
-                if (line.Length > 4096) line = line[..4096] + "…";
+                CheckUpdate(text);
+                if (isStandardOutput && task.Completion == "日志信号" && task.LogSource == "程序输出" && text.Contains(task.SuccessText, StringComparison.Ordinal)) found = true;
+            }
+            void RecordLine(string line)
+            {
                 if (buffered.Count < 512 && retained < 10000) { buffered.Add($"{DateTimeOffset.Now:O} {task.Name} 输出：{line}"); retained++; } else dropped++;
             }
-            async Task ReadOutput(StreamReader reader) { int count = 0; while (await reader.ReadLineAsync() is { } line) { Observe(line); if (++count % 128 == 0) await Task.Yield(); } }
-            var output = ReadOutput(owned.Output); var errors = ReadOutput(owned.Error);
+            int overlap = Math.Max(task.Completion == "日志信号" && task.LogSource == "程序输出" ? task.SuccessText.Length - 1 : 0, "restarting".Length - 1);
+            var output = BoundedOutputReader.ReadAsync(owned.Output, text => ObserveEvidence(text, true), RecordLine, overlap);
+            var errors = BoundedOutputReader.ReadAsync(owned.Error, text => ObserveEvidence(text, false), RecordLine, overlap);
             void CheckTimeout() { if (!timedOut && task.TimeoutMinutes > 0 && clock.GetElapsedTime(started) >= TimeSpan.FromMinutes(task.TimeoutMinutes)) { timedOut = true; Event("任务超过最长运行时间；不会启动下一项，请手动处理并等待受管程序退出"); } }
             DateTimeOffset? stopAt = null;
             bool reportedChildren = false;
