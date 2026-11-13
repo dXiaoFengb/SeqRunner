@@ -54,14 +54,15 @@ public sealed class RunnerEngine
         Waiting = true; decision = new(TaskCreationOptions.RunContinuationsAsynchronously); Event(reason + "；等待用户继续或停止");
         bool result = await decision.Task; Waiting = false; decision = null; if (result) Event("用户决定跳过当前未成功项并继续；该项未判定成功"); else changed(); return result;
     }
-    public async Task Start()
+    public Task Start() => StartTasks(store.Tasks.Select(t => t.Copy()).ToList());
+    public async Task StartTasks(IReadOnlyList<TaskSpec> tasks, RunRecord? reserved = null)
     {
-        if (Running || uncertainOwnership || store.Tasks.Count == 0) return;
-        var tasks = store.Tasks.Select(t => new TaskSpec { Name=t.Name, Program=t.Program, Arguments=t.Arguments, WorkingDirectory=t.WorkingDirectory, Completion=t.Completion, LogSource=t.LogSource, LogPath=t.LogPath, SuccessText=t.SuccessText, ContinueOnFailure=t.ContinueOnFailure, TrustCompletion=t.TrustCompletion, SharedLog=t.SharedLog, TimeoutMinutes=t.TimeoutMinutes }).ToList();
-        Running = true; StopRequested = false; storageFailed = false; run = new RunRecord(); store.History.Add(run); Event("队列开始");
+        if (Running || uncertainOwnership || tasks.Count == 0) return;
+        var snapshot = tasks.Select(t => t.Copy()).ToList();
+        Running = true; StopRequested = false; storageFailed = false; run = reserved ?? new RunRecord(); if (reserved == null) store.History.Add(run); Event("队列开始");
         try
         {
-            foreach (var task in tasks)
+            foreach (var task in snapshot)
             {
                 if (StopRequested || storageFailed || uncertainOwnership) break;
                 string result = await RunOne(task);
