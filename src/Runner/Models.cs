@@ -2,6 +2,11 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Text.Json;
 using System.Security.Cryptography;
+using System.ComponentModel;
+using System.Text.Json.Serialization;
+using System.Runtime.CompilerServices;
+
+[assembly: InternalsVisibleTo("Runner.Checks")]
 
 namespace Runner;
 
@@ -23,22 +28,31 @@ public sealed class TaskSpec
     public TaskSpec Copy() => (TaskSpec)MemberwiseClone();
 }
 
-public sealed class RunRecord
+public sealed class RunRecord : INotifyPropertyChanged
 {
+    public event PropertyChangedEventHandler? PropertyChanged;
+    string state = "运行中";
     public DateTimeOffset Started { get; set; } = DateTimeOffset.Now;
-    public string State { get; set; } = "运行中";
+    public string State
+    {
+        get => state;
+        set { if (state == value) return; state = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(State))); PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Display))); }
+    }
     public bool? AllSucceeded { get; set; }
     public DateTimeOffset? RecoveryAcknowledgedAt { get; set; }
     public string Trigger { get; set; } = "手动队列";
     public string PlanName { get; set; } = "";
     public DateTimeOffset? Due { get; set; }
     public List<string> Events { get; set; } = [];
+    [JsonIgnore]
+    public string Display => ToString();
     public override string ToString() => $"{Started:yyyy-MM-dd HH:mm:ss}　{Trigger}　{PlanName}　{State}";
 }
 
 public sealed class Store
 {
     readonly string dir;
+    readonly Func<string, FileStream> openTemporary;
     byte[]? knownHash;
     static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
     public ObservableCollection<TaskSpec> Tasks { get; set; } = [];
@@ -48,7 +62,8 @@ public sealed class Store
     public DateTimeOffset? ScheduleCursorUtc { get; set; }
     public string ScheduleZoneId { get; set; } = "";
     public Dictionary<string,string> StartupDates { get; set; } = [];
-    public Store(string dir) { this.dir = dir; Directory.CreateDirectory(dir); }
+    public Store(string dir) : this(dir, path => new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+    internal Store(string dir, Func<string, FileStream> openTemporary) { this.dir = dir; this.openTemporary = openTemporary; Directory.CreateDirectory(dir); }
     public void Load()
     {
         string path = Path.Combine(dir, "data.json");
@@ -78,11 +93,37 @@ public sealed class Store
         string path = Path.Combine(dir, "data.json");
         string tmp = Path.Combine(dir, $"data.{Guid.NewGuid():N}.tmp");
         bool exists = File.Exists(path);
-        if (exists != (knownHash != null) || (exists && !CryptographicOperations.FixedTimeEquals(SHA256.HashData(File.ReadAllBytes(path)), knownHash!))) throw new IOException("数据文件被其他程序更改，请核实后重新打开；未覆盖");
-        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(new StoreData { Tasks = [.. Tasks], History = History, NoticeSeen = NoticeSeen, Plans = Plans, ScheduleCursorUtc = ScheduleCursorUtc, ScheduleZoneId = ScheduleZoneId, StartupDates = StartupDates }, Json);
-        using (var f = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { f.Write(bytes); f.Flush(true); }
+        if (exists != (knownHash != null)) throw new IOException("数据文件被其他程序更改，请核实后重新打开；未覆盖");
+        if (exists)
+        {
+            using var current = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (!CryptographicOperations.FixedTimeEquals(SHA256.HashData(current), knownHash!)) throw new IOException("数据文件被其他程序更改，请核实后重新打开；未覆盖");
+        }
+        byte[] writtenHash;
+        using (var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+        using (var f = openTemporary(tmp))
+        using (var hashing = new HashingWriteStream(f, hash))
+        {
+            JsonSerializer.Serialize(hashing, new StoreData { Tasks = [.. Tasks], History = History, NoticeSeen = NoticeSeen, Plans = Plans, ScheduleCursorUtc = ScheduleCursorUtc, ScheduleZoneId = ScheduleZoneId, StartupDates = StartupDates }, Json);
+            f.Flush(true);
+            writtenHash = hash.GetHashAndReset();
+        }
         File.Move(tmp, path, exists);
-        knownHash = SHA256.HashData(bytes);
+        knownHash = writtenHash;
+    }
+    sealed class HashingWriteStream(Stream target, IncrementalHash hash) : Stream
+    {
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() => target.Flush();
+        public override void Write(byte[] buffer, int offset, int count) { target.Write(buffer, offset, count); hash.AppendData(buffer, offset, count); }
+        public override void Write(ReadOnlySpan<byte> buffer) { target.Write(buffer); hash.AppendData(buffer); }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
     }
     public sealed class StoreData { public string Format { get; set; } = "SequentialRunnerV3/1"; public List<TaskSpec> Tasks { get; set; } = []; public List<RunRecord> History { get; set; } = []; public bool NoticeSeen { get; set; } public List<SchedulePlan> Plans { get; set; } = []; public DateTimeOffset? ScheduleCursorUtc { get; set; } public string ScheduleZoneId { get; set; } = ""; public Dictionary<string,string> StartupDates { get; set; } = []; }
 }

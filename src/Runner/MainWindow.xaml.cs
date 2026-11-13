@@ -25,6 +25,10 @@ public partial class MainWindow : Window
     RegisteredWaitHandle? activationWait;
     ObservableCollection<TaskSpec> drafts = [];
     TaskSpec? selected, editor;
+    int shownHistoryCount = -1;
+    RunRecord? shownHistory;
+    int shownEventCount = -1;
+    string? shownLastEvent;
     bool revertingSelection;
     bool exiting;
     static string Snapshot(object? value) => JsonSerializer.Serialize(value);
@@ -76,9 +80,18 @@ public partial class MainWindow : Window
             Loaded += (_, _) => { var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(seconds) }; timer.Tick += (_, _) => { timer.Stop(); RequestExit(); }; timer.Start(); };
         }
     }
-    void Refresh() { Status.Text = (engine.NeedsRecovery ? $"有 {Recovery.Pending(store).Count} 条待核实事项，请点击“查看待核实事项”；" : "") + engine.Status + (scheduler != null && !string.IsNullOrEmpty(scheduler.Status) ? "；" + scheduler.Status : "") + (startup != null && !string.IsNullOrEmpty(startup.Status) ? "；" + startup.Status : "") + (completion != null && !string.IsNullOrEmpty(completion.Status) ? "；" + completion.Status : ""); if(completionTrayStatus!=null) completionTrayStatus.Text="完成后操作："+(string.IsNullOrEmpty(completion?.Status) ? "无" : completion.Status); HistoryList.Items.Refresh(); if (HistoryList.SelectedItem == null && store.History.Count > 0) HistoryList.SelectedItem = store.History[^1]; ShowHistory(); }
+    void Refresh() { Status.Text = (engine.NeedsRecovery ? $"有 {Recovery.PendingCount(store)} 条待核实事项，请点击“查看待核实事项”；" : "") + engine.Status + (scheduler != null && !string.IsNullOrEmpty(scheduler.Status) ? "；" + scheduler.Status : "") + (startup != null && !string.IsNullOrEmpty(startup.Status) ? "；" + startup.Status : "") + (completion != null && !string.IsNullOrEmpty(completion.Status) ? "；" + completion.Status : ""); if(completionTrayStatus!=null) completionTrayStatus.Text="完成后操作："+(string.IsNullOrEmpty(completion?.Status) ? "无" : completion.Status); if (shownHistoryCount != store.History.Count) { HistoryList.Items.Refresh(); shownHistoryCount = store.History.Count; } if (HistoryList.SelectedItem == null && store.History.Count > 0) HistoryList.SelectedItem = store.History[^1]; ShowHistory(); }
     void HistoryChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e) => ShowHistory();
-    void ShowHistory() { if (Events == null || HistoryList == null) return; Events.Text = string.Join(Environment.NewLine, (HistoryList.SelectedItem as RunRecord)?.Events ?? []); Events.ScrollToEnd(); }
+    void ShowHistory()
+    {
+        if (Events == null || HistoryList == null) return;
+        var item = HistoryList.SelectedItem as RunRecord;
+        int count = item?.Events.Count ?? 0;
+        string? last = count > 0 ? item!.Events[^1] : null;
+        if (ReferenceEquals(item, shownHistory) && count == shownEventCount && last == shownLastEvent) return;
+        shownHistory = item; shownEventCount = count; shownLastEvent = last;
+        Events.Text = string.Join(Environment.NewLine, item?.Events ?? []); Events.ScrollToEnd();
+    }
     void ShowWindow() { Show(); WindowState = WindowState.Normal; Activate(); }
     void OnClosing(object? sender, CancelEventArgs e) { if (!exiting) { e.Cancel = true; Hide(); } }
     void PowerChanged(object sender, Microsoft.Win32.PowerModeChangedEventArgs e) { if (e.Mode == Microsoft.Win32.PowerModes.Suspend) Dispatcher.BeginInvoke(() => { if(completion.Pending) completion.Cancel("系统进入睡眠或休眠"); }); if (e.Mode == Microsoft.Win32.PowerModes.Resume) Dispatcher.BeginInvoke(() => { scheduler.MarkResumed(); scheduler.Tick(DateTimeOffset.UtcNow, TimeZoneInfo.Local); }); }

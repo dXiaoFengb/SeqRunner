@@ -19,7 +19,7 @@ public sealed class RunnerEngine
     bool manualMode;
     bool uncertainOwnership;
     bool storageFailed;
-    public bool NeedsRecovery => uncertainOwnership || Recovery.Pending(store).Count > 0;
+    public bool NeedsRecovery => uncertainOwnership || Recovery.HasPending(store);
     TaskCompletionSource<bool>? decision;
     CancellationTokenSource? stopDelay;
     RunRecord? run;

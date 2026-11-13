@@ -23,7 +23,7 @@
     <CheckBox Content="普通失败后继续下一项（证据冲突和结果不明始终暂停）" IsChecked="{Binding ContinueOnFailure}"/>
    </StackPanel></ScrollViewer>
   </Grid>
-  <DockPanel Grid.Row="2" Margin="0,10,0,10"><ComboBox x:Name="HistoryList" DockPanel.Dock="Top" SelectionChanged="HistoryChanged" Margin="0,0,0,4"/><TextBox x:Name="Events" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/></DockPanel>
+  <DockPanel Grid.Row="2" Margin="0,10,0,10"><ComboBox x:Name="HistoryList" DisplayMemberPath="Display" DockPanel.Dock="Top" SelectionChanged="HistoryChanged" Margin="0,0,0,4"/><TextBox x:Name="Events" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/></DockPanel>
   <DockPanel Grid.Row="3"><Button DockPanel.Dock="Right" Content="退出软件" Click="Exit" Padding="12,6"/><StackPanel><TextBlock Text="“跳过并继续”会进入下一项，当前任务不会记为成功。" TextWrapping="Wrap"/><TextBlock Text="仅跟踪受管进程组；外部服务启动的程序及更新重启不能自动确认。" Foreground="DarkRed" TextWrapping="Wrap"/><TextBlock x:Name="Status" VerticalAlignment="Center" TextWrapping="Wrap"/></StackPanel></DockPanel>
  </Grid>
 </Window>
