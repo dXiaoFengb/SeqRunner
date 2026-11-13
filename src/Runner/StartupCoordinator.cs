@@ -23,8 +23,8 @@ public sealed class StartupCoordinator
         var local=TimeZoneInfo.ConvertTime(now,zone); string today=local.ToString("yyyy-MM-dd");
         if (engine.NeedsRecovery)
         {
-            Status="存在未核实的中断，启动计划不会自动运行";
-            var skipped=new RunRecord { Trigger="启动队列", State="已跳过", Events=[$"{local:O} 存在未核实的中断，启动计划未运行："+string.Join("、",plans.Select(p=>p.Name))] };
+            Status="存在待核实事项，启动计划不会自动运行";
+            var skipped=new RunRecord { Trigger="启动队列", State="已跳过", Events=[$"{local:O} 存在待核实事项，启动计划未运行："+string.Join("、",plans.Select(p=>p.Name))] };
             store.History.Add(skipped);
             try { store.Save(); } catch(Exception ex) { store.History.Remove(skipped); Blocked=true; Status="启动跳过记录保存失败："+ex.Message; }
             changed(); return;

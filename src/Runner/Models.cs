@@ -28,6 +28,7 @@ public sealed class RunRecord
     public DateTimeOffset Started { get; set; } = DateTimeOffset.Now;
     public string State { get; set; } = "运行中";
     public bool? AllSucceeded { get; set; }
+    public DateTimeOffset? RecoveryAcknowledgedAt { get; set; }
     public string Trigger { get; set; } = "手动队列";
     public string PlanName { get; set; } = "";
     public DateTimeOffset? Due { get; set; }

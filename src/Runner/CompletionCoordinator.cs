@@ -10,6 +10,7 @@ public sealed class CompletionCoordinator
     readonly TimeProvider clock;
     readonly Func<TimeSpan,CancellationToken,Task> delay;
     CancellationTokenSource? cancellation;
+    bool recoveryBlocked;
     RunRecord? pending;
     public bool Blocked { get; private set; }
     public bool Pending => pending?.State == "操作等待";
@@ -63,9 +64,9 @@ public sealed class CompletionCoordinator
         catch(Exception ex)
         {
             if (ex is CompletionNotSentException) { entry.State="操作未执行"; entry.Events.Add($"{DateTimeOffset.Now:O} 未执行：{ex.Message}"); }
-            else if (dispatchStarted) { Blocked=true; entry.State="操作失败或结果不明"; entry.Events.Add($"{DateTimeOffset.Now:O} 请求可能已发出，结果或记录未确认：{ex.Message}；请人工核实"); }
+            else if (dispatchStarted) { Blocked=true; recoveryBlocked=true; entry.State="操作失败或结果不明"; entry.Events.Add($"{DateTimeOffset.Now:O} 请求可能已发出，结果或记录未确认：{ex.Message}；请人工核实"); }
             else { entry.State="操作未执行"; entry.Events.Add($"{DateTimeOffset.Now:O} 等待或保存失败，未请求操作：{ex.Message}"); }
-            try { store.Save(); } catch { Blocked=true; }
+            try { store.Save(); } catch { Blocked=true; recoveryBlocked=false; }
             pending=null; Status="完成后操作未确认："+ex.Message; changed();
         }
     }
@@ -81,5 +82,6 @@ public sealed class CompletionCoordinator
             previous=clock.GetTimestamp();
         }
     }
+    public void RecoveryAcknowledged() { if (recoveryBlocked && Recovery.Pending(store).Count == 0) { Blocked=false; recoveryBlocked=false; Status="待核实事项已处理"; changed(); } }
     public static string Label(string action) => action switch { "exit"=>"退出软件", "shutdown"=>"关机", "restart"=>"重启", "sleep"=>"睡眠", "hibernate"=>"休眠", _=>"无操作" };
 }

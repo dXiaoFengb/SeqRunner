@@ -9,7 +9,7 @@ public sealed class RunnerEngine
     readonly Store store;
     readonly Action changed;
     readonly TimeProvider clock;
-    public RunnerEngine(Store store, Action changed, TimeProvider? clock = null) { this.store=store; this.changed=changed; this.clock=clock ?? TimeProvider.System; uncertainOwnership=store.History.Any(r=>r.State is "中断" or "需人工核实"); if (uncertainOwnership) Status="存在未核实的中断运行，请先检查相关程序"; }
+    public RunnerEngine(Store store, Action changed, TimeProvider? clock = null) { this.store=store; this.changed=changed; this.clock=clock ?? TimeProvider.System; uncertainOwnership=false; if (NeedsRecovery) Status="存在未核实的中断运行，请先检查相关程序"; }
     public bool Running { get; private set; }
     public bool StopRequested { get; private set; }
     public bool ManualConfirmed { get; private set; }
@@ -19,7 +19,7 @@ public sealed class RunnerEngine
     bool manualMode;
     bool uncertainOwnership;
     bool storageFailed;
-    public bool NeedsRecovery => uncertainOwnership;
+    public bool NeedsRecovery => uncertainOwnership || Recovery.Pending(store).Count > 0;
     TaskCompletionSource<bool>? decision;
     CancellationTokenSource? stopDelay;
     RunRecord? run;
@@ -32,14 +32,13 @@ public sealed class RunnerEngine
     }
     public void Confirm() { if (Running && manualMode && !StopRequested) { ManualConfirmed = true; Event("已确认当前任务业务完成，仍需等待程序退出"); } }
     public void Continue() { if (Waiting && !StopRequested) decision?.TrySetResult(true); }
-    public void AcknowledgeRecovery()
+    public void AcknowledgeRecovery(RunRecord item)
     {
-        if (Running || !uncertainOwnership) return;
-        var pending = store.History.Where(r=>r.State is "中断" or "需人工核实").ToList();
-        foreach (var item in pending) { item.State = "已核实"; item.Events.Add($"{DateTimeOffset.Now:O} 用户确认已人工检查中断运行和相关程序"); }
-        try { store.Save(); }
-        catch { foreach (var item in pending) { item.State = "需人工核实"; item.Events.RemoveAt(item.Events.Count - 1); } throw; }
-        uncertainOwnership = false; Status = "中断运行已由用户核实"; changed();
+        if (Running) throw new InvalidOperationException("任务正在运行，不能核实中断。");
+        Recovery.Acknowledge(store, item);
+        uncertainOwnership = false;
+        Status = NeedsRecovery ? "仍有待核实事项" : "待核实事项已处理";
+        changed();
     }
     public void Stop()
     {
@@ -59,7 +58,7 @@ public sealed class RunnerEngine
     public Task Start() => StartTasks(store.Tasks.Select(t => t.Copy()).ToList());
     public async Task StartTasks(IReadOnlyList<TaskSpec> tasks, RunRecord? reserved = null, IReadOnlyList<int>? intervals = null)
     {
-        if (Running || uncertainOwnership || tasks.Count == 0) return;
+        if (Running || NeedsRecovery || tasks.Count == 0) return;
         if (intervals != null && (intervals.Count != tasks.Count || intervals.Any(i => i < 0 || i > 86400))) throw new ArgumentException("任务间隔无效");
         var snapshot = tasks.Select(t => t.Copy()).ToList();
         stopDelay = new CancellationTokenSource();
@@ -91,7 +90,7 @@ public sealed class RunnerEngine
             Event("队列" + run.State);
             if (storageFailed) { run.AllSucceeded=false; run.State="需人工核实"; }
         }
-        catch (Exception ex) { run.AllSucceeded=false; run.State = "异常"; Event("运行异常：" + ex.Message); }
+        catch (Exception ex) { run.AllSucceeded=false; run.State = "需人工核实"; uncertainOwnership=true; Event("运行异常，请检查相关程序：" + ex.Message); }
         finally { active = null; Running = false; Waiting = false; stopDelay?.Dispose(); stopDelay=null; changed(); run = null; }
     }
     async Task<string> RunOne(TaskSpec task)

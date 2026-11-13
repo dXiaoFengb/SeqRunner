@@ -65,18 +65,18 @@ public partial class MainWindow : Window
         Microsoft.Win32.SystemEvents.PowerModeChanged += PowerChanged;
         HistoryList.ItemsSource = store.History;
         tray = new Forms.NotifyIcon { Text = "顺序化软件执行工具 V3", Icon = System.Drawing.SystemIcons.Application, Visible = true };
-        var menu = new Forms.ContextMenuStrip(); menu.Items.Add("打开", null, (_, _) => ShowWindow()); completionTrayStatus = new Forms.ToolStripMenuItem("完成后操作：无") { Enabled=false }; menu.Items.Add(completionTrayStatus); menu.Items.Add("取消完成后操作", null, (_, _) => completion.Cancel("用户通过托盘取消")); menu.Items.Add("退出", null, (_, _) => RequestExit()); tray.ContextMenuStrip = menu;
+        var menu = new Forms.ContextMenuStrip(); menu.Items.Add("打开", null, (_, _) => ShowWindow()); menu.Items.Add("查看待核实事项", null, (_, _) => { ShowWindow(); ResolveRecovery(this, new RoutedEventArgs()); }); completionTrayStatus = new Forms.ToolStripMenuItem("完成后操作：无") { Enabled=false }; menu.Items.Add(completionTrayStatus); menu.Items.Add("取消完成后操作", null, (_, _) => completion.Cancel("用户通过托盘取消")); menu.Items.Add("退出", null, (_, _) => RequestExit()); tray.ContextMenuStrip = menu;
         tray.DoubleClick += (_, _) => ShowWindow();
         Refresh();
         if (!store.NoticeSeen) Loaded += (_, _) => { if (Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE") != "1") ShowNoticeCore(true); };
-        Loaded += async (_, _) => await startup.StartAsync(DateTimeOffset.UtcNow, TimeZoneInfo.Local);
+        Loaded += async (_, _) => { await startup.StartAsync(DateTimeOffset.UtcNow, TimeZoneInfo.Local); if (engine.NeedsRecovery && Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE") != "1") ResolveRecovery(this, new RoutedEventArgs()); };
         if (Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE") == "1")
         {
             int seconds = int.TryParse(Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE_SECONDS"), out int configured) ? Math.Clamp(configured, 2, 30) : 2;
             Loaded += (_, _) => { var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(seconds) }; timer.Tick += (_, _) => { timer.Stop(); RequestExit(); }; timer.Start(); };
         }
     }
-    void Refresh() { Status.Text = engine.Status + (scheduler != null && !string.IsNullOrEmpty(scheduler.Status) ? "；" + scheduler.Status : "") + (startup != null && !string.IsNullOrEmpty(startup.Status) ? "；" + startup.Status : "") + (completion != null && !string.IsNullOrEmpty(completion.Status) ? "；" + completion.Status : ""); if(completionTrayStatus!=null) completionTrayStatus.Text="完成后操作："+(string.IsNullOrEmpty(completion?.Status) ? "无" : completion.Status); HistoryList.Items.Refresh(); if (HistoryList.SelectedItem == null && store.History.Count > 0) HistoryList.SelectedItem = store.History[^1]; ShowHistory(); }
+    void Refresh() { Status.Text = (engine.NeedsRecovery ? $"有 {Recovery.Pending(store).Count} 条待核实事项，请点击“查看待核实事项”；" : "") + engine.Status + (scheduler != null && !string.IsNullOrEmpty(scheduler.Status) ? "；" + scheduler.Status : "") + (startup != null && !string.IsNullOrEmpty(startup.Status) ? "；" + startup.Status : "") + (completion != null && !string.IsNullOrEmpty(completion.Status) ? "；" + completion.Status : ""); if(completionTrayStatus!=null) completionTrayStatus.Text="完成后操作："+(string.IsNullOrEmpty(completion?.Status) ? "无" : completion.Status); HistoryList.Items.Refresh(); if (HistoryList.SelectedItem == null && store.History.Count > 0) HistoryList.SelectedItem = store.History[^1]; ShowHistory(); }
     void HistoryChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e) => ShowHistory();
     void ShowHistory() { if (Events == null || HistoryList == null) return; Events.Text = string.Join(Environment.NewLine, (HistoryList.SelectedItem as RunRecord)?.Events ?? []); Events.ScrollToEnd(); }
     void ShowWindow() { Show(); WindowState = WindowState.Normal; Activate(); }
@@ -143,14 +143,13 @@ public partial class MainWindow : Window
     void Up(object sender, RoutedEventArgs e) => Move(-1);
     void Down(object sender, RoutedEventArgs e) => Move(1);
     void Save(object sender, RoutedEventArgs e) => SaveDraft();
-    async void Start(object sender, RoutedEventArgs e) { try { if (startup.IsActive || startup.Blocked) { System.Windows.MessageBox.Show("启动计划正在运行或需要人工核实。"); return; } if (!completion.Cancel("手动启动队列")) { System.Windows.MessageBox.Show(completion.Status); return; } if (!ResolveChanges()) return; await engine.Start(); } catch (Exception ex) { System.Windows.MessageBox.Show("运行失败：" + ex.Message); } }
+    async void Start(object sender, RoutedEventArgs e) { try { if (engine.NeedsRecovery) { System.Windows.MessageBox.Show("存在待核实事项，请先逐条检查。"); return; } if (startup.IsActive || startup.Blocked) { System.Windows.MessageBox.Show("启动计划正在运行或需要人工核实。"); return; } if (!completion.Cancel("手动启动队列")) { System.Windows.MessageBox.Show(completion.Status); return; } if (!ResolveChanges()) return; await engine.Start(); } catch (Exception ex) { System.Windows.MessageBox.Show("运行失败：" + ex.Message); } }
     void Stop(object sender, RoutedEventArgs e) => StopAll();
     void Confirm(object sender, RoutedEventArgs e) => engine.Confirm();
     void Continue(object sender, RoutedEventArgs e) => engine.Continue();
     void ResolveRecovery(object sender, RoutedEventArgs e)
     {
-        if (!engine.NeedsRecovery) { System.Windows.MessageBox.Show("没有待核实的中断运行。"); return; }
-        if (System.Windows.MessageBox.Show("请先检查上次任务及其可能遗留的程序。已人工确认安全，可以允许重新启动队列吗？", "确认中断已核实", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
-        try { engine.AcknowledgeRecovery(); } catch (Exception ex) { System.Windows.MessageBox.Show("保存确认失败，仍禁止启动：" + ex.Message); }
+        if (engine.Running) { System.Windows.MessageBox.Show("请先等待当前运行结束，再核实事项。"); return; }
+        new RecoveryWindow(store,engine,completion,Refresh) { Owner=this }.ShowDialog();
     }
 }

@@ -94,7 +94,7 @@ public sealed class Scheduler
             }
             if (missed > 0) store.History.Add(new RunRecord { Trigger="定时", PlanName=plan.Name, State="已错过", Due=earliest, Events=[$"未自动补跑：{missed} 个时间点；{TimeZoneInfo.ConvertTime(earliest!.Value, zone):O} 至 {TimeZoneInfo.ConvertTime(latest!.Value, zone):O}"] });
         }
-        if (due.Count > 0 && completion != null && !completion.Cancel("定时计划到点")) { store.History.RemoveRange(originalCount,store.History.Count-originalCount); failed=true; Status="无法安全取消完成后操作，定时调度已停止"; changed(); return; }
+        if (due.Count > 0 && !engine.NeedsRecovery && completion != null && !completion.Cancel("定时计划到点")) { store.History.RemoveRange(originalCount,store.History.Count-originalCount); failed=true; Status="无法安全取消完成后操作，定时调度已停止"; changed(); return; }
         RunRecord? reservation = null; List<TaskSpec>? selected = null; List<int>? intervals = null; SchedulePlan? selectedPlan = null;
         foreach (var candidate in due.GroupBy(x => x.Plan.Id).Select(g => g.First()))
         {
@@ -102,7 +102,7 @@ public sealed class Scheduler
             var day = TimeZoneInfo.ConvertTime(candidate.Time, zone).DayOfWeek;
             var items = plan.Items.Where(i => i.Days.Contains(day)).ToList();
             var chosen = items.Select(i => store.Tasks.FirstOrDefault(t => t.Id == i.TaskId)).ToList();
-            string? reason = engine.Running || startupBusy() || reservation != null ? "已有任务运行或等待处理" : engine.NeedsRecovery ? "存在待核实的中断" : chosen.Count == 0 ? "当天没有任务" : chosen.Any(t => t == null) ? "计划引用的任务不存在" : null;
+            string? reason = engine.Running || startupBusy() || reservation != null ? "已有任务运行或等待处理" : engine.NeedsRecovery ? "存在待核实事项" : chosen.Count == 0 ? "当天没有任务" : chosen.Any(t => t == null) ? "计划引用的任务不存在" : null;
             var entry = new RunRecord { Trigger="定时", PlanName=plan.Name, Due=candidate.Time, State=reason == null ? "运行中" : "已跳过" };
             entry.Events.Add(reason == null ? $"已保存定时触发意图；预定时间 {TimeZoneInfo.ConvertTime(candidate.Time, zone):O}" : $"定时跳过：{reason}；预定时间 {TimeZoneInfo.ConvertTime(candidate.Time, zone):O}");
             store.History.Add(entry);
