@@ -37,6 +37,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Navigate(NavRun, new RoutedEventArgs());
         string? overrideDir = Environment.GetEnvironmentVariable("RUNNER_V3_DATA_DIR");
         string dir = string.IsNullOrWhiteSpace(overrideDir) ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SequentialRunnerV3") : overrideDir;
         string id = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(dir).ToUpperInvariant())));
@@ -91,6 +92,28 @@ public partial class MainWindow : Window
         if (ReferenceEquals(item, shownHistory) && count == shownEventCount && last == shownLastEvent) return;
         shownHistory = item; shownEventCount = count; shownLastEvent = last;
         Events.Text = string.Join(Environment.NewLine, item?.Events ?? []); Events.ScrollToEnd();
+    }
+    void Navigate(object sender, RoutedEventArgs e)
+    {
+        string page = (sender as System.Windows.Controls.Button)?.Tag as string ?? "Run";
+        if (TasksPage.Visibility == Visibility.Visible && page != "Tasks" && !ResolveChanges()) return;
+        RunPage.Visibility = page == "Run" ? Visibility.Visible : Visibility.Collapsed;
+        TasksPage.Visibility = page == "Tasks" ? Visibility.Visible : Visibility.Collapsed;
+        PlansPage.Visibility = page == "Plans" ? Visibility.Visible : Visibility.Collapsed;
+        HistoryPage.Visibility = page == "History" ? Visibility.Visible : Visibility.Collapsed;
+        HelpPage.Visibility = page == "Help" ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var button in new[] { NavRun, NavTasks, NavPlans, NavHistory, NavHelp })
+        {
+            bool active = (string)button.Tag == page;
+            button.Background = active ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(205, 231, 229)) : System.Windows.Media.Brushes.White;
+            button.FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal;
+        }
+    }
+    void BrowseProgram(object sender, RoutedEventArgs e)
+    {
+        if (editor == null) return;
+        var dialog = new Microsoft.Win32.OpenFileDialog { Title = "选择任务程序", Filter = "可执行程序 (*.exe)|*.exe|所有文件 (*.*)|*.*", CheckFileExists = true };
+        if (dialog.ShowDialog(this) == true) ProgramInput.Text = dialog.FileName;
     }
     void ShowWindow() { Show(); WindowState = WindowState.Normal; Activate(); }
     void OnClosing(object? sender, CancelEventArgs e) { if (!exiting) { e.Cancel = true; Hide(); } }
