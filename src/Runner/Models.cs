@@ -21,6 +21,7 @@ public sealed class TaskSpec
     public string LogSource { get; set; } = "程序输出";
     public string LogPath { get; set; } = "";
     public string SuccessText { get; set; } = "";
+    public string UpdateMarkers { get; set; } = "";
     public bool ContinueOnFailure { get; set; }
     public bool TrustCompletion { get; set; }
     public bool SharedLog { get; set; }

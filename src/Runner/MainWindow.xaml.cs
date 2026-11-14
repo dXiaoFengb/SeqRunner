@@ -149,6 +149,8 @@ public partial class MainWindow : Window
     {
         if (System.Windows.Controls.Validation.GetHasError(TimeoutInput)) { System.Windows.MessageBox.Show("最长运行时间请输入 0 到 525600 之间的整数分钟。"); return false; }
         if (editor != null && (editor.TimeoutMinutes < 0 || editor.TimeoutMinutes > 525600)) { System.Windows.MessageBox.Show("最长运行时间请输入 0 到 525600 之间的整数分钟。"); return false; }
+        if (editor != null && !UpdateMarkers.TryParse(editor.UpdateMarkers, out _)) { System.Windows.MessageBox.Show("更新或重启线索最多 32 条，每条不超过 256 个字符。"); return false; }
+        if (drafts.Any(t => !ReferenceEquals(t, selected) && !UpdateMarkers.TryParse(t.UpdateMarkers, out _))) { System.Windows.MessageBox.Show("更新或重启线索最多 32 条，每条不超过 256 个字符。"); return false; }
         if (editor != null && selected != null) { int i = drafts.IndexOf(selected); if (i >= 0) { revertingSelection = true; selected = editor.Copy(); drafts[i] = selected; TaskList.SelectedItem = selected; revertingSelection = false; } }
         var ids=drafts.Select(t=>t.Id).ToHashSet();
         if (store.Plans.Any(p=>p.Items.Any(i=>!ids.Contains(i.TaskId)))) { System.Windows.MessageBox.Show("计划引用了已删除的任务，请先在定时计划中移除引用。"); return false; }

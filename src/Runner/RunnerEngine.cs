@@ -143,6 +143,8 @@ public sealed class RunnerEngine
         manualMode = task.Completion == "人工确认";
         if (!File.Exists(task.Program)) { Event("程序不存在：" + task.Name); return "失败"; }
         if (task.Completion == "日志信号" && string.IsNullOrWhiteSpace(task.SuccessText)) { Event("未配置成功信号"); return "失败"; }
+        if (!UpdateMarkers.TryParse(task.UpdateMarkers, out var configuredMarkers)) { Event("更新或重启线索无效，最多 32 条、每条 256 个字符"); return "结果不明：线索配置无效"; }
+        var markers = UpdateMarkers.BuiltIn.Concat(configuredMarkers).ToArray();
         if (task.TimeoutMinutes < 0 || task.TimeoutMinutes > 525600) { Event("最长运行时间无效"); return "失败"; }
         if (task.SuccessText.Length > 4096) { Event("成功信号过长"); return "失败"; }
         if (task.Completion is not ("进程退出" or "日志信号" or "人工确认") || task.LogSource is not ("程序输出" or "日志文件")) { Event("完成方式或日志来源无效"); return "失败"; }
@@ -157,11 +159,17 @@ public sealed class RunnerEngine
             }
             owned = OwnedProcess.Start(task); var process = owned.Root; active = process; Event($"已启动 {task.Name}（PID {process.Id}，创建时间 {owned.CreatedUtc:O}，路径 {owned.Executable}），已建立进程组归属");
             bool found = false, updateSignal = false, timedOut = false; long started = clock.GetTimestamp(); string tail = ""; Decoder decoder = Encoding.UTF8.GetDecoder();
-            void CheckUpdate(string text)
+            void CheckUpdate(string text, string source)
             {
-                if (!updateSignal && new[] { "正在更新", "更新中", "正在重启", "重启中", "updating", "restarting" }.Any(marker => text.Contains(marker, StringComparison.OrdinalIgnoreCase)))
-                { updateSignal = true; Event("检测到更新或重启线索，完成后需要人工核实"); }
+                string? marker = UpdateMarkers.Find(text, markers);
+                if (marker == null) return;
+                lock (decisionGate)
+                {
+                    if (!updateSignal) { updateSignal = true; Event($"检测到更新或重启线索（{source}：{marker}），程序及受管子进程退出后需要人工核实"); }
+                }
             }
+            int markerOverlap = markers.Max(x => x.Length) - 1;
+            var fileEvidence = new LineEvidence(markerOverlap);
             var buffered = new List<string>(); int dropped = 0, retained = 0; bool dropReported = false;
             void FlushOutput()
             {
@@ -177,14 +185,14 @@ public sealed class RunnerEngine
             }
             void ObserveEvidence(string text, bool isStandardOutput)
             {
-                CheckUpdate(text);
+                CheckUpdate(text, isStandardOutput ? "标准输出" : "标准错误");
                 if (isStandardOutput && task.Completion == "日志信号" && task.LogSource == "程序输出" && text.Contains(task.SuccessText, StringComparison.Ordinal)) found = true;
             }
             void RecordLine(string line)
             {
                 if (buffered.Count < 512 && retained < 10000) { buffered.Add($"{DateTimeOffset.Now:O} {task.Name} 输出：{line}"); retained++; } else dropped++;
             }
-            int overlap = Math.Max(task.Completion == "日志信号" && task.LogSource == "程序输出" ? task.SuccessText.Length - 1 : 0, "restarting".Length - 1);
+            int overlap = Math.Max(task.Completion == "日志信号" && task.LogSource == "程序输出" ? task.SuccessText.Length - 1 : 0, markerOverlap);
             var output = BoundedOutputReader.ReadAsync(owned.Output, text => ObserveEvidence(text, true), RecordLine, overlap);
             var errors = BoundedOutputReader.ReadAsync(owned.Error, text => ObserveEvidence(text, false), RecordLine, overlap);
             void CheckTimeout() { if (!timedOut && task.TimeoutMinutes > 0 && clock.GetElapsedTime(started) >= TimeSpan.FromMinutes(task.TimeoutMinutes)) { timedOut = true; Event("任务超过最长运行时间；不会启动下一项，请手动处理并等待受管程序退出"); } }
@@ -204,7 +212,7 @@ public sealed class RunnerEngine
                         if (!LogFileIdentity.IsSame(file, task.LogPath)) return await ObserveUnknownProcess(owned, "日志文件已替换", () => { FlushOutput(); CheckTimeout(); });
                         if (file.Length < file.Position) return await ObserveUnknownProcess(owned, "日志文件被截断", () => { FlushOutput(); CheckTimeout(); });
                         byte[] bytes = new byte[Math.Min(4096, (int)Math.Min(int.MaxValue, file.Length - file.Position))];
-                        if (bytes.Length > 0) { int count = await file.ReadAsync(bytes); char[] chars = new char[Encoding.UTF8.GetMaxCharCount(count)]; int charCount = decoder.GetChars(bytes, 0, count, chars, 0); tail += new string(chars, 0, charCount); CheckUpdate(tail); if (tail.Contains(task.SuccessText, StringComparison.Ordinal)) found = true; if (tail.Length > 8192) tail = tail[^8192..]; }
+                        if (bytes.Length > 0) { int count = await file.ReadAsync(bytes); char[] chars = new char[Encoding.UTF8.GetMaxCharCount(count)]; int charCount = decoder.GetChars(bytes, 0, count, chars, 0); string chunk = new(chars, 0, charCount); fileEvidence.Feed(chunk, text => CheckUpdate(text, "日志文件")); tail += chunk; if (tail.Contains(task.SuccessText, StringComparison.Ordinal)) found = true; if (tail.Length > 8192) tail = tail[^8192..]; }
                     }
                     catch (IOException e) { return await ObserveUnknownProcess(owned, "读取日志失败：" + e.Message, () => { FlushOutput(); CheckTimeout(); }); }
                 }
@@ -219,7 +227,7 @@ public sealed class RunnerEngine
                 if (!LogFileIdentity.IsSame(file, task.LogPath)) return "结果不明：日志文件已替换";
                 if (file.Length < file.Position) return "结果不明：日志截断";
                 byte[] remaining = new byte[4096]; int count;
-                while ((count = await file.ReadAsync(remaining)) > 0) { char[] chars = new char[Encoding.UTF8.GetMaxCharCount(count)]; int charCount = decoder.GetChars(remaining, 0, count, chars, 0); tail += new string(chars, 0, charCount); CheckUpdate(tail); if (tail.Contains(task.SuccessText, StringComparison.Ordinal)) found = true; if (tail.Length > 8192) tail = tail[^8192..]; }
+                while ((count = await file.ReadAsync(remaining)) > 0) { char[] chars = new char[Encoding.UTF8.GetMaxCharCount(count)]; int charCount = decoder.GetChars(remaining, 0, count, chars, 0); string chunk = new(chars, 0, charCount); fileEvidence.Feed(chunk, text => CheckUpdate(text, "日志文件")); tail += chunk; if (tail.Contains(task.SuccessText, StringComparison.Ordinal)) found = true; if (tail.Length > 8192) tail = tail[^8192..]; }
             }
             int code = process.ExitCode; active = null;
             if (StopRequested) return "已停止";
