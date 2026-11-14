@@ -1,0 +1,6 @@
+# Third-party wheels, local vendor packages and execution logs stay local.
+/桌面助手/wheels/
+/桌面助手/vendor/
+/桌面助手/运行记录/
+__pycache__/
+*.pyc
