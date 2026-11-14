@@ -174,6 +174,8 @@ public partial class MainWindow : Window
         selected = next; editor = selected?.Copy(); Editor.DataContext = editor;
     }
     void Add(object sender, RoutedEventArgs e) { if (!ResolveChanges()) return; drafts.Add(new TaskSpec()); TaskList.SelectedIndex = drafts.Count - 1; }
+    void AddMaa(object sender, RoutedEventArgs e) { if (!ResolveChanges()) return; drafts.Add(new TaskSpec { Name = "MAA", Completion = "人工确认", TrustCompletion = false, ContinueOnFailure = false }); TaskList.SelectedIndex = drafts.Count - 1; }
+    void ShowMaaGuide(object sender, RoutedEventArgs e) => System.Windows.MessageBox.Show("请自行选择 MAA 程序，确认启动后是否开始任务、业务完成后是否退出。更新或重启、外部进程及状态不明时请人工核实。\n\n人工确认表示你已检查业务；确认后仍等待受管程序退出，再进入下一项。本入口尚未验证真实 MAA 业务，也不会自动操作或配置 MAA。", "MAA 接入说明");
     void Delete(object sender, RoutedEventArgs e) { if (TaskList.SelectedItem is not TaskSpec t) return; var refs=store.Plans.Where(p=>p.Items.Any(i=>i.TaskId==t.Id)).Select(p=>p.Name).ToList(); if(refs.Count>0) { System.Windows.MessageBox.Show("任务被计划引用，请先移除引用："+string.Join("、",refs)); return; } if (System.Windows.MessageBox.Show("删除选中的任务配置？", "确认", MessageBoxButton.YesNo) == MessageBoxResult.Yes) { revertingSelection = true; drafts.Remove(t); selected = null; editor = null; Editor.DataContext = null; revertingSelection = false; } }
     void Move(int delta) { int i = TaskList.SelectedIndex, j = i + delta; if (i >= 0 && j >= 0 && j < drafts.Count) { revertingSelection = true; drafts.Move(i, j); TaskList.SelectedIndex = j; revertingSelection = false; } }
     void Up(object sender, RoutedEventArgs e) => Move(-1);
