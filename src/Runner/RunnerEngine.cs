@@ -20,7 +20,10 @@ public sealed class RunnerEngine
     bool uncertainOwnership;
     bool storageFailed;
     public bool NeedsRecovery => uncertainOwnership || Recovery.HasPending(store);
+    readonly object decisionGate = new();
+    enum ManualDecision { Confirmed, Skipped, Stopped }
     TaskCompletionSource<bool>? decision;
+    TaskCompletionSource<ManualDecision>? manualDecision;
     CancellationTokenSource? stopDelay;
     RunRecord? run;
 
@@ -30,8 +33,30 @@ public sealed class RunnerEngine
         if (run != null) { run.Events.Add($"{DateTimeOffset.Now:O} {text}"); try { store.Save(); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { storageFailed = true; Status = "记录保存失败，停止启动后续任务：" + e.Message; } }
         changed();
     }
-    public void Confirm() { if (Running && manualMode && !StopRequested) { ManualConfirmed = true; Event("已确认当前任务业务完成，仍需等待程序退出"); } }
-    public void Continue() { if (Waiting && !StopRequested) decision?.TrySetResult(true); }
+    public void Confirm()
+    {
+        lock (decisionGate)
+        {
+            if (!Running || !manualMode || StopRequested || storageFailed || ManualConfirmed || manualDecision?.Task.IsCompleted == true) return;
+            ManualConfirmed = true;
+            Event(active == null ? "已确认当前任务业务完成" : "已确认当前任务业务完成，仍需等待程序退出");
+            manualDecision?.TrySetResult(ManualDecision.Confirmed);
+        }
+    }
+    public void Continue()
+    {
+        lock (decisionGate)
+        {
+            if (!Waiting || StopRequested || storageFailed) return;
+            if (manualDecision != null)
+            {
+                if (manualDecision.Task.IsCompleted || ManualConfirmed) return;
+                Event("用户决定跳过当前未成功项并继续；该项未判定成功");
+                manualDecision.TrySetResult(ManualDecision.Skipped);
+            }
+            else decision?.TrySetResult(true);
+        }
+    }
     public void AcknowledgeRecovery(RunRecord item)
     {
         if (Running) throw new InvalidOperationException("任务正在运行，不能核实中断。");
@@ -42,18 +67,37 @@ public sealed class RunnerEngine
     }
     public void Stop()
     {
-        if (!Running) return;
-        StopRequested = true;
-        stopDelay?.Cancel();
-        decision?.TrySetResult(false);
+        lock (decisionGate)
+        {
+            if (!Running) return;
+            StopRequested = true;
+            stopDelay?.Cancel();
+            decision?.TrySetResult(false);
+            manualDecision?.TrySetResult(ManualDecision.Stopped);
+        }
         Event("已请求停止，不再启动后续任务；尝试请求当前程序关闭");
         try { if (active is { HasExited: false }) active.CloseMainWindow(); }
         catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { Event("无法请求关闭当前程序：" + e.Message); }
     }
     async Task<bool> WaitForUser(string reason)
     {
-        Waiting = true; decision = new(TaskCreationOptions.RunContinuationsAsynchronously); Event(reason + "；等待用户继续或停止");
-        bool result = await decision.Task; Waiting = false; decision = null; if (result) Event("用户决定跳过当前未成功项并继续；该项未判定成功"); else changed(); return result;
+        Task<bool> pending;
+        lock (decisionGate)
+        {
+            if (StopRequested || storageFailed) return false;
+            Waiting = true; decision = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Event(reason + "；等待用户继续或停止");
+            if (storageFailed) decision.TrySetResult(false);
+            pending = decision.Task;
+        }
+        bool result = await pending;
+        lock (decisionGate)
+        {
+            Waiting = false; decision = null;
+            if (result && !StopRequested && !storageFailed) Event("用户决定跳过当前未成功项并继续；该项未判定成功");
+            else changed();
+            return result && !StopRequested && !storageFailed;
+        }
     }
     public Task Start() => StartTasks(store.Tasks.Select(t => t.Copy()).ToList());
     public async Task StartTasks(IReadOnlyList<TaskSpec> tasks, RunRecord? reserved = null, IReadOnlyList<int>? intervals = null)
@@ -74,7 +118,7 @@ public sealed class RunnerEngine
                 if (StopRequested || storageFailed || uncertainOwnership) { allSucceeded=false; break; }
                 if (result != "成功") allSucceeded=false;
                 if (result == "失败" && task.ContinueOnFailure) Event("任务失败，按配置继续：" + task.Name);
-                else if (result != "成功" && !await WaitForUser($"{task.Name}：{result}")) break;
+                else if (result != "成功" && result != "已跳过" && !await WaitForUser($"{task.Name}：{result}")) break;
                 int seconds=intervals == null ? 0 : intervals[index];
                 if (index+1 < snapshot.Count && seconds>0 && !StopRequested && !storageFailed)
                 {
@@ -91,7 +135,7 @@ public sealed class RunnerEngine
             if (storageFailed) { run.AllSucceeded=false; run.State="需人工核实"; }
         }
         catch (Exception ex) { run.AllSucceeded=false; run.State = "需人工核实"; uncertainOwnership=true; Event("运行异常，请检查相关程序：" + ex.Message); }
-        finally { active = null; Running = false; Waiting = false; stopDelay?.Dispose(); stopDelay=null; changed(); run = null; }
+        finally { lock (decisionGate) { active = null; Running = false; Waiting = false; decision = null; manualDecision = null; manualMode = false; } stopDelay?.Dispose(); stopDelay=null; changed(); run = null; }
     }
     async Task<string> RunOne(TaskSpec task)
     {
@@ -185,7 +229,28 @@ public sealed class RunnerEngine
             if (timedOut) return "结果不明：任务运行超时，请人工核实";
             if (task.Completion == "日志信号" && task.LogSource == "日志文件" && task.SharedLog) return "结果不明：日志可能由多个实例共享，无法确认本次来源";
             if (code != 0) { Event($"{task.Name} 退出码 {code}"); return "失败"; }
-            if (task.Completion == "人工确认" && !ManualConfirmed) { Event("程序已退出，等待人工确认"); while (!ManualConfirmed && !StopRequested) await Task.Delay(200); if (StopRequested) return "已停止"; }
+            if (task.Completion == "人工确认")
+            {
+                Task<ManualDecision>? pending = null;
+                lock (decisionGate)
+                {
+                    if (!ManualConfirmed && !StopRequested && !storageFailed)
+                    {
+                        Waiting = true; manualDecision = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                        Event("程序已退出，等待人工确认或跳过");
+                        if (storageFailed) manualDecision.TrySetResult(ManualDecision.Stopped);
+                        pending = manualDecision.Task;
+                    }
+                }
+                if (pending != null)
+                {
+                    var choice = await pending;
+                    lock (decisionGate) { Waiting = false; manualDecision = null; if (choice != ManualDecision.Confirmed) manualMode = false; }
+                    if (StopRequested || storageFailed || choice == ManualDecision.Stopped) return "已停止";
+                    if (choice == ManualDecision.Skipped) return "已跳过";
+                }
+                if (StopRequested || storageFailed) return "已停止";
+            }
             if (task.Completion == "日志信号" && !found) return "结果不明：未发现本次成功信号";
             if (task.Completion != "人工确认" && !task.TrustCompletion) return "结果不明：尚未确认完成信号能覆盖外部进程和更新，请人工核实";
             Event(task.Name + " 成功，退出码 0；依据：" + task.Completion); return "成功";
