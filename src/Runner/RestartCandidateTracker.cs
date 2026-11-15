@@ -15,9 +15,17 @@ internal sealed class RestartCandidateTracker : IDisposable
     readonly Func<SafeProcessHandle, bool> containsProcess;
     readonly Action<string> report;
     readonly Func<Process, string?> getPath;
-    internal RestartCandidateTracker(OwnedProcess owned, Func<uint[]>? getIds = null, Func<int, Process>? openProcess = null, Func<SafeProcessHandle, bool>? containsProcess = null, Action<string>? report = null, Func<Process, string?>? getPath = null)
-    { this.owned = owned; this.getIds = getIds ?? owned.ProcessIds; this.openProcess = openProcess ?? Process.GetProcessById; this.containsProcess = containsProcess ?? owned.ContainsProcess; this.report = report ?? (_ => { }); this.getPath = getPath ?? (p => p.MainModule?.FileName); }
+    readonly Func<SafeProcessHandle, uint> handlePid;
+    readonly Func<SafeProcessHandle, DateTime> handleCreated;
+    internal RestartCandidateTracker(OwnedProcess owned, Func<uint[]>? getIds = null, Func<int, Process>? openProcess = null, Func<SafeProcessHandle, bool>? containsProcess = null, Action<string>? report = null, Func<Process, string?>? getPath = null, Func<SafeProcessHandle, uint>? handlePid = null, Func<SafeProcessHandle, DateTime>? handleCreated = null)
+    { this.owned = owned; this.getIds = getIds ?? owned.ProcessIds; this.openProcess = openProcess ?? Process.GetProcessById; this.containsProcess = containsProcess ?? owned.ContainsProcess; this.report = report ?? (_ => { }); this.getPath = getPath ?? (p => p.MainModule?.FileName); this.handlePid = handlePid ?? GetProcessId; this.handleCreated = handleCreated ?? ReadCreationTime; }
     [DllImport("kernel32.dll", SetLastError = true)] static extern uint GetProcessId(SafeProcessHandle process);
+    [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] static extern bool GetProcessTimes(SafeProcessHandle process, out long creation, out long exit, out long kernel, out long user);
+    static DateTime ReadCreationTime(SafeProcessHandle handle)
+    {
+        if (!GetProcessTimes(handle, out long creation, out _, out _, out _)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return DateTime.FromFileTimeUtc(creation);
+    }
     readonly Dictionary<(int, DateTime), Process> observed = new();
     readonly HashSet<(int, DateTime)> exited = new();
     readonly HashSet<string> failures = new();
@@ -69,6 +77,15 @@ internal sealed class RestartCandidateTracker : IDisposable
                         var rootHandle = owned.Root.SafeHandle;
                         if (!rootHandle.IsClosed && !rootHandle.IsInvalid && GetProcessId(rootHandle) == id) continue;
                         Failure("核实原进程句柄", (int)id); continue;
+                    }
+                    var knownExited = observed.Where(x => x.Key.Item1 == id && exited.Contains(x.Key)).ToArray();
+                    if (knownExited.Length > 0)
+                    {
+                        if (knownExited.Length != 1) { Failure("核实已退出候选句柄", (int)id, detail: "同一 PID 对应多个已记录身份"); continue; }
+                        var known = knownExited[0];
+                        var held = known.Value.SafeHandle;
+                        if (!held.IsClosed && !held.IsInvalid && handlePid(held) == id && handleCreated(held) == known.Key.Item2 && known.Value.HasExited) continue;
+                        Failure("核实已退出候选句柄", (int)id, detail: "句柄或创建身份不一致"); continue;
                     }
                     process = openProcess(checked((int)id));
                     _ = process.SafeHandle; // Keep the original handle while verifying identity.
