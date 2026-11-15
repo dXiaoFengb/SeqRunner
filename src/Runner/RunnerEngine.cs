@@ -171,7 +171,7 @@ public sealed class RunnerEngine
                 file.Seek(0, SeekOrigin.End);
             }
             owned = OwnedProcess.Start(task); var process = owned.Root; active = process; Event($"已启动 {task.Name}（PID {process.Id}，创建时间 {owned.CreatedUtc:O}，路径 {owned.Executable}），已建立进程组归属");
-            candidateTracker = task.TrackUpdateRestart ? (CandidateTrackerFactory?.Invoke(owned) ?? new RestartCandidateTracker(owned)) : null;
+            candidateTracker = task.TrackUpdateRestart ? (CandidateTrackerFactory?.Invoke(owned) ?? new RestartCandidateTracker(owned, report: Event)) : null;
             bool found = false, updateSignal = false, timedOut = false, updateTrackingTimedOut = false; long? updateStarted = null; long started = clock.GetTimestamp(); string tail = ""; Decoder decoder = Encoding.UTF8.GetDecoder();
             void CheckUpdate(string text, string source)
             {
