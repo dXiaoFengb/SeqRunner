@@ -27,6 +27,7 @@ public sealed class RunnerEngine
     CancellationTokenSource? stopDelay;
     RunRecord? run;
     ControlledRestartChannel? controlledFixture;
+    internal Func<OwnedProcess, RestartCandidateTracker>? CandidateTrackerFactory { get; set; }
     internal async Task StartControlledFixture(IReadOnlyList<TaskSpec> tasks, Action<string>? channelCreated = null)
     {
         if (Running || controlledFixture != null || tasks.Count == 0) return;
@@ -161,6 +162,7 @@ public sealed class RunnerEngine
         if (task.Completion is not ("进程退出" or "日志信号" or "人工确认") || task.LogSource is not ("程序输出" or "日志文件")) { Event("完成方式或日志来源无效"); return "失败"; }
         FileStream? file = null;
         OwnedProcess? owned = null;
+        RestartCandidateTracker? candidateTracker = null;
         try
         {
             if (task.Completion == "日志信号" && task.LogSource == "日志文件")
@@ -169,6 +171,7 @@ public sealed class RunnerEngine
                 file.Seek(0, SeekOrigin.End);
             }
             owned = OwnedProcess.Start(task); var process = owned.Root; active = process; Event($"已启动 {task.Name}（PID {process.Id}，创建时间 {owned.CreatedUtc:O}，路径 {owned.Executable}），已建立进程组归属");
+            candidateTracker = task.TrackUpdateRestart ? (CandidateTrackerFactory?.Invoke(owned) ?? new RestartCandidateTracker(owned)) : null;
             bool found = false, updateSignal = false, timedOut = false, updateTrackingTimedOut = false; long? updateStarted = null; long started = clock.GetTimestamp(); string tail = ""; Decoder decoder = Encoding.UTF8.GetDecoder();
             void CheckUpdate(string text, string source)
             {
@@ -209,12 +212,25 @@ public sealed class RunnerEngine
             var errors = BoundedOutputReader.ReadAsync(owned.Error, text => ObserveEvidence(text, false), RecordLine, overlap);
             void CheckTimeout() { if (!timedOut && task.TimeoutMinutes > 0 && clock.GetElapsedTime(started) >= TimeSpan.FromMinutes(task.TimeoutMinutes)) { timedOut = true; Event("任务超过最长运行时间；不会启动下一项，请手动处理并等待受管程序退出"); } }
             DateTimeOffset? stopAt = null;
-            bool reportedChildren = false, reportedUpdateTracking = false;
+            bool reportedChildren = false, reportedUpdateTracking = false, reportedCandidate = false, reportedCandidateExit = false, reportedAmbiguous = false, reportedIdentityError = false; uint maxGroupTotal = 0;
             while (true)
             {
                 FlushOutput();
                 CheckTimeout();
                 var accounting = owned.Accounting();
+                maxGroupTotal = Math.Max(maxGroupTotal, accounting.Total);
+                if (process.HasExited && candidateTracker != null)
+                {
+                    candidateTracker.Poll();
+                    if (candidateTracker.HasCandidate && !reportedCandidate)
+                    {
+                        reportedCandidate = true;
+                        Event($"发现本轮受管组内可能的重启程序（PID {candidateTracker.CandidateId}，创建时间 {candidateTracker.CandidateCreated:O}）；继续等待，不代表业务成功");
+                    }
+                    if (candidateTracker.CandidateExited && !reportedCandidateExit) { reportedCandidateExit = true; Event("已记录的重启候选进程已退出；仍以受管组及业务完成证据为准"); }
+                    if (candidateTracker.Ambiguous && !reportedAmbiguous) { reportedAmbiguous = true; Event("发现多个可能的重启程序，无法安全确认；退出后需人工核实"); }
+                    if (candidateTracker.Uncertain && !reportedIdentityError) { reportedIdentityError = true; Event("受管进程身份或归属无法核实；退出后需人工核实"); }
+                }
                 if (process.HasExited && accounting.Active == 0) break;
                 if (process.HasExited && !reportedChildren) { reportedChildren = true; Event("主程序已退出，仍有受管子进程，等待其退出"); }
                 if (task.TrackUpdateRestart && updateSignal && !reportedUpdateTracking && process.HasExited && accounting.Active > 0)
@@ -259,6 +275,11 @@ public sealed class RunnerEngine
             {
                 bool controlledSuccess = false;
                 if (controlled?.Result is Task<bool> proof && await Task.WhenAny(proof, Task.Delay(1000)) == proof) controlledSuccess = await proof;
+                if (controlledSuccess && candidateTracker != null && (candidateTracker.Uncertain || candidateTracker.Ambiguous || !candidateTracker.HasCandidate || candidateTracker.CandidateId != controlled!.VerifiedClientId || candidateTracker.CandidateCreated != controlled.VerifiedClientCreated))
+                {
+                    controlledSuccess = false;
+                    Event("受控证据与重启候选身份不一致或不明确，需人工核实");
+                }
                 if (controlledSuccess && !StopRequested && !storageFailed && !timedOut && !updateTrackingTimedOut && code == 0 && task.Completion == "人工确认")
                 {
                     Task<ManualDecision> pending;
@@ -285,6 +306,8 @@ public sealed class RunnerEngine
                 if (task.TrackUpdateRestart) Event(reportedUpdateTracking ? "受管进程组已退出；更新后程序身份和业务完成情况仍需人工核实" : "未确认更新后程序归属；需人工核实");
                 return updateTrackingTimedOut ? "结果不明：更新跟踪超时，需人工核实" : "结果不明：检测到更新或重启，需人工核实";
             }
+            if (candidateTracker != null && (candidateTracker.HasCandidate || candidateTracker.Ambiguous || candidateTracker.Uncertain || maxGroupTotal > 1))
+                return "结果不明：出现可能的重启程序或子进程，无法确认更新前的完成证据仍有效；请人工核实";
             if (timedOut) return "结果不明：任务运行超时，请人工核实";
             if (task.Completion == "日志信号" && task.LogSource == "日志文件" && task.SharedLog) return "结果不明：日志可能由多个实例共享，无法确认本次来源";
             if (code != 0) { Event($"{task.Name} 退出码 {code}"); return "失败"; }
@@ -328,7 +351,7 @@ public sealed class RunnerEngine
         {
             controlled?.Dispose();
             if (controlled?.Result is Task<bool> pendingProof) { try { await pendingProof; } catch (Exception e) when (e is OperationCanceledException or ObjectDisposedException or IOException) { } }
-            manualMode = false; active = null; owned?.Dispose(); file?.Dispose();
+            manualMode = false; active = null; candidateTracker?.Dispose(); owned?.Dispose(); file?.Dispose();
         }
     }
     async Task<string> ObserveUnknownProcess(OwnedProcess owned, string reason, Action? flushOutput = null)

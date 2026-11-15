@@ -20,6 +20,8 @@ internal sealed class ControlledRestartChannel : IDisposable
     internal string Name { get; } = "SequentialRunnerV3-Test-" + Guid.NewGuid().ToString("N");
     internal string Arguments => Name + " " + token;
     internal Task<bool>? Result { get; private set; }
+    internal int? VerifiedClientId { get; private set; }
+    internal DateTime VerifiedClientCreated { get; private set; }
     internal string Failure { get; private set; } = "未完成";
     bool Fail(string reason) { Failure = reason; return false; }
     internal ControlledRestartChannel(TimeSpan? timeout = null)
@@ -62,6 +64,8 @@ internal sealed class ControlledRestartChannel : IDisposable
             using var reader = new StreamReader(server, Encoding.UTF8, false, 1024, true);
             if (await ReadLine(reader, cancel.Token) != token || await ReadLine(reader, cancel.Token) != "READY") return Fail("身份消息不匹配");
             if (client.HasExited || client.StartTime.ToUniversalTime() != created || !owned.ContainsProcess(client.SafeHandle) || !IsOnlyClient(owned, pid)) return Fail("客户端不满足进程组或时序条件");
+            VerifiedClientId = client.Id;
+            VerifiedClientCreated = created;
             evidence($"受控测试：已核对重启进程身份（PID {pid}，创建时间 {created:O}），属于本轮进程组");
             string? result = await ReadLine(reader, cancel.Token);
             if (result != "SUCCESS:" + expected) return Fail("成功消息不匹配");
