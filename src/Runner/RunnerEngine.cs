@@ -26,6 +26,17 @@ public sealed class RunnerEngine
     TaskCompletionSource<ManualDecision>? manualDecision;
     CancellationTokenSource? stopDelay;
     RunRecord? run;
+    ControlledRestartChannel? controlledFixture;
+    internal async Task StartControlledFixture(IReadOnlyList<TaskSpec> tasks, Action<string>? channelCreated = null)
+    {
+        if (Running || controlledFixture != null || tasks.Count == 0) return;
+        using var channel = new ControlledRestartChannel();
+        channelCreated?.Invoke(channel.Name);
+        var copy = tasks.Select(t => t.Copy()).ToList();
+        copy[0].Arguments += " " + channel.Arguments;
+        controlledFixture = channel;
+        try { await StartTasks(copy); } finally { controlledFixture = null; }
+    }
 
     void Event(string text)
     {
@@ -114,7 +125,7 @@ public sealed class RunnerEngine
             {
                 var task=snapshot[index];
                 if (StopRequested || storageFailed || uncertainOwnership) break;
-                string result = await RunOne(task);
+                string result = await RunOne(task, index == 0 ? controlledFixture : null);
                 if (StopRequested || storageFailed || uncertainOwnership) { allSucceeded=false; break; }
                 if (result != "成功") allSucceeded=false;
                 if (result == "失败" && task.ContinueOnFailure) Event("任务失败，按配置继续：" + task.Name);
@@ -137,7 +148,7 @@ public sealed class RunnerEngine
         catch (Exception ex) { run.AllSucceeded=false; run.State = "需人工核实"; uncertainOwnership=true; Event("运行异常，请检查相关程序：" + ex.Message); }
         finally { lock (decisionGate) { active = null; Running = false; Waiting = false; decision = null; manualDecision = null; manualMode = false; } stopDelay?.Dispose(); stopDelay=null; changed(); run = null; }
     }
-    async Task<string> RunOne(TaskSpec task)
+    async Task<string> RunOne(TaskSpec task, ControlledRestartChannel? controlled)
     {
         ManualConfirmed = false;
         manualMode = task.Completion == "人工确认";
@@ -168,6 +179,7 @@ public sealed class RunnerEngine
                     if (!updateSignal) { updateSignal = true; updateStarted = clock.GetTimestamp(); Event($"检测到更新或重启线索（{source}：{marker}），程序及受管子进程退出后需要人工核实"); }
                 }
             }
+            if (controlled != null) controlled.Start(owned, () => updateSignal, task.SuccessText, Event);
             int markerOverlap = markers.Max(x => x.Length) - 1;
             var fileEvidence = new LineEvidence(markerOverlap);
             var buffered = new List<string>(); int dropped = 0, retained = 0; bool dropReported = false;
@@ -245,6 +257,31 @@ public sealed class RunnerEngine
             if (code != 0 && evidence) { Event($"{task.Name} 退出码 {code}，与成功证据冲突"); return "证据冲突"; }
             if (updateSignal)
             {
+                bool controlledSuccess = false;
+                if (controlled?.Result is Task<bool> proof && await Task.WhenAny(proof, Task.Delay(1000)) == proof) controlledSuccess = await proof;
+                if (controlledSuccess && !StopRequested && !storageFailed && !timedOut && !updateTrackingTimedOut && code == 0 && task.Completion == "人工确认")
+                {
+                    Task<ManualDecision> pending;
+                    lock (decisionGate)
+                    {
+                        ManualConfirmed = false; Waiting = true; manualDecision = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                        Event("受控重启进程已退出，请人工确认业务完成或跳过");
+                        if (storageFailed || StopRequested) manualDecision.TrySetResult(ManualDecision.Stopped);
+                        pending = manualDecision.Task;
+                    }
+                    var choice = await pending;
+                    lock (decisionGate) { Waiting = false; manualDecision = null; }
+                    if (StopRequested || storageFailed || choice == ManualDecision.Stopped) return "已停止";
+                    if (choice == ManualDecision.Skipped) return "已跳过";
+                    Event(task.Name + " 成功，退出码 0；依据：人工确认");
+                    return storageFailed ? "结果不明：记录保存失败" : "成功";
+                }
+                if (controlledSuccess && !StopRequested && !storageFailed && !timedOut && !updateTrackingTimedOut && code == 0 && task.Completion == "日志信号" && task.LogSource == "程序输出" && task.TrustCompletion)
+                {
+                    Event(task.Name + " 成功，退出码 0；依据：受控测试的本次业务成功证据");
+                    return storageFailed ? "结果不明：记录保存失败" : "成功";
+                }
+                if (controlled != null) Event("受控测试未确认：" + controlled.Failure);
                 if (task.TrackUpdateRestart) Event(reportedUpdateTracking ? "受管进程组已退出；更新后程序身份和业务完成情况仍需人工核实" : "未确认更新后程序归属；需人工核实");
                 return updateTrackingTimedOut ? "结果不明：更新跟踪超时，需人工核实" : "结果不明：检测到更新或重启，需人工核实";
             }
@@ -287,7 +324,12 @@ public sealed class RunnerEngine
             if (owned != null) return await ObserveUnknownProcess(owned, "运行中观察失败");
             return "失败";
         }
-        finally { manualMode = false; active = null; owned?.Dispose(); file?.Dispose(); }
+        finally
+        {
+            controlled?.Dispose();
+            if (controlled?.Result is Task<bool> pendingProof) { try { await pendingProof; } catch (Exception e) when (e is OperationCanceledException or ObjectDisposedException or IOException) { } }
+            manualMode = false; active = null; owned?.Dispose(); file?.Dispose();
+        }
     }
     async Task<string> ObserveUnknownProcess(OwnedProcess owned, string reason, Action? flushOutput = null)
     {

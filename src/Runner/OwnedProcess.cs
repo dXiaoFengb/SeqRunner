@@ -95,6 +95,34 @@ internal sealed class OwnedProcess : IDisposable
         if (!Native.QueryInformationJobObject(job, 1, out var info, (uint)Marshal.SizeOf<Native.Accounting>(), IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error(), "无法验证进程组状态");
         return (info.Active, info.Total);
     }
+    internal uint[] ProcessIds()
+    {
+        int count = 16;
+        while (count <= 4096)
+        {
+            int bytes = checked(8 + count * IntPtr.Size);
+            IntPtr memory = Marshal.AllocHGlobal(bytes);
+            try
+            {
+                if (Native.QueryJobMembers(job, 3, memory, (uint)bytes, out _))
+                {
+                    int assigned = Marshal.ReadInt32(memory, 0), returned = Marshal.ReadInt32(memory, 4);
+                    if (assigned > count || returned != assigned) { count = Math.Max(count * 2, assigned); continue; }
+                    return Enumerable.Range(0, returned).Select(i => checked((uint)Marshal.ReadIntPtr(memory, 8 + i * IntPtr.Size).ToInt64())).ToArray();
+                }
+                int error = Marshal.GetLastWin32Error();
+                if (error != 234) throw new Win32Exception(error, "无法查询受管进程列表");
+                count *= 2;
+            }
+            finally { Marshal.FreeHGlobal(memory); }
+        }
+        throw new InvalidOperationException("受管进程数量超出观察范围");
+    }
+    internal bool ContainsProcess(SafeProcessHandle process)
+    {
+        if (!Native.IsProcessHandleInJob(process, job, out bool assigned)) throw new Win32Exception(Marshal.GetLastWin32Error(), "无法查询客户端进程归属");
+        return assigned;
+    }
     public void Dispose() { Output.Dispose(); Error.Dispose(); Root.Dispose(); job.Dispose(); }
 
     static class Native
@@ -114,6 +142,8 @@ internal sealed class OwnedProcess : IDisposable
         [DllImport("kernel32.dll")] public static extern void DeleteProcThreadAttributeList(IntPtr list);
         [DllImport("kernel32.dll", SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] public static extern bool IsProcessInJob(IntPtr process, SafeFileHandle job, [MarshalAs(UnmanagedType.Bool)] out bool result);
         [DllImport("kernel32.dll", SetLastError=true)] public static extern uint ResumeThread(IntPtr thread);
+        [DllImport("kernel32.dll", SetLastError=true, EntryPoint="QueryInformationJobObject")] [return:MarshalAs(UnmanagedType.Bool)] public static extern bool QueryJobMembers(SafeFileHandle job, int type, IntPtr data, uint size, out uint returned);
+        [DllImport("kernel32.dll", SetLastError=true, EntryPoint="IsProcessInJob")] [return:MarshalAs(UnmanagedType.Bool)] public static extern bool IsProcessHandleInJob(SafeProcessHandle process, SafeFileHandle job, [MarshalAs(UnmanagedType.Bool)] out bool result);
         [DllImport("kernel32.dll", SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] public static extern bool QueryInformationJobObject(SafeFileHandle job, int type, out Accounting info, uint size, IntPtr returned);
         [DllImport("kernel32.dll")] public static extern IntPtr GetCurrentProcess();
         [DllImport("kernel32.dll", SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] public static extern bool DuplicateHandle(IntPtr sourceProcess, SafeFileHandle source, IntPtr targetProcess, out SafeFileHandle target, uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint options);

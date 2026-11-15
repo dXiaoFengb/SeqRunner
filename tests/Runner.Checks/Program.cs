@@ -1,4 +1,5 @@
 using System.IO;
+using System.IO.Pipes;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -13,7 +14,7 @@ class Program
     static void Check(bool ok, string name) { Console.WriteLine((ok ? "PASS " : "FAIL ") + name); if (!ok) failures++; }
     static Store NewStore(string name) => new(Path.Combine(root, name));
     static TaskSpec Spec(string name, string args) => new() { Name=name, Program=cmd, Arguments="/d /c " + args, WorkingDirectory=Environment.SystemDirectory, TrustCompletion=true };
-    static async Task Tests()
+    static async Task Tests(bool skipControlled=false)
     {
         var a = NewStore("sequence"); a.Tasks.Add(Spec("first", "echo first")); a.Tasks.Add(Spec("second", "echo second"));
         a.Save(); var b = NewStore("sequence"); b.Load(); Check(b.Tasks.Count == 2 && b.Tasks[0].Name == "first", "configuration round trip");
@@ -82,6 +83,7 @@ class Program
         string race=Path.Combine(root,"race-reproduction.json"), candidate=Path.Combine(root,"race-candidate.json"); await File.WriteAllTextAsync(race,"initial"); byte[] expected=System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(race)); await File.WriteAllTextAsync(candidate,"our-save");
         byte[] observed=await File.ReadAllBytesAsync(race); bool unchanged=System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(expected,System.Security.Cryptography.SHA256.HashData(observed)); await File.WriteAllTextAsync(race,"external-save"); if(unchanged) File.Move(candidate,race,true);
         Check((await File.ReadAllTextAsync(race))=="our-save", "controlled old check-then-replace ordering can overwrite an intervening writer");
+        if (skipControlled) Console.WriteLine("SKIP controlled resume: run probe-controlled-resume separately with local pipe access"); else await ControlledResumeTests();
         await UpdateRestartOwnershipProbe();
         await UpdateRestartTests();
         await UpdateMarkerTests();
@@ -94,6 +96,46 @@ class Program
         await HistoryStorageTests();
         var x=NewStore("concurrent-store"); x.Save(); var y=NewStore("concurrent-store"); y.Load(); x.Tasks.Add(Spec("writer-one", "echo 1")); y.Tasks.Add(Spec("writer-two", "echo 2"));
         var writes=await Task.WhenAll(Task.Run(()=>TrySave(x)), Task.Run(()=>TrySave(y))); var verify=NewStore("concurrent-store"); verify.Load(); Check(writes.Count(v=>v)==1 && verify.Tasks.Count==1, "cooperating stores reject conflicting simultaneous save");
+    }
+    static async Task ControlledResumeTests(bool quick=false)
+    {
+        async Task Verify(string mode, bool expected, bool trusted=true, string completion="日志信号")
+        {
+            var st=NewStore("controlled-"+mode+"-"+trusted+"-"+completion);var first=new TaskSpec{Name="first",Program=Environment.ProcessPath!,Arguments="fixture-control-parent "+mode,WorkingDirectory=AppContext.BaseDirectory,Completion=completion,LogSource="程序输出",SuccessText="READY",TrustCompletion=trusted};var next=Spec("next","echo next");st.Tasks.Add(first);st.Tasks.Add(next);var e=new RunnerEngine(st,()=>{});string? pipeName=null;var running=e.StartControlledFixture([first,next],name=>pipeName=name);
+            for(int i=0;i<350 && e.Running && !e.Waiting;i++)await Task.Delay(20);
+            bool started=st.History.Single().Events.Any(x=>x.Contains("已启动 next"));bool paused=e.Waiting;
+            bool closed=false;if(paused){try{using var client=new NamedPipeClientStream(".",pipeName!,PipeDirection.Out);client.Connect(100);}catch(Exception ex) when(ex is TimeoutException or IOException or UnauthorizedAccessException){closed=true;}}
+            if(paused || e.Running)e.Stop();await running;var events=st.History.Single().Events;
+            Check(expected ? started && st.History.Single().AllSucceeded==true && events.Any(x=>x.Contains("已核对重启进程身份")) && events.Any(x=>x.Contains("本次重启进程的业务成功证据")) : !started && paused && closed && st.History.Single().AllSucceeded==false, "controlled resume "+mode+" trusted="+trusted+" completion="+completion);
+        }
+        async Task VerifyOutside()
+        {
+            string name; bool accepted; var channel=new ControlledRestartChannel(); name=channel.Name;
+            using(var owned=OwnedProcess.Start(new TaskSpec{Program=Environment.ProcessPath!,Arguments="fixture-restart-parent",WorkingDirectory=AppContext.BaseDirectory}))
+            {
+                var stdout=owned.Output.ReadToEndAsync();var stderr=owned.Error.ReadToEndAsync();channel.Start(owned,()=>true,"READY",_=>{});
+                using var outsider=Process.Start(new ProcessStartInfo(Environment.ProcessPath!,"fixture-control-target success "+channel.Arguments){UseShellExecute=false})!;
+                await outsider.WaitForExitAsync();accepted=await channel.Result!;while(owned.Accounting().Active!=0)await Task.Delay(30);await stdout;await stderr;
+            }
+            channel.Dispose();bool closed=false;try{using var client=new NamedPipeClientStream(".",name,PipeDirection.Out);client.Connect(100);}catch(Exception ex) when(ex is TimeoutException or IOException or UnauthorizedAccessException){closed=true;}Check(!accepted && closed,"outside process rejected and local test channel closes");
+        }
+        async Task VerifyTimeout()
+        {
+            using var channel=new ControlledRestartChannel(TimeSpan.FromMilliseconds(200));using var owned=OwnedProcess.Start(new TaskSpec{Program=Environment.ProcessPath!,Arguments="fixture-wait",WorkingDirectory=AppContext.BaseDirectory});var output=owned.Output.ReadToEndAsync();var error=owned.Error.ReadToEndAsync();channel.Start(owned,()=>true,"READY",_=>{});bool accepted=await channel.Result!;while(owned.Accounting().Active!=0)await Task.Delay(30);await output;await error;Check(!accepted && channel.Failure.Contains("OperationCanceledException"),"controlled channel timeout fails closed");
+        }
+        async Task VerifyPersistenceFailure()
+        {
+            bool inject=false;string dir=Path.Combine(root,"controlled-save-fail");var st=new Store(dir,path=>inject ? new FaultWriteStream(path) : new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.None));var a=new TaskSpec{Name="first",Program=Environment.ProcessPath!,Arguments="fixture-control-parent success",WorkingDirectory=AppContext.BaseDirectory,Completion="日志信号",LogSource="程序输出",SuccessText="READY",TrustCompletion=true};var b=Spec("next","echo next");st.Tasks.Add(a);st.Tasks.Add(b);RunnerEngine? e=null;e=new RunnerEngine(st,()=>{if(e!=null && e.Status.Contains("已核对重启进程身份"))inject=true;});await e.StartControlledFixture([a,b]);Check(inject && e.NeedsRecovery && !st.History.Single().Events.Any(x=>x.Contains("已启动 next")),"controlled proof save failure blocks subsequent task");
+        }
+        async Task VerifyManual()
+        {
+            var st=NewStore("controlled-manual-confirm");var a=new TaskSpec{Name="first",Program=Environment.ProcessPath!,Arguments="fixture-control-parent success",WorkingDirectory=AppContext.BaseDirectory,Completion="人工确认",SuccessText="READY"};var b=Spec("next","echo next");st.Tasks.Add(a);st.Tasks.Add(b);var e=new RunnerEngine(st,()=>{});var run=e.StartControlledFixture([a,b]);for(int i=0;i<100 && !e.Status.Contains("已启动 first");i++)await Task.Delay(20);e.Confirm();for(int i=0;i<350 && e.Running && !e.Waiting;i++)await Task.Delay(20);bool paused=e.Waiting && !st.History.Single().Events.Any(x=>x.Contains("已启动 next"));e.Confirm();await run;Check(paused && st.History.Single().AllSucceeded==true && st.History.Single().Events.Any(x=>x.Contains("已启动 next")),"controlled manual requires fresh confirmation after restart");
+        }
+        async Task VerifyStop()
+        {
+            var st=NewStore("controlled-stop");var a=new TaskSpec{Name="first",Program=Environment.ProcessPath!,Arguments="fixture-control-parent slow",WorkingDirectory=AppContext.BaseDirectory,Completion="日志信号",SuccessText="READY",TrustCompletion=true};var b=Spec("next","echo next");st.Tasks.Add(a);st.Tasks.Add(b);var e=new RunnerEngine(st,()=>{});var run=e.StartControlledFixture([a,b]);for(int i=0;i<100 && !st.History.Single().Events.Any(x=>x.Contains("检测到更新或重启"));i++)await Task.Delay(20);e.Stop();await run;Check(st.History.Single().State=="已停止" && !st.History.Single().Events.Any(x=>x.Contains("已启动 next")),"stop prevents controlled resume");
+        }
+        await Verify("success",true);if(quick)return;await Verify("missing",false);await Verify("forged",false);await Verify("disconnect",false);await Verify("duplicate",false);await Verify("failure",false);await Verify("multiple",false);await Verify("success",false,false);await Verify("success",false,true,"人工确认");await VerifyOutside();await VerifyTimeout();await VerifyPersistenceFailure();await VerifyStop();await VerifyManual();
     }
     static async Task UpdateRestartOwnershipProbe()
     {
@@ -316,6 +358,13 @@ class Program
     }
     [STAThread] static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "probe-regression-local") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await Tests(true); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-controlled-success") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await ControlledResumeTests(true); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-controlled-resume") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await ControlledResumeTests(); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length == 4 && args[0] == "fixture-control-parent") { Console.WriteLine("updating");Console.Out.Flush();using var p=Process.Start(new ProcessStartInfo(Environment.ProcessPath!,"fixture-control-updater "+args[1]+" "+args[2]+" "+args[3]){UseShellExecute=false})!;Thread.Sleep(100);return 0; }
+        if (args.Length == 4 && args[0] == "fixture-control-updater") { using var p=Process.Start(new ProcessStartInfo(Environment.ProcessPath!,"fixture-control-target "+args[1]+" "+args[2]+" "+args[3]){UseShellExecute=false})!;if(args[1]=="multiple"){using var q=Process.Start(new ProcessStartInfo(Environment.ProcessPath!,"fixture-control-hold"){UseShellExecute=false})!;}Thread.Sleep(100);return 0; }
+        if (args.Length > 0 && args[0] == "fixture-control-hold") {Thread.Sleep(1800);return 0;}
+        if (args.Length == 4 && args[0] == "fixture-control-target") { Thread.Sleep(args[1]=="slow" ? 2000 : 700);if(args[1]=="missing")return 0;try {using var pipe=new NamedPipeClientStream(".",args[2],PipeDirection.Out,PipeOptions.CurrentUserOnly);pipe.Connect(1500);using var writer=new StreamWriter(pipe,new UTF8Encoding(false)){AutoFlush=true};writer.WriteLine(args[1]=="forged" ? "BADTOKEN" : args[3]);writer.WriteLine("READY");if(args[1]!="disconnect")writer.WriteLine(args[1]=="failure" ? "FAILURE" : "SUCCESS:READY");if(args[1]=="duplicate")writer.WriteLine("SUCCESS:READY");}catch(IOException){}Thread.Sleep(400);return 0; }
         if (args.Length > 0 && args[0] == "probe-restart-tracking") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await UpdateRestartOwnershipProbe(); await UpdateRestartTests(); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "fixture-restart-wait") {Console.WriteLine("updating");Console.Out.Flush();Thread.Sleep(1500);return 0;}
         if (args.Length > 0 && args[0] == "fixture-restart-dialog") {Console.WriteLine("updating");Console.Out.Flush();uint thread=GetCurrentThreadId();var timer=new DispatcherTimer {Interval=TimeSpan.FromMilliseconds(100)};timer.Tick+=(_,_)=>EnumThreadWindows(thread,(hwnd,_)=>{var title=new StringBuilder(256);GetWindowText(hwnd,title,title.Capacity);if(title.ToString()=="受控更新提示"){PostMessage(hwnd,0x0010,IntPtr.Zero,IntPtr.Zero);timer.Stop();return false;}return true;},IntPtr.Zero);timer.Start();System.Windows.MessageBox.Show("仅用于隔离测试", "受控更新提示");Console.WriteLine("SIM_DIALOG_CLOSED");return 0;}
