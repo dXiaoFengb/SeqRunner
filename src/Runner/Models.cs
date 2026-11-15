@@ -22,6 +22,7 @@ public sealed class TaskSpec
     public string LogPath { get; set; } = "";
     public string SuccessText { get; set; } = "";
     public string UpdateMarkers { get; set; } = "";
+    public bool TrackUpdateRestart { get; set; }
     public bool ContinueOnFailure { get; set; }
     public bool TrustCompletion { get; set; }
     public bool SharedLog { get; set; }
