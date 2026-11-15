@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
 namespace Runner;
@@ -13,16 +14,18 @@ internal sealed class RestartCandidateTracker : IDisposable
     readonly Func<int, Process> openProcess;
     readonly Func<SafeProcessHandle, bool> containsProcess;
     readonly Action<string> report;
-    internal RestartCandidateTracker(OwnedProcess owned, Func<uint[]>? getIds = null, Func<int, Process>? openProcess = null, Func<SafeProcessHandle, bool>? containsProcess = null, Action<string>? report = null)
-    { this.owned = owned; this.getIds = getIds ?? owned.ProcessIds; this.openProcess = openProcess ?? Process.GetProcessById; this.containsProcess = containsProcess ?? owned.ContainsProcess; this.report = report ?? (_ => { }); }
+    readonly Func<Process, string?> getPath;
+    internal RestartCandidateTracker(OwnedProcess owned, Func<uint[]>? getIds = null, Func<int, Process>? openProcess = null, Func<SafeProcessHandle, bool>? containsProcess = null, Action<string>? report = null, Func<Process, string?>? getPath = null)
+    { this.owned = owned; this.getIds = getIds ?? owned.ProcessIds; this.openProcess = openProcess ?? Process.GetProcessById; this.containsProcess = containsProcess ?? owned.ContainsProcess; this.report = report ?? (_ => { }); this.getPath = getPath ?? (p => p.MainModule?.FileName); }
+    [DllImport("kernel32.dll", SetLastError = true)] static extern uint GetProcessId(SafeProcessHandle process);
     readonly Dictionary<(int, DateTime), Process> observed = new();
     readonly HashSet<(int, DateTime)> exited = new();
     readonly HashSet<string> failures = new();
     bool limitReported;
-    void Failure(string stage, int? pid, Exception? error = null)
+    void Failure(string stage, int? pid, Exception? error = null, string? detail = null)
     {
         MarkUncertain();
-        string reason = error is Win32Exception win ? $"Win32 错误 {win.NativeErrorCode}" : error?.GetType().Name ?? "进程已退出或归属不符";
+        string reason = detail ?? (error is Win32Exception win ? $"Win32 错误 {win.NativeErrorCode}" : error?.GetType().Name ?? "进程已退出或归属不符");
         string key = $"{stage}|{pid}|{reason}";
         if (failures.Count < 128 && failures.Add(key)) report($"受管进程查询不明：{stage}；PID {(pid?.ToString() ?? "未知")}；{reason}；需人工核实");
     }
@@ -60,14 +63,21 @@ internal sealed class RestartCandidateTracker : IDisposable
                 string stage = "打开进程";
                 try
                 {
+                    // The retained original handle keeps its process object and PID alive until disposal.
+                    if (id == owned.Root.Id && owned.Root.HasExited)
+                    {
+                        var rootHandle = owned.Root.SafeHandle;
+                        if (!rootHandle.IsClosed && !rootHandle.IsInvalid && GetProcessId(rootHandle) == id) continue;
+                        Failure("核实原进程句柄", (int)id); continue;
+                    }
                     process = openProcess(checked((int)id));
                     _ = process.SafeHandle; // Keep the original handle while verifying identity.
                     stage = "核实进程归属";
                     if (process.HasExited || !containsProcess(process.SafeHandle)) { Failure(stage, (int)id); continue; }
                     stage = "读取创建时间和程序路径";
                     DateTime created = process.StartTime.ToUniversalTime();
-                    string? path = process.MainModule?.FileName;
-                    if (path == null) { Failure(stage, (int)id); continue; }
+                    string? path = getPath(process);
+                    if (path == null) { Failure(stage, (int)id, detail: "程序路径不可用"); continue; }
                     if (created <= owned.CreatedUtc || !string.Equals(Path.GetFullPath(path), owned.Executable, StringComparison.OrdinalIgnoreCase)) continue;
                     RecordIdentity(process.Id, created);
                     var identity = (process.Id, created);
