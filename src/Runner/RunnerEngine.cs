@@ -2,11 +2,22 @@ using System.Diagnostics;
 using System.ComponentModel;
 using System.IO;
 using System.Text;
+using System.Runtime.InteropServices;
 
 namespace Runner;
 
 public sealed class RunnerEngine
 {
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] static extern bool IsWindowVisible(IntPtr window);
+    internal Func<OwnedProcess, bool> MaaRequestClose { get; set; } = owned =>
+    {
+        var root = owned.Root;
+        root.Refresh();
+        if (root.HasExited || root.StartTime.ToUniversalTime() != owned.CreatedUtc || !owned.ContainsProcess(root.SafeHandle)) return false;
+        IntPtr window = root.MainWindowHandle;
+        return window != IntPtr.Zero && IsWindowVisible(window) && GetWindowThreadProcessId(window, out uint pid) != 0 && pid == (uint)root.Id && root.CloseMainWindow();
+    };
     readonly Store store;
     readonly Action changed;
     readonly TimeProvider clock;
@@ -185,7 +196,7 @@ public sealed class RunnerEngine
             owned = OwnedProcess.Start(task); var process = owned.Root; active = process; Event($"已启动 {task.Name}（PID {process.Id}，创建时间 {owned.CreatedUtc:O}，路径 {owned.Executable}），已建立进程组归属");
             candidateTracker = task.TrackUpdateRestart || maaMode ? (CandidateTrackerFactory?.Invoke(owned) ?? new RestartCandidateTracker(owned, report: Event)) : null;
             bool found = false, updateSignal = false, timedOut = false, updateTrackingTimedOut = false; long? updateStarted = null; long started = clock.GetTimestamp(); string tail = ""; Decoder decoder = maaMode ? new UTF8Encoding(false, true).GetDecoder() : Encoding.UTF8.GetDecoder();
-            var maaEvidence = new MaaLogEvidence(); int maaCandidateCount = 0; bool maaBoundaryPending = false;
+            var maaEvidence = new MaaLogEvidence(text => { if (maaMode && !storageFailed && !StopRequested) Event(text); }); int maaCandidateCount = 0; bool maaBoundaryPending = false;
             void ApplyMaaBoundary()
             {
                 lock (decisionGate)
@@ -235,7 +246,7 @@ public sealed class RunnerEngine
             void CheckTimeout() { if (!timedOut && task.TimeoutMinutes > 0 && clock.GetElapsedTime(started) >= TimeSpan.FromMinutes(task.TimeoutMinutes)) { timedOut = true; Event("任务超过最长运行时间；不会启动下一项，请手动处理并等待受管程序退出"); } }
             DateTimeOffset? stopAt = null;
             bool reportedChildren = false, reportedUpdateTracking = false, reportedCandidate = false, reportedCandidateExit = false, reportedAmbiguous = false, reportedIdentityError = false; uint maxGroupTotal = 0;
-            var observedMembers = new HashSet<(int, DateTime)>(); bool memberObservationFailed = false;
+            var observedMembers = new HashSet<(int, DateTime)>(); bool memberObservationFailed = false, maaCloseAttempted = false, maaCloseWarned = false, maaCloseFailed = false; long? maaCloseEligible = null, maaCloseSent = null;
             void ObserveMaaMembers()
             {
                 try
@@ -301,9 +312,29 @@ public sealed class RunnerEngine
                         if (maaAnchor != null && !maaAnchor.IsUnchanged()) return await ObserveUnknownProcess(owned, "MAA 日志已有内容发生变化", () => { FlushOutput(); CheckTimeout(); });
                         ApplyMaaBoundary();
                         byte[] bytes = new byte[Math.Min(4096, (int)Math.Min(int.MaxValue, file.Length - file.Position))];
-                        if (bytes.Length > 0) { int count = await file.ReadAsync(bytes); maaAnchor?.Capture(); char[] chars = new char[Encoding.UTF8.GetMaxCharCount(count)]; int charCount = decoder.GetChars(bytes, 0, count, chars, 0); string chunk = new(chars, 0, charCount); bool markerInChunk = false; fileEvidence.Feed(chunk, text => { if (maaMode && UpdateMarkers.Find(text, markers) != null) markerInChunk = true; CheckUpdate(text, "日志文件"); }); lock (decisionGate) { if (maaMode && !maaBoundaryPending && !markerInChunk && (!updateSignal || maaCandidateCount > 0)) maaEvidence.Feed(chunk); } tail += chunk; if (tail.Contains(task.SuccessText, StringComparison.Ordinal)) found = true; if (tail.Length > 8192) tail = tail[^8192..]; }
+                        if (bytes.Length > 0) { maaCloseEligible = null; int count = await file.ReadAsync(bytes); maaAnchor?.Capture(); char[] chars = new char[Encoding.UTF8.GetMaxCharCount(count)]; int charCount = decoder.GetChars(bytes, 0, count, chars, 0); string chunk = new(chars, 0, charCount); bool markerInChunk = false; fileEvidence.Feed(chunk, text => { if (maaMode && UpdateMarkers.Find(text, markers) != null) markerInChunk = true; CheckUpdate(text, "日志文件"); }); lock (decisionGate) { if (maaMode && !maaBoundaryPending && !markerInChunk && (!updateSignal || maaCandidateCount > 0)) maaEvidence.Feed(chunk); } tail += chunk; if (tail.Contains(task.SuccessText, StringComparison.Ordinal)) found = true; if (tail.Length > 8192) tail = tail[^8192..]; }
                     }
                     catch (IOException e) { return await ObserveUnknownProcess(owned, "读取日志失败：" + e.Message, () => { FlushOutput(); CheckTimeout(); }); }
+                }
+                lock (decisionGate)
+                {
+                    bool eligible = maaMode && task.MaaCloseOnCompletion && !maaCloseAttempted && !process.HasExited && !StopRequested && !storageFailed && !timedOut && !updateSignal && !maaBoundaryPending && maaEvidence.Started && maaEvidence.Succeeded && !maaEvidence.Failed && !maaEvidence.Stopped && !maaEvidence.Uncertain && file != null && file.Position == file.Length;
+                    if (!eligible) maaCloseEligible = null;
+                    else
+                    {
+                        maaCloseEligible ??= clock.GetTimestamp();
+                        if (clock.GetElapsedTime(maaCloseEligible.Value) >= TimeSpan.FromSeconds(2))
+                        {
+                            maaCloseAttempted = true;
+                            Event("MAA 日志完成线索已稳定，准备请求关闭本轮主窗口；仍需最终判定");
+                            if (!storageFailed && !StopRequested)
+                            {
+                                try { if (MaaRequestClose(owned)) { maaCloseSent = clock.GetTimestamp(); Event("已请求正常关闭本轮 MAA；等待受管进程退出"); } else { maaCloseFailed = true; Event("无法确认或关闭本轮 MAA 窗口；请人工处理，仍等待退出"); } }
+                                catch (Exception e) when (e is InvalidOperationException or Win32Exception or UnauthorizedAccessException or IOException) { maaCloseFailed = true; Event("请求关闭本轮 MAA 失败；请人工处理，仍等待退出：" + e.GetType().Name); }
+                            }
+                        }
+                    }
+                    if (maaCloseSent is long sent && !maaCloseWarned && !process.HasExited && clock.GetElapsedTime(sent) >= TimeSpan.FromSeconds(10)) { maaCloseWarned = true; maaCloseFailed = true; Event("请求关闭 MAA 已等待 10 秒；请人工处理，仍等待受管进程退出"); }
                 }
                 if (StopRequested) { stopAt ??= DateTimeOffset.Now; if ((DateTimeOffset.Now - stopAt.Value).TotalSeconds >= 10) { Event("停止请求已等待 10 秒；程序仍在运行，请手动处理后等待退出"); stopAt = DateTimeOffset.Now.AddYears(10); } }
                 await Task.Delay(200);
@@ -331,6 +362,7 @@ public sealed class RunnerEngine
                 if (timedOut || updateTrackingTimedOut || maaEvidence.Uncertain || !maaEvidence.Started || !maaEvidence.Succeeded) return "结果不明：未确认本次 MAA 任务成功，请人工核实";
                 Event("MAA 日志观察到任务开始与全部完成；日志文字不能证明每行来源");
                 if (storageFailed) return "结果不明：记录保存失败";
+                if (maaCloseFailed) return "结果不明：MAA 关闭请求未确认，请人工核实";
                 if (code != 0) return "证据冲突：MAA 日志成功与进程退出码不一致";
                 if (!MaaVersionSupported(task.Program)) return "结果不明：更新后 MAA 版本不受支持";
                 if (updateSignal && (candidateTracker == null || !candidateTracker.HasProvenSequentialCandidates() || maxGroupTotal != 1 + candidateTracker.CandidateCount)) return "结果不明：更新后进程身份或先后关系未确认";

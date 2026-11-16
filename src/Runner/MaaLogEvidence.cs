@@ -4,7 +4,7 @@ using System.IO;
 namespace Runner;
 
 // These messages are evidence, not an authenticated statement about the game.
-internal sealed class MaaLogEvidence
+internal sealed class MaaLogEvidence(Action<string>? observe = null)
 {
     readonly StringBuilder line = new();
     bool overlong;
@@ -13,7 +13,7 @@ internal sealed class MaaLogEvidence
     internal bool Failed { get; private set; }
     internal bool Stopped { get; private set; }
     internal bool Uncertain { get; private set; }
-    internal void ResetForRestart() { line.Clear(); overlong = false; Started = false; Succeeded = false; }
+    internal void ResetForRestart() { bool hadEvidence = Started || Succeeded; line.Clear(); overlong = false; Started = false; Succeeded = false; if (hadEvidence) observe?.Invoke("检测到更新或重启，先前 MAA 完成线索已作废"); }
     internal void Feed(string text)
     {
         foreach (char c in text)
@@ -25,12 +25,17 @@ internal sealed class MaaLogEvidence
     internal void Finish() { if (line.Length > 0 || overlong) FinishLine(); }
     void FinishLine()
     {
+        bool wasStarted = Started, wasSucceeded = Succeeded, wasFailed = Failed, wasStopped = Stopped;
         if (overlong) Uncertain = true;
         string text = line.ToString(); line.Clear(); overlong = false;
         if (text.Contains("开始任务:", StringComparison.Ordinal) || text.Contains("Start Task Chain:", StringComparison.Ordinal)) { if (Succeeded) Succeeded = false; Started = true; }
         if (text.Contains("任务出错:", StringComparison.Ordinal) || text.Contains("任务已完成，但出现错误", StringComparison.Ordinal) || text.Contains("任务已结束，以下任务出现错误", StringComparison.Ordinal) || text.Contains("未选择任务", StringComparison.Ordinal)) Failed = true;
         if (text.Contains("已停止", StringComparison.Ordinal)) Stopped = true;
         if (text.Contains("任务已全部完成！", StringComparison.Ordinal) && Started) Succeeded = true;
+        if ((!wasStarted && Started) || (wasSucceeded && !Succeeded)) observe?.Invoke("MAA 日志观察到任务开始；业务结果仍待确认");
+        if (!wasFailed && Failed) observe?.Invoke("MAA 日志观察到任务错误；需人工核实");
+        if (!wasStopped && Stopped) observe?.Invoke("MAA 日志观察到任务停止；需人工核实");
+        if (!wasSucceeded && Succeeded) observe?.Invoke("MAA 日志观察到完成文字；仍需等待进程退出和最终判定");
     }
 }
 
