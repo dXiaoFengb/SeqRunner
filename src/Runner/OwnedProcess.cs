@@ -18,14 +18,18 @@ internal sealed class OwnedProcess : IDisposable
     public StreamReader Error { get; }
     public DateTime CreatedUtc { get; }
     public string Executable { get; }
+    internal JobEventObserver? JobEvents { get; }
+    internal string JobEventsUnavailable { get; }
 
-    OwnedProcess(SafeFileHandle job, Process root, StreamReader output, StreamReader error, DateTime createdUtc, string executable)
-    { this.job = job; Root = root; Output = output; Error = error; CreatedUtc=createdUtc; Executable=executable; }
+    OwnedProcess(SafeFileHandle job, Process root, StreamReader output, StreamReader error, DateTime createdUtc, string executable, JobEventObserver? jobEvents, string unavailable)
+    { this.job = job; Root = root; Output = output; Error = error; CreatedUtc=createdUtc; Executable=executable; JobEvents=jobEvents; JobEventsUnavailable=unavailable; }
 
     public static OwnedProcess Start(TaskSpec task)
     {
         using SafeFileHandle job = Native.CreateJobObject(IntPtr.Zero, null);
         if (job.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error(), "无法创建进程归属对象");
+        string jobEventsUnavailable = "";
+        JobEventObserver? jobEvents = task.Completion == "MAA日志" || task.TrackUpdateRestart ? JobEventObserver.TryAttach(job, out jobEventsUnavailable) : null;
         var sa = new Native.SecurityAttributes { Length = Marshal.SizeOf<Native.SecurityAttributes>(), InheritHandle = true };
         SafeFileHandle? readOut = null, writeOut = null, readErr = null, writeErr = null, nul = null;
         IntPtr processHandle = IntPtr.Zero, threadHandle = IntPtr.Zero;
@@ -69,7 +73,7 @@ internal sealed class OwnedProcess : IDisposable
             if (Native.ResumeThread(threadHandle) == uint.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error(), "无法恢复受管进程");
             resumed = true;
             writeOut.Dispose(); writeOut = null; writeErr.Dispose(); writeErr = null; nul.Dispose(); nul = null;
-            var owned = new OwnedProcess(heldJob, process, stdout, stderr, createdUtc, fullPath); heldJob = null; return owned;
+            var owned = new OwnedProcess(heldJob, process, stdout, stderr, createdUtc, fullPath, jobEvents, jobEventsUnavailable); heldJob = null; jobEvents = null; return owned;
         }
         catch (Exception error)
         {
@@ -88,6 +92,7 @@ internal sealed class OwnedProcess : IDisposable
             if (attributes != IntPtr.Zero) { if (attributesInitialized) Native.DeleteProcThreadAttributeList(attributes); Marshal.FreeHGlobal(attributes); }
             if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
             if (jobList != IntPtr.Zero) Marshal.FreeHGlobal(jobList);
+            jobEvents?.Dispose();
         }
     }
     public (uint Active, uint Total) Accounting()
@@ -123,7 +128,7 @@ internal sealed class OwnedProcess : IDisposable
         if (!Native.IsProcessHandleInJob(process, job, out bool assigned)) throw new Win32Exception(Marshal.GetLastWin32Error(), "无法查询客户端进程归属");
         return assigned;
     }
-    public void Dispose() { Output.Dispose(); Error.Dispose(); Root.Dispose(); job.Dispose(); }
+    public void Dispose() { Output.Dispose(); Error.Dispose(); JobEvents?.Dispose(); Root.Dispose(); job.Dispose(); }
 
     static class Native
     {

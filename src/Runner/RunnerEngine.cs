@@ -40,6 +40,7 @@ public sealed class RunnerEngine
     RunRecord? run;
     ControlledRestartChannel? controlledFixture;
     internal Func<OwnedProcess, RestartCandidateTracker>? CandidateTrackerFactory { get; set; }
+    internal Action<JobEventObserver>? JobEventsTestHook { get; set; }
     internal TimeSpan MaaStartTimeout { get; set; } = TimeSpan.FromSeconds(30);
     internal Func<OwnedProcess, MaaStartController.Probe> MaaInspectStart { get; set; } = MaaStartController.Inspect;
     internal Func<OwnedProcess, MaaStartController.Probe, Func<bool>, bool> MaaInvokeStart { get; set; } = MaaStartController.Invoke;
@@ -64,6 +65,16 @@ public sealed class RunnerEngine
         Status = text;
         if (run != null) { run.Events.Add($"{DateTimeOffset.Now:O} {text}"); try { store.Save(); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { storageFailed = true; Status = "记录保存失败，停止启动后续任务：" + e.Message; } }
         changed();
+    }
+    void Details(IReadOnlyList<string> items)
+    {
+        lock (decisionGate)
+        {
+            if (run == null || items.Count == 0) return;
+            foreach (string item in items) run.Events.Add($"{DateTimeOffset.Now:O} {item}");
+            try { store.Save(); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { storageFailed = true; Status = "记录保存失败，停止启动后续任务：" + e.Message; }
+            changed();
+        }
     }
     public void Confirm()
     {
@@ -200,6 +211,8 @@ public sealed class RunnerEngine
             var launchTask = task.Copy();
             if (task.MaaStartByRunner) launchTask.Arguments = MaaStartController.WithSkipArgument(task.Arguments);
             owned = OwnedProcess.Start(launchTask); var process = owned.Root; active = process; Event($"已启动 {task.Name}（PID {process.Id}，创建时间 {owned.CreatedUtc:O}，路径 {owned.Executable}），已建立进程组归属");
+            if (owned.JobEvents != null) JobEventsTestHook?.Invoke(owned.JobEvents);
+            if ((maaMode || task.TrackUpdateRestart) && owned.JobEvents == null) Event("Job 事件观察不可用：" + owned.JobEventsUnavailable + "；进程身份仍需人工核实");
             candidateTracker = task.TrackUpdateRestart || maaMode ? (CandidateTrackerFactory?.Invoke(owned) ?? new RestartCandidateTracker(owned, report: Event)) : null;
             bool found = false, updateSignal = false, timedOut = false, updateTrackingTimedOut = false; long? updateStarted = null; long started = clock.GetTimestamp(); string tail = ""; Decoder decoder = maaMode ? new UTF8Encoding(false, true).GetDecoder() : Encoding.UTF8.GetDecoder();
             var maaEvidence = new MaaLogEvidence(text => { if (maaMode && !storageFailed && !StopRequested) Event(text); }); int maaCandidateCount = 0; bool maaBoundaryPending = false;
@@ -255,6 +268,13 @@ public sealed class RunnerEngine
             DateTimeOffset? stopAt = null;
             bool reportedChildren = false, reportedUpdateTracking = false, reportedCandidate = false, reportedCandidateExit = false, reportedAmbiguous = false, reportedIdentityError = false; uint maxGroupTotal = 0;
             var observedMembers = new HashSet<(int, DateTime)>(); bool memberObservationFailed = false, maaCloseAttempted = false, maaCloseWarned = false, maaCloseFailed = false; long? maaCloseEligible = null, maaCloseSent = null;
+            void ObserveJobEvents()
+            {
+                if (owned.JobEvents == null) return;
+                var details = new List<string>();
+                owned.JobEvents.Poll(owned, details.Add);
+                Details(details);
+            }
             void ObserveMaaMembers()
             {
                 try
@@ -283,6 +303,7 @@ public sealed class RunnerEngine
             {
                 FlushOutput();
                 CheckTimeout();
+                ObserveJobEvents();
                 var accounting = owned.Accounting();
                 maxGroupTotal = Math.Max(maxGroupTotal, accounting.Total);
                 if (maaMode && accounting.Total > 1 && accounting.Active > 0) ObserveMaaMembers();
@@ -400,6 +421,12 @@ public sealed class RunnerEngine
                 if (StopRequested) { stopAt ??= DateTimeOffset.Now; if ((DateTimeOffset.Now - stopAt.Value).TotalSeconds >= 10) { Event("停止请求已等待 10 秒；程序仍在运行，请手动处理后等待退出"); stopAt = DateTimeOffset.Now.AddYears(10); } }
                 await Task.Delay(200);
             }
+            if (owned.JobEvents != null)
+            {
+                await Task.Delay(100);
+                ObserveJobEvents();
+                Details([owned.JobEvents.Summary(maxGroupTotal)]);
+            }
             var drains = Task.WhenAll(output, errors);
             if (await Task.WhenAny(drains, Task.Delay(1000)) != drains) { uncertainOwnership = true; Event("输出管道仍被未知进程占用；停止队列，请人工核实"); return "结果不明"; }
             await drains; FlushOutput();
@@ -434,6 +461,7 @@ public sealed class RunnerEngine
                     Event($"MAA 受管进程暂停依据：累计进程数 {maxGroupTotal}；重启候选 {(candidateTracker.HasCandidate ? "有" : "无")}；候选查询不明 {(candidateTracker.Uncertain ? "是" : "否")}；仅观察到 {observedMembers.Count} 个其他进程，采样可能遗漏短进程");
                     return "结果不明：存在未确认的受管子进程";
                 }
+                if (owned.JobEvents == null || owned.JobEvents.Uncertain) return "结果不明：Job 事件或进程身份无法完整核实";
                 if (!task.TrustCompletion) return "结果不明：请先人工核实 MAA 日志是否代表业务结束";
                 Event(task.Name + " 成功，退出码 0；依据：本次 MAA 日志任务开始与全部完成");
                 return storageFailed ? "结果不明：记录保存失败" : "成功";
