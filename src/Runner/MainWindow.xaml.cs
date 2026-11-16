@@ -211,6 +211,26 @@ public partial class MainWindow : Window
     void Up(object sender, RoutedEventArgs e) => Move(-1);
     void Down(object sender, RoutedEventArgs e) => Move(1);
     void Save(object sender, RoutedEventArgs e) => SaveDraft();
+    void CheckTask(object sender, RoutedEventArgs e)
+    {
+        if (editor == null) { System.Windows.MessageBox.Show("请先选择一个任务。"); return; }
+        if (System.Windows.Controls.Validation.GetHasError(TimeoutInput)) { System.Windows.MessageBox.Show("最长运行时间请输入 0 到 525600 之间的整数分钟。", "检查配置"); return; }
+        System.Windows.MessageBox.Show(TaskConfigurationReview.Check(editor).Describe(), "检查配置");
+    }
+    async void TrialTask(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            string? id = selected?.Id;
+            if (id == null) { System.Windows.MessageBox.Show("请先选择一个任务。"); return; }
+            if (!ResolveChanges()) return;
+            var result = TaskTrial.Start(store, engine, id, () => startup.IsActive || startup.Blocked, () => completion.Cancel("手动试运行任务"));
+            if (result.Error != null) { System.Windows.MessageBox.Show(result.Error, "试运行此任务"); return; }
+            await result.Running!;
+        }
+        catch (Exception ex) { System.Windows.MessageBox.Show("试运行失败：" + ex.Message); }
+    }
+
     async void Start(object sender, RoutedEventArgs e) { try { if (engine.NeedsRecovery) { System.Windows.MessageBox.Show("存在待核实事项，请先逐条检查。"); return; } if (startup.IsActive || startup.Blocked) { System.Windows.MessageBox.Show("启动计划正在运行或需要人工核实。"); return; } if (!completion.Cancel("手动启动队列")) { System.Windows.MessageBox.Show(completion.Status); return; } if (!ResolveChanges()) return; await engine.Start(); } catch (Exception ex) { System.Windows.MessageBox.Show("运行失败：" + ex.Message); } }
     void Stop(object sender, RoutedEventArgs e) => StopAll();
     void Confirm(object sender, RoutedEventArgs e) => engine.Confirm();
