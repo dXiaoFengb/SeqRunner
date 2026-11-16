@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.ComponentModel;
 using System.IO;
 using System.Text;
 
@@ -234,12 +235,38 @@ public sealed class RunnerEngine
             void CheckTimeout() { if (!timedOut && task.TimeoutMinutes > 0 && clock.GetElapsedTime(started) >= TimeSpan.FromMinutes(task.TimeoutMinutes)) { timedOut = true; Event("任务超过最长运行时间；不会启动下一项，请手动处理并等待受管程序退出"); } }
             DateTimeOffset? stopAt = null;
             bool reportedChildren = false, reportedUpdateTracking = false, reportedCandidate = false, reportedCandidateExit = false, reportedAmbiguous = false, reportedIdentityError = false; uint maxGroupTotal = 0;
+            var observedMembers = new HashSet<(int, DateTime)>(); bool memberObservationFailed = false;
+            void ObserveMaaMembers()
+            {
+                try
+                {
+                    foreach (uint id in owned.ProcessIds())
+                    {
+                        if (id == (uint)process.Id || observedMembers.Count >= 64) continue;
+                        try
+                        {
+                            using var member = Process.GetProcessById(checked((int)id));
+                            if (member.HasExited || !owned.ContainsProcess(member.SafeHandle)) throw new InvalidOperationException();
+                            DateTime created = member.StartTime.ToUniversalTime();
+                            string? path = member.MainModule?.FileName;
+                            if (path == null || member.HasExited) throw new InvalidOperationException();
+                            if (observedMembers.Add((member.Id, created)))
+                                Event($"MAA 受管成员观察：PID {member.Id}，创建时间 {created:O}，组归属已核实，与主程序路径{(string.Equals(Path.GetFullPath(path), owned.Executable, StringComparison.OrdinalIgnoreCase) ? "相同" : "不同")}；身份和用途仍需核实");
+                        }
+                        catch (Exception e) when (e is ArgumentException or InvalidOperationException or Win32Exception or UnauthorizedAccessException or IOException or OverflowException)
+                        { if (!memberObservationFailed) { memberObservationFailed = true; Event("MAA 受管成员观察不完整：进程已退出或身份、路径、组归属无法查询；仍按原规则判断"); } }
+                    }
+                }
+                catch (Exception e) when (e is InvalidOperationException or Win32Exception or UnauthorizedAccessException or IOException or OverflowException)
+                { if (!memberObservationFailed) { memberObservationFailed = true; Event("MAA 受管成员观察不完整：无法查询进程组；仍按原规则判断"); } }
+            }
             while (true)
             {
                 FlushOutput();
                 CheckTimeout();
                 var accounting = owned.Accounting();
                 maxGroupTotal = Math.Max(maxGroupTotal, accounting.Total);
+                if (maaMode && accounting.Total > 1 && accounting.Active > 0) ObserveMaaMembers();
                 if (process.HasExited && candidateTracker != null)
                 {
                     candidateTracker.Poll();
@@ -307,7 +334,11 @@ public sealed class RunnerEngine
                 if (code != 0) return "证据冲突：MAA 日志成功与进程退出码不一致";
                 if (!MaaVersionSupported(task.Program)) return "结果不明：更新后 MAA 版本不受支持";
                 if (updateSignal && (candidateTracker == null || !candidateTracker.HasProvenSequentialCandidates() || maxGroupTotal != 1 + candidateTracker.CandidateCount)) return "结果不明：更新后进程身份或先后关系未确认";
-                if (!updateSignal && candidateTracker != null && (candidateTracker.Uncertain || candidateTracker.HasCandidate || maxGroupTotal > 1)) return "结果不明：存在未确认的受管子进程";
+                if (!updateSignal && candidateTracker != null && (candidateTracker.Uncertain || candidateTracker.HasCandidate || maxGroupTotal > 1))
+                {
+                    Event($"MAA 受管进程暂停依据：累计进程数 {maxGroupTotal}；重启候选 {(candidateTracker.HasCandidate ? "有" : "无")}；候选查询不明 {(candidateTracker.Uncertain ? "是" : "否")}；仅观察到 {observedMembers.Count} 个其他进程，采样可能遗漏短进程");
+                    return "结果不明：存在未确认的受管子进程";
+                }
                 if (!task.TrustCompletion) return "结果不明：请先人工核实 MAA 日志是否代表业务结束";
                 Event(task.Name + " 成功，退出码 0；依据：本次 MAA 日志任务开始与全部完成");
                 return storageFailed ? "结果不明：记录保存失败" : "成功";
