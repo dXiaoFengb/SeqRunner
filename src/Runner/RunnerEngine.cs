@@ -40,6 +40,9 @@ public sealed class RunnerEngine
     RunRecord? run;
     ControlledRestartChannel? controlledFixture;
     internal Func<OwnedProcess, RestartCandidateTracker>? CandidateTrackerFactory { get; set; }
+    internal TimeSpan MaaStartTimeout { get; set; } = TimeSpan.FromSeconds(30);
+    internal Func<OwnedProcess, MaaStartController.Probe> MaaInspectStart { get; set; } = MaaStartController.Inspect;
+    internal Func<OwnedProcess, MaaStartController.Probe, Func<bool>, bool> MaaInvokeStart { get; set; } = MaaStartController.Invoke;
     internal Func<string, bool> MaaVersionSupported { get; set; } = path =>
     {
         try { var version = FileVersionInfo.GetVersionInfo(path); return version.FileMajorPart == 6 && ((version.FileMinorPart == 21 && version.FileBuildPart == 4) || (version.FileMinorPart == 22 && version.FileBuildPart == 0)); }
@@ -171,6 +174,7 @@ public sealed class RunnerEngine
         ManualConfirmed = false;
         manualMode = task.Completion == "人工确认";
         bool maaMode = task.Completion == "MAA日志";
+        if (task.MaaStartByRunner && !maaMode) return "结果不明：由 V3 启动 MAA 任务需要选择 MAA日志";
         if (!File.Exists(task.Program)) { Event("程序不存在：" + task.Name); return maaMode ? "结果不明：MAA 程序不存在" : "失败"; }
         if (task.Completion == "日志信号" && string.IsNullOrWhiteSpace(task.SuccessText)) { Event("未配置成功信号"); return "失败"; }
         if (!UpdateMarkers.TryParse(task.UpdateMarkers, out var configuredMarkers)) { Event("更新或重启线索无效，最多 32 条、每条 256 个字符"); return "结果不明：线索配置无效"; }
@@ -193,10 +197,14 @@ public sealed class RunnerEngine
                 file.Seek(0, SeekOrigin.End);
                 if (maaMode) { maaAnchor = new MaaLogAnchor(file); maaAnchor.Capture(); }
             }
-            owned = OwnedProcess.Start(task); var process = owned.Root; active = process; Event($"已启动 {task.Name}（PID {process.Id}，创建时间 {owned.CreatedUtc:O}，路径 {owned.Executable}），已建立进程组归属");
+            var launchTask = task.Copy();
+            if (task.MaaStartByRunner) launchTask.Arguments = MaaStartController.WithSkipArgument(task.Arguments);
+            owned = OwnedProcess.Start(launchTask); var process = owned.Root; active = process; Event($"已启动 {task.Name}（PID {process.Id}，创建时间 {owned.CreatedUtc:O}，路径 {owned.Executable}），已建立进程组归属");
             candidateTracker = task.TrackUpdateRestart || maaMode ? (CandidateTrackerFactory?.Invoke(owned) ?? new RestartCandidateTracker(owned, report: Event)) : null;
             bool found = false, updateSignal = false, timedOut = false, updateTrackingTimedOut = false; long? updateStarted = null; long started = clock.GetTimestamp(); string tail = ""; Decoder decoder = maaMode ? new UTF8Encoding(false, true).GetDecoder() : Encoding.UTF8.GetDecoder();
             var maaEvidence = new MaaLogEvidence(text => { if (maaMode && !storageFailed && !StopRequested) Event(text); }); int maaCandidateCount = 0; bool maaBoundaryPending = false;
+            bool maaStartFinished = !task.MaaStartByRunner, maaStartFailed = false, maaStartRequested = false; long maaStartAt = clock.GetTimestamp();
+            Task<MaaStartController.Probe>? maaProbe = null; Task<bool>? maaInvoke = null;
             void ApplyMaaBoundary()
             {
                 lock (decisionGate)
@@ -316,9 +324,62 @@ public sealed class RunnerEngine
                     }
                     catch (IOException e) { return await ObserveUnknownProcess(owned, "读取日志失败：" + e.Message, () => { FlushOutput(); CheckTimeout(); }); }
                 }
+                if (task.MaaStartByRunner && !maaStartFinished)
+                {
+                    if (StopRequested || storageFailed || updateSignal || process.HasExited || timedOut)
+                    {
+                        maaStartFailed = true; Volatile.Write(ref maaStartFinished, true);
+                        if (!StopRequested && !storageFailed) Event("MAA 自动启动已停止：出现更新、超时或进程退出；需人工核实");
+                    }
+                    else if (maaEvidence.Started)
+                    {
+                        Volatile.Write(ref maaStartFinished, true);
+                        Event(maaStartRequested ? "已观察到本轮 MAA 任务开始" : "已观察到 MAA 任务自行开始，不再触发");
+                    }
+                    else if (maaEvidence.Failed || maaEvidence.Stopped || maaEvidence.Uncertain)
+                    {
+                        maaStartFailed = true; Volatile.Write(ref maaStartFinished, true);
+                        Event("MAA 自动启动已停止：日志出现错误、停止或无法判定；请人工核实");
+                    }
+                    else if (clock.GetElapsedTime(maaStartAt) >= MaaStartTimeout)
+                    {
+                        maaStartFailed = true; Volatile.Write(ref maaStartFinished, true);
+                        Event("MAA 自动启动结果不明或等待超时；请人工核实，仍等待程序退出");
+                    }
+                    else if (maaInvoke != null && maaInvoke.IsCompleted)
+                    {
+                        bool invoked = false;
+                        try { invoked = await maaInvoke; } catch (Exception e) when (e is InvalidOperationException or Win32Exception or UnauthorizedAccessException or System.Runtime.InteropServices.COMException) { }
+                        maaInvoke = null;
+                        if (!invoked) { maaStartFailed = true; Volatile.Write(ref maaStartFinished, true); Event("MAA 启动窗口或按钮无法确认；请人工核实，仍等待程序退出"); }
+                        else Event("已请求启动本轮 MAA 任务；等待本次开始日志");
+                    }
+                    else if (!maaStartRequested && maaProbe == null)
+                        maaProbe = Task.Run(() => MaaInspectStart(owned));
+                    else if (!maaStartRequested && maaProbe is { IsCompleted: true })
+                    {
+                        MaaStartController.Probe probe;
+                        try { probe = await maaProbe; } catch (Exception e) when (e is InvalidOperationException or Win32Exception or UnauthorizedAccessException or System.Runtime.InteropServices.COMException) { probe = new("无法核实窗口或按钮"); }
+                        maaProbe = null;
+                        if (probe.Status == "就绪")
+                        {
+                            maaStartRequested = true;
+                            Event("准备请求启动本轮 MAA 任务；若状态不明不会重试");
+                            bool MayInvoke()
+                            {
+                                lock (decisionGate)
+                                    return !Volatile.Read(ref maaStartFinished) && !StopRequested && !storageFailed && !updateSignal && !timedOut && clock.GetElapsedTime(maaStartAt) < MaaStartTimeout && !maaBoundaryPending && !maaEvidence.Started && !maaEvidence.Failed && !maaEvidence.Stopped && !maaEvidence.Uncertain && file != null && file.Position == file.Length && !process.HasExited;
+                            }
+                            if (!storageFailed && !StopRequested) maaInvoke = Task.Run(() => MaaInvokeStart(owned, probe, MayInvoke));
+                            else { maaStartFailed = true; Volatile.Write(ref maaStartFinished, true); }
+                        }
+                        else if (probe.Status is not ("等待窗口" or "等待按钮"))
+                        { maaStartFailed = true; Volatile.Write(ref maaStartFinished, true); Event("MAA 启动状态不明：" + probe.Status + "；请人工核实，仍等待程序退出"); }
+                    }
+                }
                 lock (decisionGate)
                 {
-                    bool eligible = maaMode && task.MaaCloseOnCompletion && !maaCloseAttempted && !process.HasExited && !StopRequested && !storageFailed && !timedOut && !updateSignal && !maaBoundaryPending && maaEvidence.Started && maaEvidence.Succeeded && !maaEvidence.Failed && !maaEvidence.Stopped && !maaEvidence.Uncertain && file != null && file.Position == file.Length;
+                    bool eligible = maaMode && task.MaaCloseOnCompletion && (!task.MaaStartByRunner || (maaStartFinished && !maaStartFailed)) && !maaCloseAttempted && !process.HasExited && !StopRequested && !storageFailed && !timedOut && !updateSignal && !maaBoundaryPending && maaEvidence.Started && maaEvidence.Succeeded && !maaEvidence.Failed && !maaEvidence.Stopped && !maaEvidence.Uncertain && file != null && file.Position == file.Length;
                     if (!eligible) maaCloseEligible = null;
                     else
                     {
@@ -355,6 +416,8 @@ public sealed class RunnerEngine
             if (StopRequested) return "已停止";
             if (maaMode)
             {
+                Volatile.Write(ref maaStartFinished, true);
+                if (task.MaaStartByRunner && (maaStartFailed || (maaInvoke != null && !maaInvoke.IsCompleted))) return "结果不明：MAA 启动未确认，请人工核实";
                 decoder.GetChars([], 0, 0, new char[4], 0, true);
                 lock (decisionGate) maaEvidence.Finish();
                 if (maaEvidence.Failed) return "结果不明：MAA 日志报告任务错误，请人工核实";
