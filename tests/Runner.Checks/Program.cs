@@ -16,6 +16,7 @@ class Program
     static TaskSpec Spec(string name, string args) => new() { Name=name, Program=cmd, Arguments="/d /c " + args, WorkingDirectory=Environment.SystemDirectory, TrustCompletion=true };
     static async Task Tests(bool skipControlled=false)
     {
+        await NotificationTests();
         await JobEventTests();
         await MaaResumeTests();
         var a = NewStore("sequence"); a.Tasks.Add(Spec("first", "echo first")); a.Tasks.Add(Spec("second", "echo second"));
@@ -110,6 +111,31 @@ class Program
         using(var invalid=new Microsoft.Win32.SafeHandles.SafeFileHandle(new IntPtr(-1),false)) {using var unavailable=JobEventObserver.TryAttach(invalid,out string reason);Check(unavailable==null && reason.Contains("无法关联"),"job event association failure remains explicit");}
         string gapDir=Path.Combine(root,"job-gap-engine");Directory.CreateDirectory(gapDir);string gapLog=Path.Combine(gapDir,"gui.log");await File.WriteAllTextAsync(gapLog,"old\n");var gapStore=new Store(gapDir);gapStore.Tasks.Add(new TaskSpec{Name="maa",Program=Environment.ProcessPath!,Arguments="fixture-maa-success \""+gapLog+"\"",WorkingDirectory=AppContext.BaseDirectory,Completion="MAA日志",LogPath=gapLog,MaaExclusiveLog=true,TrustCompletion=true});gapStore.Tasks.Add(Spec("after-gap","echo wrong"));var gapEngine=new RunnerEngine(gapStore,()=>{}){MaaVersionSupported=_=>true,JobEventsTestHook=events=>events.MarkUncertain("测试：通知缺失")};var gapRun=gapEngine.Start();for(int i=0;i<180 && !gapEngine.Waiting;i++)await Task.Delay(30);bool blocked=gapEngine.Waiting && gapStore.History.Single().Events.Any(x=>x.Contains("测试：通知缺失")) && !gapStore.History.Single().Events.Any(x=>x.Contains("已启动 after-gap"));gapEngine.Stop();await gapRun;Check(blocked,"missing job evidence blocks MAA continuation");
         using var outsider=Process.Start(new ProcessStartInfo(Environment.ProcessPath!,"fixture-identity-held"){UseShellExecute=false,RedirectStandardInput=true,RedirectStandardOutput=true})!;await outsider.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10));var task=new TaskSpec{Program=Environment.ProcessPath!,Arguments="fixture-job-parent",WorkingDirectory=AppContext.BaseDirectory,Completion="MAA日志"};using var owned=OwnedProcess.Start(task);bool outsiderInGroup=owned.ContainsProcess(outsider.SafeHandle);var lines=new List<string>();var output=owned.Output.ReadToEndAsync();var errors=owned.Error.ReadToEndAsync();for(int i=0;i<500 && (!owned.Root.HasExited || owned.Accounting().Active>0);i++){owned.JobEvents?.Poll(owned,lines.Add);await Task.Delay(20);}await owned.Root.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));await Task.Delay(100);owned.JobEvents?.Poll(owned,lines.Add);await output;await errors;var events=owned.JobEvents;uint total=owned.Accounting().Total;string result=events?.Summary(total)??owned.JobEventsUnavailable;Check(events!=null && total>=7 && events.NewCount>=1 && events.ExitCount>=1 && lines.Any(x=>x.Contains("加入通知")) && lines.Any(x=>x.Contains("退出通知")) && result.Contains("累计进程") && ((events.NewCount==total && events.ExitCount==total) || events.Uncertain),"job notifications observe concurrent short-lived children without assuming delivery");bool outsiderSeen=lines.Any(x=>x.Contains("PID "+outsider.Id+"；"));await outsider.StandardInput.WriteLineAsync("release");await outsider.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));Check(!outsiderInGroup && !outsiderSeen,"job observer excludes group-outside process");
+    }
+    static async Task NotificationTests()
+    {
+        var legacy=NewStore("notice-legacy");
+        await File.WriteAllTextAsync(Path.Combine(root,"notice-legacy","data.json"),"{\"Format\":\"SequentialRunnerV3/1\"}");
+        legacy.Load(); Check(legacy.LocalNotificationsEnabled,"local notifications default enabled for legacy data");
+        legacy.LocalNotificationsEnabled=false; legacy.Save(); var reload=NewStore("notice-legacy"); reload.Load();
+        Check(!reload.LocalNotificationsEnabled,"local notification setting persists");
+        var notices=new List<LocalNotice>(); bool enabled=true; var center=new LocalNotifications(()=>enabled, notices.Add);
+        center.ObserveProblem("scheduler","定时记录保存失败"); center.ObserveProblem("scheduler","定时记录保存失败");
+        Check(notices.Count==1 && notices[0].IsWarning,"notification saves failure only once per state");
+        center.ObserveProblem("scheduler",""); center.ObserveProblem("scheduler","定时记录保存失败");
+        Check(notices.Count==2,"notification reports a new failure after recovery");
+        enabled=false;center.Publish(new("关闭","忽略"));Check(notices.Count==2,"disabled notifications are suppressed");
+        enabled=true;var throwing=new LocalNotifications(()=>true,_=>throw new InvalidOperationException("unavailable"));
+        bool safe=true;try { throwing.Publish(new("完成","测试")); }catch { safe=false; }Check(safe,"notification sink failure never affects caller");
+        var st=NewStore("notice-engine");st.Tasks.Add(Spec("first","echo first"));st.Tasks.Add(Spec("second","echo second"));
+        var engine=new RunnerEngine(st,()=>{}){Notify=center.Publish};notices.Clear();await engine.Start();
+        Check(notices.Count(x=>x.Title=="任务完成")==2 && notices.Count(x=>x.Title=="队列已完成")==1 && st.History.Single().AllSucceeded==true,"notifications cover each successful task and batch once");
+        var bad=NewStore("notice-failure");var fail=Spec("failure","exit /b 3");fail.ContinueOnFailure=true;bad.Tasks.Add(fail);bad.Tasks.Add(Spec("next","echo next"));notices.Clear();await new RunnerEngine(bad,()=>{}){Notify=center.Publish}.Start();
+        Check(notices.Count(x=>x.Title=="任务需要处理")==1 && notices.All(x=>x.Title!="队列已完成") && bad.History.Single().AllSucceeded==false,"failure notifications never claim batch success");
+        var manual=NewStore("notice-manual");var task=Spec("manual","echo done");task.Completion="人工确认";manual.Tasks.Add(task);notices.Clear();var waiting=new RunnerEngine(manual,()=>{}){Notify=center.Publish};var run=waiting.Start();for(int i=0;i<150 && !waiting.Waiting;i++)await Task.Delay(20);bool informed=notices.Count(x=>x.Title=="等待人工处理")==1;waiting.Stop();await run;
+        Check(informed && notices.Count(x=>x.Title=="队列已停止")==1 && notices.All(x=>x.Title!="队列已完成"),"manual wait and user stop each notify once without success");
+        var noUi=NewStore("notice-throwing");noUi.Tasks.Add(Spec("safe","echo safe"));await new RunnerEngine(noUi,()=>{}){Notify=_=>throw new InvalidOperationException()}.Start();
+        Check(noUi.History.Single().AllSucceeded==true,"notification exception cannot break queue");
     }
     static async Task MaaResumeTests()
     {
@@ -475,6 +501,7 @@ class Program
         if (args.Length > 0 && args[0] == "fixture-job-parent") { var children=Enumerable.Range(0,6).Select(_=>Process.Start(new ProcessStartInfo(Environment.ProcessPath!,"fixture-job-short"){UseShellExecute=false})!).ToArray();foreach(var child in children){child.WaitForExit();child.Dispose();}Thread.Sleep(400);return 0; }
         if (args.Length > 0 && args[0] == "fixture-job-short") { Thread.Sleep(40);return 0; }
         if (args.Length > 0 && args[0] == "probe-maa-start") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await MaaControlledStartTests(); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-notifications") { NotificationTests().GetAwaiter().GetResult(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-resume") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await MaaResumeTests(); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length == 4 && args[0] == "fixture-maa-start")
         {

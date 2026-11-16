@@ -19,6 +19,8 @@ public sealed class RunnerEngine
         return window != IntPtr.Zero && IsWindowVisible(window) && GetWindowThreadProcessId(window, out uint pid) != 0 && pid == (uint)root.Id && root.CloseMainWindow();
     };
     readonly Store store;
+    internal Action<LocalNotice>? Notify { get; set; }
+    void Notice(string title, string message, bool warning = false) { try { Notify?.Invoke(new LocalNotice(title, message, warning)); } catch (Exception) { } }
     readonly Action changed;
     readonly TimeProvider clock;
     public RunnerEngine(Store store, Action changed, TimeProvider? clock = null) { this.store=store; this.changed=changed; this.clock=clock ?? TimeProvider.System; uncertainOwnership=false; if (NeedsRecovery) Status="存在未核实的中断运行，请先检查相关程序"; }
@@ -160,6 +162,8 @@ public sealed class RunnerEngine
                 string result = await RunOne(task, index == 0 ? controlledFixture : null);
                 if (StopRequested || storageFailed || uncertainOwnership) { allSucceeded=false; break; }
                 if (result != "成功") allSucceeded=false;
+                if (result == "成功") Notice("任务完成", LocalNotifications.Name(task.Name) + " 已成功完成。");
+                else if (result != "已跳过") Notice("任务需要处理", LocalNotifications.Name(task.Name) + (result == "失败" && task.ContinueOnFailure ? " 失败，按配置继续。" : " 未确认成功，请查看运行状态。"), true);
                 if (result == "失败" && task.ContinueOnFailure) Event("任务失败，按配置继续：" + task.Name);
                 else if (result != "成功" && result != "已跳过" && !await WaitForUser($"{task.Name}：{result}")) break;
                 int seconds=intervals == null ? 0 : intervals[index];
@@ -176,8 +180,9 @@ public sealed class RunnerEngine
             run.AllSucceeded = allSucceeded && !StopRequested && !storageFailed && !uncertainOwnership;
             Event("队列" + run.State);
             if (storageFailed) { run.AllSucceeded=false; run.State="需人工核实"; }
+            else Notice(run.State == "已停止" ? "队列已停止" : run.State == "需人工核实" ? "队列需要核实" : run.AllSucceeded == true ? "队列已完成" : "队列已结束", run.State == "已停止" ? "后续任务不会启动。" : run.AllSucceeded == true ? "本轮任务已全部成功完成。" : "本轮包含未成功或未确认的任务，请查看历史。", run.AllSucceeded != true && run.State != "已停止");
         }
-        catch (Exception ex) { run.AllSucceeded=false; run.State = "需人工核实"; uncertainOwnership=true; Event("运行异常，请检查相关程序：" + ex.Message); }
+        catch (Exception ex) { run.AllSucceeded=false; run.State = "需人工核实"; uncertainOwnership=true; Event("运行异常，请检查相关程序：" + ex.Message); if (!storageFailed) Notice("运行异常", "请打开软件核实本轮运行。", true); }
         finally { lock (decisionGate) { active = null; Running = false; Waiting = false; decision = null; manualDecision = null; manualMode = false; } stopDelay?.Dispose(); stopDelay=null; changed(); run = null; }
     }
     async Task<string> RunOne(TaskSpec task, ControlledRestartChannel? controlled)
@@ -264,7 +269,7 @@ public sealed class RunnerEngine
             int overlap = Math.Max(task.Completion == "日志信号" && task.LogSource == "程序输出" ? task.SuccessText.Length - 1 : 0, markerOverlap);
             var output = BoundedOutputReader.ReadAsync(owned.Output, text => ObserveEvidence(text, true), RecordLine, overlap);
             var errors = BoundedOutputReader.ReadAsync(owned.Error, text => ObserveEvidence(text, false), RecordLine, overlap);
-            void CheckTimeout() { if (!timedOut && task.TimeoutMinutes > 0 && clock.GetElapsedTime(started) >= TimeSpan.FromMinutes(task.TimeoutMinutes)) { timedOut = true; Event("任务超过最长运行时间；不会启动下一项，请手动处理并等待受管程序退出"); } }
+            void CheckTimeout() { if (!timedOut && task.TimeoutMinutes > 0 && clock.GetElapsedTime(started) >= TimeSpan.FromMinutes(task.TimeoutMinutes)) { timedOut = true; Event("任务超过最长运行时间；不会启动下一项，请手动处理并等待受管程序退出"); if (!storageFailed) Notice("任务等待处理", LocalNotifications.Name(task.Name) + " 已超时，请查看运行状态。", true); } }
             DateTimeOffset? stopAt = null;
             bool reportedChildren = false, reportedUpdateTracking = false, reportedCandidate = false, reportedCandidateExit = false, reportedAmbiguous = false, reportedIdentityError = false; uint maxGroupTotal = 0;
             var observedMembers = new HashSet<(int, DateTime)>(); bool memberObservationFailed = false, maaCloseAttempted = false, maaCloseWarned = false, maaCloseFailed = false; long? maaCloseEligible = null, maaCloseSent = null;
@@ -416,7 +421,7 @@ public sealed class RunnerEngine
                             }
                         }
                     }
-                    if (maaCloseSent is long sent && !maaCloseWarned && !process.HasExited && clock.GetElapsedTime(sent) >= TimeSpan.FromSeconds(10)) { maaCloseWarned = true; maaCloseFailed = true; Event("请求关闭 MAA 已等待 10 秒；请人工处理，仍等待受管进程退出"); }
+                    if (maaCloseSent is long sent && !maaCloseWarned && !process.HasExited && clock.GetElapsedTime(sent) >= TimeSpan.FromSeconds(10)) { maaCloseWarned = true; maaCloseFailed = true; Event("请求关闭 MAA 已等待 10 秒；请人工处理，仍等待受管进程退出"); if (!storageFailed) Notice("等待人工处理", LocalNotifications.Name(task.Name) + " 尚未退出，请查看运行状态。", true); }
                 }
                 if (StopRequested) { stopAt ??= DateTimeOffset.Now; if ((DateTimeOffset.Now - stopAt.Value).TotalSeconds >= 10) { Event("停止请求已等待 10 秒；程序仍在运行，请手动处理后等待退出"); stopAt = DateTimeOffset.Now.AddYears(10); } }
                 await Task.Delay(200);
@@ -484,6 +489,7 @@ public sealed class RunnerEngine
                     {
                         ManualConfirmed = false; Waiting = true; manualDecision = new(TaskCreationOptions.RunContinuationsAsynchronously);
                         Event("受控重启进程已退出，请人工确认业务完成或跳过");
+                        if (!storageFailed) Notice("等待人工处理", LocalNotifications.Name(task.Name) + " 等待确认或跳过。", true);
                         if (storageFailed || StopRequested) manualDecision.TrySetResult(ManualDecision.Stopped);
                         pending = manualDecision.Task;
                     }
@@ -517,6 +523,7 @@ public sealed class RunnerEngine
                     {
                         Waiting = true; manualDecision = new(TaskCreationOptions.RunContinuationsAsynchronously);
                         Event("程序已退出，等待人工确认或跳过");
+                        if (!storageFailed) Notice("等待人工处理", LocalNotifications.Name(task.Name) + " 等待确认或跳过。", true);
                         if (storageFailed) manualDecision.TrySetResult(ManualDecision.Stopped);
                         pending = manualDecision.Task;
                     }

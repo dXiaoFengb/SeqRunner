@@ -14,6 +14,7 @@ public partial class MainWindow : Window
     readonly Store store = null!;
     readonly RunnerEngine engine = null!;
     readonly Forms.NotifyIcon tray = null!;
+    LocalNotifications? notifications;
     readonly Mutex instanceLock;
     Scheduler scheduler = null!;
     StartupCoordinator startup = null!;
@@ -57,6 +58,7 @@ public partial class MainWindow : Window
         store = new Store(dir);
         try { store.Load(); }
         catch (Exception e) { System.Windows.MessageBox.Show("数据读取失败，软件不会覆盖该文件：" + e.Message); System.Windows.Application.Current.Shutdown(1); throw; }
+        LocalNotificationsInput.IsChecked = store.LocalNotificationsEnabled;
         drafts = new(store.Tasks.Select(t => t.Copy()));
         TaskList.ItemsSource = drafts;
         engine = new RunnerEngine(store, Refresh);
@@ -71,9 +73,18 @@ public partial class MainWindow : Window
         HistoryList.ItemsSource = store.History;
         tray = new Forms.NotifyIcon { Text = "顺序化软件执行工具 V3", Icon = System.Drawing.SystemIcons.Application, Visible = true };
         var menu = new Forms.ContextMenuStrip(); menu.Items.Add("打开", null, (_, _) => ShowWindow()); menu.Items.Add("查看待核实事项", null, (_, _) => { ShowWindow(); ResolveRecovery(this, new RoutedEventArgs()); }); completionTrayStatus = new Forms.ToolStripMenuItem("完成后操作：无") { Enabled=false }; menu.Items.Add(completionTrayStatus); menu.Items.Add("取消完成后操作", null, (_, _) => completion.Cancel("用户通过托盘取消")); menu.Items.Add("退出", null, (_, _) => RequestExit()); tray.ContextMenuStrip = menu;
+        notifications = new LocalNotifications(() => store.LocalNotificationsEnabled, notice => Dispatcher.BeginInvoke(() =>
+        {
+            if (!store.LocalNotificationsEnabled || exiting) return;
+            try { tray.ShowBalloonTip(5000, notice.Title, notice.Message, notice.IsWarning ? Forms.ToolTipIcon.Warning : Forms.ToolTipIcon.Info); }
+            catch (Exception) { }
+        }));
+        engine.Notify = notice => notifications.Publish(notice);
+        tray.BalloonTipClicked += (_, _) => Dispatcher.BeginInvoke(ShowWindow);
         tray.DoubleClick += (_, _) => ShowWindow();
         Refresh();
         if (!store.NoticeSeen) Loaded += (_, _) => { if (Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE") != "1") ShowNoticeCore(true); };
+        Loaded += (_, _) => { if (engine.NeedsRecovery) notifications.Publish(new("需要人工核实", "存在待核实事项，请打开软件查看。", true)); };
         Loaded += async (_, _) => { await startup.StartAsync(DateTimeOffset.UtcNow, TimeZoneInfo.Local); if (engine.NeedsRecovery && Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE") != "1") ResolveRecovery(this, new RoutedEventArgs()); };
         if (Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE") == "1")
         {
@@ -81,7 +92,7 @@ public partial class MainWindow : Window
             Loaded += (_, _) => { var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(seconds) }; timer.Tick += (_, _) => { timer.Stop(); RequestExit(); }; timer.Start(); };
         }
     }
-    void Refresh() { Status.Text = (engine.NeedsRecovery ? $"有 {Recovery.PendingCount(store)} 条待核实事项，请点击“查看待核实事项”；" : "") + engine.Status + (scheduler != null && !string.IsNullOrEmpty(scheduler.Status) ? "；" + scheduler.Status : "") + (startup != null && !string.IsNullOrEmpty(startup.Status) ? "；" + startup.Status : "") + (completion != null && !string.IsNullOrEmpty(completion.Status) ? "；" + completion.Status : ""); if(completionTrayStatus!=null) completionTrayStatus.Text="完成后操作："+(string.IsNullOrEmpty(completion?.Status) ? "无" : completion.Status); if (shownHistoryCount != store.History.Count) { HistoryList.Items.Refresh(); shownHistoryCount = store.History.Count; } if (HistoryList.SelectedItem == null && store.History.Count > 0) HistoryList.SelectedItem = store.History[^1]; ShowHistory(); }
+    void Refresh() { notifications?.ObserveProblem("engine", engine.Status); notifications?.ObserveProblem("scheduler", scheduler?.Status); notifications?.ObserveProblem("startup", startup?.Status); notifications?.ObserveProblem("completion", completion?.Status); Status.Text = (engine.NeedsRecovery ? $"有 {Recovery.PendingCount(store)} 条待核实事项，请点击“查看待核实事项”；" : "") + engine.Status + (scheduler != null && !string.IsNullOrEmpty(scheduler.Status) ? "；" + scheduler.Status : "") + (startup != null && !string.IsNullOrEmpty(startup.Status) ? "；" + startup.Status : "") + (completion != null && !string.IsNullOrEmpty(completion.Status) ? "；" + completion.Status : ""); if(completionTrayStatus!=null) completionTrayStatus.Text="完成后操作："+(string.IsNullOrEmpty(completion?.Status) ? "无" : completion.Status); if (shownHistoryCount != store.History.Count) { HistoryList.Items.Refresh(); shownHistoryCount = store.History.Count; } if (HistoryList.SelectedItem == null && store.History.Count > 0) HistoryList.SelectedItem = store.History[^1]; ShowHistory(); }
     void HistoryChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e) => ShowHistory();
     void ShowHistory()
     {
@@ -135,6 +146,18 @@ public partial class MainWindow : Window
         if (first) { store.NoticeSeen = true; try { store.Save(); } catch (Exception e) { store.NoticeSeen = false; System.Windows.MessageBox.Show("注意事项状态保存失败：" + e.Message); } }
     }
     void ShowNotice(object sender, RoutedEventArgs e) => ShowNoticeCore(false);
+    void ToggleLocalNotifications(object sender, RoutedEventArgs e)
+    {
+        bool old = store.LocalNotificationsEnabled;
+        store.LocalNotificationsEnabled = LocalNotificationsInput.IsChecked == true;
+        try { store.Save(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            store.LocalNotificationsEnabled = old; LocalNotificationsInput.IsChecked = old;
+            System.Windows.MessageBox.Show("通知设置保存失败，已保留原设置：" + ex.Message);
+        }
+    }
+
     bool ResolveChanges()
     {
         if (!HasDraftChanges) return true;
