@@ -26,6 +26,7 @@ public sealed class TaskSpec
     public bool ContinueOnFailure { get; set; }
     public bool TrustCompletion { get; set; }
     public bool SharedLog { get; set; }
+    public bool MaaExclusiveLog { get; set; }
     public int TimeoutMinutes { get; set; }
     public TaskSpec Copy() => (TaskSpec)MemberwiseClone();
 }

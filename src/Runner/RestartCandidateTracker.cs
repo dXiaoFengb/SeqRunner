@@ -46,6 +46,29 @@ internal sealed class RestartCandidateTracker : IDisposable
     internal bool CandidateExited { get; private set; }
     internal int? CandidateId => candidateId;
     internal DateTime CandidateCreated => candidateCreated;
+    internal int CandidateCount => observed.Count;
+    // Only a completely observed, non-overlapping sequence can support restart tracking.
+    internal bool HasProvenSequentialCandidates()
+    {
+        if (Uncertain || observed.Count == 0 || observed.Count != exited.Count) return false;
+        try
+        {
+            var intervals = new List<(DateTime start, DateTime end)>();
+            foreach (var entry in observed)
+            {
+                var handle = entry.Value.SafeHandle;
+                if (handle.IsClosed || handle.IsInvalid || GetProcessId(handle) != (uint)entry.Key.Item1 || !entry.Value.HasExited) return false;
+                if (!GetProcessTimes(handle, out long start, out long end, out _, out _)) return false;
+                var created = DateTime.FromFileTimeUtc(start);
+                if (created != entry.Key.Item2 || end == 0) return false;
+                intervals.Add((created, DateTime.FromFileTimeUtc(end)));
+            }
+            intervals.Sort((a, b) => a.start.CompareTo(b.start));
+            for (int i = 1; i < intervals.Count; i++) if (intervals[i].start < intervals[i - 1].end) return false;
+            return true;
+        }
+        catch (Exception e) when (e is Win32Exception or InvalidOperationException or ArgumentException) { return false; }
+    }
     internal void RecordIdentity(int pid, DateTime created)
     {
         if (!candidateId.HasValue) { candidateId = pid; candidateCreated = created; }
