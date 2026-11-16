@@ -16,6 +16,7 @@ class Program
     static TaskSpec Spec(string name, string args) => new() { Name=name, Program=cmd, Arguments="/d /c " + args, WorkingDirectory=Environment.SystemDirectory, TrustCompletion=true };
     static async Task Tests(bool skipControlled=false)
     {
+        await StartupErrorTests();
         await NotificationTests();
         await JobEventTests();
         await MaaResumeTests();
@@ -112,6 +113,37 @@ class Program
         string gapDir=Path.Combine(root,"job-gap-engine");Directory.CreateDirectory(gapDir);string gapLog=Path.Combine(gapDir,"gui.log");await File.WriteAllTextAsync(gapLog,"old\n");var gapStore=new Store(gapDir);gapStore.Tasks.Add(new TaskSpec{Name="maa",Program=Environment.ProcessPath!,Arguments="fixture-maa-success \""+gapLog+"\"",WorkingDirectory=AppContext.BaseDirectory,Completion="MAA日志",LogPath=gapLog,MaaExclusiveLog=true,TrustCompletion=true});gapStore.Tasks.Add(Spec("after-gap","echo wrong"));var gapEngine=new RunnerEngine(gapStore,()=>{}){MaaVersionSupported=_=>true,JobEventsTestHook=events=>events.MarkUncertain("测试：通知缺失")};var gapRun=gapEngine.Start();for(int i=0;i<180 && !gapEngine.Waiting;i++)await Task.Delay(30);bool blocked=gapEngine.Waiting && gapStore.History.Single().Events.Any(x=>x.Contains("测试：通知缺失")) && !gapStore.History.Single().Events.Any(x=>x.Contains("已启动 after-gap"));gapEngine.Stop();await gapRun;Check(blocked,"missing job evidence blocks MAA continuation");
         using var outsider=Process.Start(new ProcessStartInfo(Environment.ProcessPath!,"fixture-identity-held"){UseShellExecute=false,RedirectStandardInput=true,RedirectStandardOutput=true})!;await outsider.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10));var task=new TaskSpec{Program=Environment.ProcessPath!,Arguments="fixture-job-parent",WorkingDirectory=AppContext.BaseDirectory,Completion="MAA日志"};using var owned=OwnedProcess.Start(task);bool outsiderInGroup=owned.ContainsProcess(outsider.SafeHandle);var lines=new List<string>();var output=owned.Output.ReadToEndAsync();var errors=owned.Error.ReadToEndAsync();for(int i=0;i<500 && (!owned.Root.HasExited || owned.Accounting().Active>0);i++){owned.JobEvents?.Poll(owned,lines.Add);await Task.Delay(20);}await owned.Root.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));await Task.Delay(100);owned.JobEvents?.Poll(owned,lines.Add);await output;await errors;var events=owned.JobEvents;uint total=owned.Accounting().Total;string result=events?.Summary(total)??owned.JobEventsUnavailable;Check(events!=null && total>=7 && events.NewCount>=1 && events.ExitCount>=1 && lines.Any(x=>x.Contains("加入通知")) && lines.Any(x=>x.Contains("退出通知")) && result.Contains("累计进程") && ((events.NewCount==total && events.ExitCount==total) || events.Uncertain),"job notifications observe concurrent short-lived children without assuming delivery");bool outsiderSeen=lines.Any(x=>x.Contains("PID "+outsider.Id+"；"));await outsider.StandardInput.WriteLineAsync("release");await outsider.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));Check(!outsiderInGroup && !outsiderSeen,"job observer excludes group-outside process");
     }
+    static async Task StartupErrorTests()
+    {
+        string runner=Path.Combine(Environment.CurrentDirectory,"src","Runner","bin","Debug","net10.0-windows","Runner.exe");
+        Process Launch(string dir)
+        {
+            var info=new ProcessStartInfo(runner){UseShellExecute=false,RedirectStandardError=true,RedirectStandardOutput=true};
+            info.Environment["RUNNER_V3_DATA_DIR"]=dir;info.Environment["RUNNER_V3_SMOKE"]="1";info.Environment["RUNNER_V3_SMOKE_SECONDS"]="2";
+            return Process.Start(info) ?? throw new IOException("无法启动隔离预览程序");
+        }
+        async Task<(bool shown,int code,string error)> RunFailure(string dir)
+        {
+            using var proc=Launch(dir); var err=proc.StandardError.ReadToEndAsync();var output=proc.StandardOutput.ReadToEndAsync();bool shown=false;
+            for(int i=0;i<250 && !proc.HasExited;i++)
+            {
+                EnumWindows((hwnd,_)=>{GetWindowThreadProcessId(hwnd,out uint pid);if(pid!=(uint)proc.Id)return true;bool matched=false;
+                    EnumChildWindows(hwnd,(child,_)=>{var text=new StringBuilder(1024);GetWindowText(child,text,text.Capacity);if(text.ToString().Contains("数据读取失败，软件不会覆盖该文件"))matched=true;return true;},IntPtr.Zero);
+                    if(matched){shown=true;PostMessage(hwnd,0x0010,IntPtr.Zero,IntPtr.Zero);}return true;},IntPtr.Zero);
+                await Task.Delay(40);
+            }
+            if(!proc.HasExited){proc.Kill();await proc.WaitForExitAsync();return (shown,-999,"测试进程超时");}
+            await proc.WaitForExitAsync();await output;return (shown,proc.ExitCode,await err);
+        }
+        string invalid=Path.Combine(root,"startup-invalid");Directory.CreateDirectory(invalid);string invalidFile=Path.Combine(invalid,"data.json");byte[] bad=Encoding.UTF8.GetBytes("{\"Format\":\"foreign\"}");await File.WriteAllBytesAsync(invalidFile,bad);
+        var invalidRun=await RunFailure(invalid);
+        Check(invalidRun.shown && invalidRun.code==1 && !invalidRun.error.Contains("XamlParseException") && (await File.ReadAllBytesAsync(invalidFile)).SequenceEqual(bad),"startup invalid data shows error exits and preserves bytes");
+        string locked=Path.Combine(root,"startup-locked");Directory.CreateDirectory(locked);string lockedFile=Path.Combine(locked,"data.json");byte[] valid=Encoding.UTF8.GetBytes("{\"Format\":\"SequentialRunnerV3/1\"}");await File.WriteAllBytesAsync(lockedFile,valid);
+        (bool shown,int code,string error) lockedRun;
+        using(var held=new FileStream(lockedFile,FileMode.Open,FileAccess.ReadWrite,FileShare.None)) lockedRun=await RunFailure(locked);
+        Check(lockedRun.shown && lockedRun.code==1 && !lockedRun.error.Contains("XamlParseException") && (await File.ReadAllBytesAsync(lockedFile)).SequenceEqual(valid),"startup locked data shows error exits and preserves bytes");
+        using var retry=Launch(locked);await retry.WaitForExitAsync();Check(retry.ExitCode==0,"startup succeeds after lock released and single instance resources reclaimed");
+    }
     static async Task NotificationTests()
     {
         var legacy=NewStore("notice-legacy");
@@ -169,7 +201,7 @@ class Program
         var saved=NewStore("maa-start-config");saved.Tasks.Add(new TaskSpec{Name="maa",MaaStartByRunner=true});saved.Save();var reloaded=NewStore("maa-start-config");reloaded.Load();Check(reloaded.Tasks.Single().Copy().MaaStartByRunner,"MAA controlled start persists in task snapshot");
         async Task RunCase(string mode, bool expectedClick, bool already=false)
         {
-            string dir=Path.Combine(root,"maa-start-"+mode);Directory.CreateDirectory(dir);string log=Path.Combine(dir,"gui.log"), counter=Path.Combine(dir,"clicked.txt");await File.WriteAllTextAsync(log,"old\n");var st=new Store(dir);st.Tasks.Add(new TaskSpec{Name="maa",Program=Environment.ProcessPath!,Arguments="fixture-maa-start "+mode+" \""+log+"\" \""+counter+"\"",WorkingDirectory=AppContext.BaseDirectory,Completion="MAA日志",LogPath=log,MaaExclusiveLog=true,MaaStartByRunner=true,MaaCloseOnCompletion=true,TrustCompletion=true});var e=new RunnerEngine(st,()=>{}){MaaVersionSupported=_=>true,MaaStartTimeout=TimeSpan.FromSeconds(3)};var running=e.Start();for(int i=0;i<400 && !running.IsCompleted && !e.Waiting;i++)await Task.Delay(30);var events=st.History.Single().Events;int clickCount=File.Exists(counter)?File.ReadAllLines(counter).Length:0;bool correct=clickCount==(expectedClick?1:0) && (expectedClick?events.Any(x=>x.Contains("已观察到本轮 MAA 任务开始")):already?events.Any(x=>x.Contains("任务自行开始")):e.Waiting && events.Any(x=>x.Contains("启动状态不明") || x.Contains("等待超时")));if(!correct)Console.WriteLine("DETAIL start "+mode+" "+e.Status+" "+string.Join(" | ",events));if(!running.IsCompleted)e.Stop();await running;Check(correct,"MAA controlled start "+mode);
+            string dir=Path.Combine(root,"maa-start-"+mode);Directory.CreateDirectory(dir);string log=Path.Combine(dir,"gui.log"), counter=Path.Combine(dir,"clicked.txt");await File.WriteAllTextAsync(log,"old\n");var st=new Store(dir);st.Tasks.Add(new TaskSpec{Name="maa",Program=Environment.ProcessPath!,Arguments="fixture-maa-start "+mode+" \""+log+"\" \""+counter+"\"",WorkingDirectory=AppContext.BaseDirectory,Completion="MAA日志",LogPath=log,MaaExclusiveLog=true,MaaStartByRunner=true,MaaCloseOnCompletion=true,TrustCompletion=true});var e=new RunnerEngine(st,()=>{}){MaaVersionSupported=_=>true,MaaStartTimeout=TimeSpan.FromSeconds(mode=="single" ? 10 : 3)};var running=e.Start();for(int i=0;i<400 && !running.IsCompleted && !e.Waiting;i++)await Task.Delay(30);var events=st.History.Single().Events;int clickCount=File.Exists(counter)?File.ReadAllLines(counter).Length:0;bool correct=clickCount==(expectedClick?1:0) && (expectedClick?events.Any(x=>x.Contains("已观察到本轮 MAA 任务开始")):already?events.Any(x=>x.Contains("任务自行开始")):e.Waiting && events.Any(x=>x.Contains("启动状态不明") || x.Contains("等待超时")));if(!correct)Console.WriteLine("DETAIL start "+mode+" "+e.Status+" "+string.Join(" | ",events));if(!running.IsCompleted)e.Stop();await running;Check(correct,"MAA controlled start "+mode);
         }
         await RunCase("single",true);await RunCase("duplicate",false);await RunCase("disabled",false);await RunCase("missing",false);await RunCase("already",false,true);
         async Task GuardCase(string mode)
@@ -472,6 +504,9 @@ class Program
         public override void Write(byte[] buffer,int offset,int count) { base.Write(buffer,offset,Math.Min(count,128)); throw new IOException("受控临时写入失败"); }
     }
     delegate bool WindowCallback(IntPtr hwnd, IntPtr param);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool EnumWindows(WindowCallback callback, IntPtr param);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, WindowCallback callback, IntPtr param);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool EnumThreadWindows(uint threadId, WindowCallback callback, IntPtr param);
     [System.Runtime.InteropServices.DllImport("user32.dll", CharSet=System.Runtime.InteropServices.CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int length);
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
@@ -501,6 +536,7 @@ class Program
         if (args.Length > 0 && args[0] == "fixture-job-parent") { var children=Enumerable.Range(0,6).Select(_=>Process.Start(new ProcessStartInfo(Environment.ProcessPath!,"fixture-job-short"){UseShellExecute=false})!).ToArray();foreach(var child in children){child.WaitForExit();child.Dispose();}Thread.Sleep(400);return 0; }
         if (args.Length > 0 && args[0] == "fixture-job-short") { Thread.Sleep(40);return 0; }
         if (args.Length > 0 && args[0] == "probe-maa-start") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await MaaControlledStartTests(); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-startup-errors") { StartupErrorTests().GetAwaiter().GetResult(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-notifications") { NotificationTests().GetAwaiter().GetResult(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-resume") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await MaaResumeTests(); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length == 4 && args[0] == "fixture-maa-start")
@@ -510,7 +546,7 @@ class Program
             var app=new System.Windows.Application { ShutdownMode=System.Windows.ShutdownMode.OnMainWindowClose };var win=new System.Windows.Window { Title="V3 controlled start fixture",Width=420,Height=260,ShowInTaskbar=true };var panel=new System.Windows.Controls.StackPanel();win.Content=panel;
             void AddButton(bool enabled) { var b=new System.Windows.Controls.Button { Content="Link Start!",IsEnabled=enabled,Height=45 };b.Click+=(_,_)=>{File.AppendAllText(counter,"clicked\n");Append("开始任务: A\n任务已全部完成！\n");};panel.Children.Add(b); }
             if(mode=="single" || mode=="already")AddButton(true);else if(mode=="duplicate"){AddButton(true);AddButton(true);}else if(mode=="disabled")AddButton(false);
-            win.Loaded+=(_,_)=>{if(mode=="already")Append("开始任务: A\n任务已全部完成！\n");if(mode=="update"){Console.WriteLine("updating");Console.Out.Flush();}if(mode=="error")Append("任务出错: A\n");if(mode=="stopped")Append("已停止\n");var timer=new DispatcherTimer{Interval=TimeSpan.FromSeconds(5)};timer.Tick+=(_,_)=>{timer.Stop();win.Close();};timer.Start();};return app.Run(win);
+            win.Loaded+=(_,_)=>{if(mode=="already")Append("开始任务: A\n任务已全部完成！\n");if(mode=="update"){Console.WriteLine("updating");Console.Out.Flush();}if(mode=="error")Append("任务出错: A\n");if(mode=="stopped")Append("已停止\n");var timer=new DispatcherTimer{Interval=TimeSpan.FromSeconds(mode=="single" ? 15 : 5)};timer.Tick+=(_,_)=>{timer.Stop();win.Close();};timer.Start();};return app.Run(win);
         }
         if (args.Length == 2 && args[0].StartsWith("fixture-maa-", StringComparison.Ordinal))
         {

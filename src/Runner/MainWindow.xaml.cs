@@ -16,6 +16,7 @@ public partial class MainWindow : Window
     readonly Forms.NotifyIcon tray = null!;
     LocalNotifications? notifications;
     readonly Mutex instanceLock;
+    internal bool StartupAborted { get; private set; }
     Scheduler scheduler = null!;
     StartupCoordinator startup = null!;
     CompletionCoordinator completion = null!;
@@ -50,14 +51,18 @@ public partial class MainWindow : Window
             catch (WaitHandleCannotBeOpenedException) { }
             catch (UnauthorizedAccessException) { }
             if (!activated) System.Windows.MessageBox.Show("软件已启动，但无法联系已有窗口。请通过通知区域打开，或检查已有实例。");
-            instanceLock.Dispose(); System.Windows.Application.Current.Shutdown(); return;
+            instanceLock.Dispose(); StartupAborted = true; System.Windows.Application.Current.Shutdown(); return;
         }
         activation = new EventWaitHandle(false, EventResetMode.AutoReset, "Global\\SequentialRunnerV3-Activate-" + id);
         activationAck = new EventWaitHandle(false, EventResetMode.AutoReset, "Global\\SequentialRunnerV3-Ack-" + id);
         activationWait = ThreadPool.RegisterWaitForSingleObject(activation, (_, _) => Dispatcher.BeginInvoke(() => { ShowWindow(); activationAck?.Set(); }), null, Timeout.Infinite, false);
-        store = new Store(dir);
-        try { store.Load(); }
-        catch (Exception e) { System.Windows.MessageBox.Show("数据读取失败，软件不会覆盖该文件：" + e.Message); System.Windows.Application.Current.Shutdown(1); throw; }
+        try { store = new Store(dir); store.Load(); }
+        catch (Exception e)
+        {
+            activationWait?.Unregister(null); activation?.Dispose(); activationAck?.Dispose();
+            instanceLock.ReleaseMutex(); instanceLock.Dispose();
+            throw new StartupDataException(e);
+        }
         LocalNotificationsInput.IsChecked = store.LocalNotificationsEnabled;
         drafts = new(store.Tasks.Select(t => t.Copy()));
         TaskList.ItemsSource = drafts;
