@@ -39,6 +39,9 @@ public sealed class TaskSpec
     public string VisualMode { get; set; } = "无";
     public string VisualText { get; set; } = "";
     public string VisualTemplatePath { get; set; } = "";
+    public string VisualWindowRegionHash { get; set; } = "";
+    public string VisualScreenRegionHash { get; set; } = "";
+    public string VisualTemplateReferenceHash { get; set; } = "";
     public int VisualX { get; set; }
     public int VisualY { get; set; }
     public int VisualWidth { get; set; }

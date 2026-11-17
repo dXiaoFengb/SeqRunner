@@ -16,6 +16,7 @@ class Program
     static TaskSpec Spec(string name, string args) => new() { Name=name, Program=cmd, Arguments="/d /c " + args, WorkingDirectory=Environment.SystemDirectory, TrustCompletion=true };
     static async Task Tests(bool skipControlled=false)
     {
+        VisualEvidenceTests();
         await TaskTrialTests();
         await GenericStartTests();
         await VisualStartTests();
@@ -164,23 +165,105 @@ class Program
         var inMemory=await OcrHelperClient.RecognizeBytesAsync(await File.ReadAllBytesAsync(image),helper,TimeSpan.FromSeconds(30));Check(inMemory.Any(x=>x.Text.Contains("开始运行") && x.Points.Count==4),"OCR helper accepts in-memory image without screenshot file");
         bool missing=false;try {await OcrHelperClient.RecognizeAsync(image,Path.Combine(dir,"missing.exe"),TimeSpan.FromSeconds(3));}catch(FileNotFoundException){missing=true;}Check(missing,"OCR helper missing fails without fallback");
     }
-    static async Task VisualStartTests(bool quick=false)
+    static void VisualEvidenceTests()
     {
-        string dir=Path.Combine(root,"visual-start");Directory.CreateDirectory(dir);string template=Path.Combine(dir,"icon.png");
+        var area=new System.Drawing.Rectangle(0,0,200,100);
+        OcrHelperClient.Line Line(string text,double confidence,double x=10,double y=10) => new(text,confidence,new[]{(x,y),(x+100,y),(x+100,y+40),(x,y+40)});
+        var target=Line("开始运行",0.99);var rendered=Line("开始运行",0.86,12,11);
+        bool Agrees(OcrHelperClient.Line[] first,OcrHelperClient.Line[] second) => VisualStartController.AgreeOnText(first,second,"开始运行",area)!=null;
+        Check(Agrees([target],[rendered]),"dual OCR accepts independently recognized same target with rendering variation");
+        Check(!Agrees([target],[Line("取消",0.99)]),"dual OCR rejects different screen target");
+        Check(!Agrees([target],[rendered,rendered]),"dual OCR rejects duplicate screen text");
+        Check(!Agrees([target],[Line("开始运行",0.99,25,10)]),"dual OCR rejects target at different position");
+        Check(!Agrees([target],[Line("开始运行",0.79)]),"dual OCR rejects low confidence");
+        Check(!Agrees([target],[Line("开始运行",0.99,double.NaN)]),"dual OCR rejects invalid coordinates");
+        Check(VisualStartController.AgreeOnText([target],[rendered],"开始运行",new System.Drawing.Rectangle(20,20,120,60))==null,"dual OCR rejects text cut by configured region");
+    }
+    static void RenderedImageEvidenceTests(string scenePath,string templatePath)
+    {
+        byte[] scene=File.ReadAllBytes(scenePath),template=File.ReadAllBytes(templatePath);var region=new System.Drawing.Rectangle(0,0,600,300);
+        var reference=new TaskSpec { VisualWindowRegionHash=VisualStartController.RegionHash(scene,region),VisualScreenRegionHash=VisualStartController.RegionHash(scene,region),VisualTemplateReferenceHash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(template)) };
+        Check(VisualStartController.ImageReferencesMatch(reference,scene,scene,template,region),"image reference accepts unchanged window screen and template");
+        var changedTemplate=(byte[])template.Clone();changedTemplate[^1]^=1;
+        Check(!VisualStartController.ImageReferencesMatch(reference,scene,scene,changedTemplate,region),"image reference rejects any template byte change");
+        using(var subtle=new System.Drawing.Bitmap(templatePath))using(var output=new MemoryStream())
+        { var pixel=subtle.GetPixel(8,12);subtle.SetPixel(8,12,System.Drawing.Color.FromArgb(pixel.A,Math.Min(255,pixel.R+1),pixel.G,pixel.B));subtle.Save(output,System.Drawing.Imaging.ImageFormat.Png);Check(!VisualStartController.ImageReferencesMatch(reference,scene,scene,output.ToArray(),region),"image reference rejects valid subtly altered template"); }
+        using(var imageCopy=new System.Drawing.Bitmap(scenePath))using(var output=new MemoryStream())
+        { imageCopy.SetPixel(10,10,System.Drawing.Color.Magenta);imageCopy.Save(output,System.Drawing.Imaging.ImageFormat.Png);Check(!VisualStartController.ImageReferencesMatch(reference,scene,output.ToArray(),template,region),"image reference rejects changed screen region");Check(!VisualStartController.ImageReferencesMatch(reference,output.ToArray(),scene,template,region),"image reference rejects changed window region"); }
+        Check(!VisualStartController.ImageReferencesMatch(new TaskSpec(),scene,scene,template,region),"legacy image task without reference remains blocked");
+        var legacy=new TaskSpec { StartWithSelectedButton=true,VisualMode="图片",VisualTemplatePath=templatePath };
+        Check(TaskConfigurationReview.Check(legacy).Errors.Any(x=>x.Contains("画面指纹")),"legacy image task requires selecting its region again");
+        var point=VisualStartController.FindRenderedImage(scene,template,region);
+        Check(point!=null,"OpenCV identifies rendered fixture template");
+        Check(VisualStartController.FindRenderedImage(scene,template,new System.Drawing.Rectangle(300,150,100,100))==null,"OpenCV rejects candidate outside selected region");
+        using var image=new System.Drawing.Bitmap(templatePath);int rejected=0;
+        using(var blank=new System.Drawing.Bitmap(image.Width,image.Height))using(var graphics=System.Drawing.Graphics.FromImage(blank))using(var bytes=new MemoryStream())
+        { graphics.Clear(System.Drawing.Color.White);blank.Save(bytes,System.Drawing.Imaging.ImageFormat.Png);Check(VisualStartController.FindRenderedImage(scene,bytes.ToArray(),region)==null,"OpenCV rejects uniform templates"); }
+        foreach(var (x,y) in new[]{(3,3),(4,4),(8,12),(0,0),(20,5),(35,13),(22,18),(25,22),(39,31)})
+        {
+            using var variant=new System.Drawing.Bitmap(image);variant.SetPixel(x,y,System.Drawing.Color.Yellow);using var bytes=new MemoryStream();variant.Save(bytes,System.Drawing.Imaging.ImageFormat.Png);
+            if(VisualStartController.FindRenderedImage(scene,bytes.ToArray(),region)==null)rejected++;
+        }
+        Check(rejected==9,"OpenCV rejects nine altered fixture templates");
+        if(point!=null)
+        {
+            using var bitmap=new System.Drawing.Bitmap(scenePath);var source=new System.Drawing.Rectangle(point.Value.X-image.Width/2,point.Value.Y-image.Height/2,image.Width,image.Height);
+            using(var crop=bitmap.Clone(source,bitmap.PixelFormat))using(var graphics=System.Drawing.Graphics.FromImage(bitmap))graphics.DrawImageUnscaled(crop,150,100);
+            using var bytes=new MemoryStream();bitmap.Save(bytes,System.Drawing.Imaging.ImageFormat.Png);
+            Check(VisualStartController.FindRenderedImage(bytes.ToArray(),template,region)==null,"OpenCV rejects two rendered candidates");
+        }
+        else Check(false,"OpenCV rejects two rendered candidates");
+        using(var stripes=new System.Drawing.Bitmap(80,40))using(var pattern=new System.Drawing.Bitmap(20,20))
+        {
+            using(var g=System.Drawing.Graphics.FromImage(stripes)){g.Clear(System.Drawing.Color.White);for(int x=0;x<80;x+=4)g.FillRectangle(System.Drawing.Brushes.Black,x,0,2,40);}
+            using(var g=System.Drawing.Graphics.FromImage(pattern)){g.Clear(System.Drawing.Color.White);for(int x=0;x<20;x+=4)g.FillRectangle(System.Drawing.Brushes.Black,x,0,2,20);}
+            using var s=new MemoryStream();using var p=new MemoryStream();stripes.Save(s,System.Drawing.Imaging.ImageFormat.Png);pattern.Save(p,System.Drawing.Imaging.ImageFormat.Png);
+            Check(VisualStartController.FindRenderedImage(s.ToArray(),p.ToArray(),new System.Drawing.Rectangle(0,0,80,40))==null,"OpenCV rejects nearby periodic candidates");
+        }
+    }
+    static async Task VisualStartTests(bool quick=false,bool actualScreen=false,bool iconOnly=false)
+    {
+        string dir=Path.Combine(root,"visual-start");Directory.CreateDirectory(dir);string template=Path.Combine(dir,"icon.png");VisualStartController.DiagnosticTestHook=s=>Console.WriteLine("DETAIL visual check "+s);
         var drawing=new System.Windows.Media.DrawingVisual();using(var dc=drawing.RenderOpen()){dc.DrawRectangle(System.Windows.Media.Brushes.White,null,new System.Windows.Rect(0,0,40,32));dc.DrawRectangle(System.Windows.Media.Brushes.DarkBlue,null,new System.Windows.Rect(3,3,12,24));dc.DrawRectangle(System.Windows.Media.Brushes.DarkRed,null,new System.Windows.Rect(20,5,16,9));dc.DrawRectangle(System.Windows.Media.Brushes.DarkGreen,null,new System.Windows.Rect(22,18,12,10));}var bmp=new System.Windows.Media.Imaging.RenderTargetBitmap(40,32,96,96,System.Windows.Media.PixelFormats.Pbgra32);bmp.Render(drawing);var encoder=new System.Windows.Media.Imaging.PngBitmapEncoder();encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bmp));using(var stream=File.Create(template))encoder.Save(stream);
         using(var image=new System.Drawing.Bitmap(template))using(var surface=new System.Drawing.Bitmap(100,80))
         {
             using(var graphics=System.Drawing.Graphics.FromImage(surface)){graphics.Clear(System.Drawing.Color.White);graphics.DrawImageUnscaled(image,10,10);}
             byte[] Encode(){using var stream=new MemoryStream();surface.Save(stream,System.Drawing.Imaging.ImageFormat.Png);return stream.ToArray();}
             var expected=new System.Drawing.Rectangle(0,0,100,80);byte[] pattern=await File.ReadAllBytesAsync(template);
-            bool exact=VisualStartController.FindImage(Encode(),pattern,expected)!=null;surface.SetPixel(13,13,System.Drawing.Color.Magenta);
-            Check(exact && VisualStartController.FindImage(Encode(),pattern,expected)==null,"visual template rejects similar nonidentical image");
+            bool exact=VisualStartController.FindRenderedImage(Encode(),pattern,expected)!=null;surface.SetPixel(13,13,System.Drawing.Color.Magenta);
+            Check(exact && VisualStartController.FindRenderedImage(Encode(),pattern,expected)==null,"visual template rejects similar nonidentical image");
+            using(var graphics=System.Drawing.Graphics.FromImage(surface)){graphics.Clear(System.Drawing.Color.White);graphics.DrawImageUnscaled(image,10,10);}
+            var edge=surface.GetPixel(13,13);surface.SetPixel(13,13,System.Drawing.Color.FromArgb(Math.Min(255,edge.R+8),edge.G,edge.B));
+            bool rendering=VisualStartController.FindRenderedImage(Encode(),pattern,expected)!=null;
+            surface.SetPixel(16,16,System.Drawing.Color.Magenta);
+            Check(rendering && VisualStartController.FindRenderedImage(Encode(),pattern,expected)==null,"visual screen tolerates small rendering difference but rejects interior alteration");
         }
         async Task Run(string mode,bool shouldAdvance,bool wrongSize=false)
         {
-            string local=Path.Combine(dir,mode+(wrongSize?"-size":""));Directory.CreateDirectory(local);string log=Path.Combine(local,"run.log"),counter=Path.Combine(local,"clicks.txt");await File.WriteAllTextAsync(log,"old\n");var store=new Store(local);store.Tasks.Add(new TaskSpec{Name="visual",Program=Environment.ProcessPath!,Arguments="fixture-visual-start "+mode+" \""+log+"\" \""+counter+"\" \""+template+"\"",WorkingDirectory=AppContext.BaseDirectory,Completion="日志信号",LogSource="日志文件",LogPath=log,SuccessText="DONE",TrustCompletion=true,CloseAfterLogSignal=true,CloseLogExclusiveConfirmed=true,StartWithSelectedButton=true,StartManualLaunchConfirmed=true,VisualMode=mode.StartsWith("text")?"文字":"图片",VisualText="开始运行",VisualTemplatePath=template,VisualX=0,VisualY=0,VisualWidth=600,VisualHeight=300,VisualWindowWidth=wrongSize?601:600,VisualWindowHeight=300});store.Tasks.Add(Spec("visual-next","echo next"));VisualStartController.FrameTestHook=frame=>File.WriteAllBytes(Path.Combine(local,"frame.png"),frame);int captures=0;VisualStartController.ScreenTestHook=(window,area)=>{var copy=window.Clone(area,System.Drawing.Imaging.PixelFormat.Format32bppArgb);if(mode=="text-changed" && ++captures>1)copy.SetPixel(1,1,System.Drawing.Color.Magenta);return copy;};var engine=new RunnerEngine(store,()=>{});var run=engine.Start();for(int i=0;i<1200 && !run.IsCompleted && !engine.Waiting;i++)await Task.Delay(25);var events=store.History.Single().Events;int count=File.Exists(counter)?File.ReadAllLines(counter).Length:0;bool ok=shouldAdvance?count==1 && run.IsCompleted && events.Any(x=>x.Contains("已启动 visual-next")):count==0 && engine.Waiting && !events.Any(x=>x.Contains("已启动 visual-next"));if(!ok)Console.WriteLine("DETAIL visual "+mode+" "+engine.Status+" "+string.Join(" | ",events));if(!run.IsCompleted)engine.Stop();await run;VisualStartController.FrameTestHook=null;VisualStartController.ScreenTestHook=null;Check(ok,"visual start simulated "+mode+(wrongSize?" wrong-size":""));
+            string local=Path.Combine(dir,mode+(wrongSize?"-size":""));Directory.CreateDirectory(local);string log=Path.Combine(local,"run.log"),counter=Path.Combine(local,"clicks.txt");await File.WriteAllTextAsync(log,"old\n");
+            var task=new TaskSpec{Name="visual",Program=Environment.ProcessPath!,Arguments="fixture-visual-start "+mode+" \""+log+"\" \""+counter+"\" \""+template+"\"",WorkingDirectory=AppContext.BaseDirectory,Completion="日志信号",LogSource="日志文件",LogPath=log,SuccessText="DONE",TrustCompletion=true,CloseAfterLogSignal=true,CloseLogExclusiveConfirmed=true,StartWithSelectedButton=true,StartManualLaunchConfirmed=true,VisualMode=mode.StartsWith("text")?"文字":"图片",VisualText="开始运行",VisualTemplatePath=template,VisualX=0,VisualY=0,VisualWidth=600,VisualHeight=300,VisualWindowWidth=wrongSize?601:600,VisualWindowHeight=300};
+            int captures=0;VisualStartController.ScreenTestHook=actualScreen?null:(window,area)=>{var copy=window.Clone(area,System.Drawing.Imaging.PixelFormat.Format32bppArgb);if(mode=="text-changed" && ++captures>1)copy.SetPixel(1,1,System.Drawing.Color.Magenta);return copy;};
+            if(task.VisualMode=="图片")
+            {
+                using var setup=Process.Start(new ProcessStartInfo(task.Program,task.Arguments){UseShellExecute=false,WorkingDirectory=task.WorkingDirectory}) ?? throw new IOException("无法启动配置夹具");
+                VisualStartController.Selection? selection=null;
+                for(int n=0;n<80 && !setup.HasExited && selection==null;n++)
+                {
+                    setup.Refresh();if(setup.MainWindowHandle!=IntPtr.Zero)
+                    {
+                        var rectangle=System.Windows.Automation.AutomationElement.FromHandle(setup.MainWindowHandle).Current.BoundingRectangle;
+                        selection=VisualStartController.Select(new System.Drawing.Point((int)rectangle.Left+7,(int)rectangle.Top+7),new System.Drawing.Point((int)rectangle.Right-7,(int)rectangle.Bottom-7),task.Program,template);
+                    }
+                    if(selection==null)await Task.Delay(100);
+                }
+                if(!setup.HasExited)setup.CloseMainWindow();await setup.WaitForExitAsync();
+                if(selection==null){VisualStartController.ScreenTestHook=null;Check(false,"visual start "+(actualScreen?"real-screen ":"simulated ")+mode+" setup");return;}
+                task.VisualX=selection.X;task.VisualY=selection.Y;task.VisualWidth=selection.Width;task.VisualHeight=selection.Height;task.VisualWindowWidth=selection.WindowWidth;task.VisualWindowHeight=selection.WindowHeight;task.VisualWindowRegionHash=selection.WindowHash;task.VisualScreenRegionHash=selection.ScreenHash;task.VisualTemplateReferenceHash=selection.TemplateHash;
+            }
+            var store=new Store(local);store.Tasks.Add(task);store.Tasks.Add(Spec("visual-next","echo next"));VisualStartController.FrameTestHook=iconOnly?frame=>File.WriteAllBytes(Path.Combine(local,"frame.png"),frame):null;
+            var engine=new RunnerEngine(store,()=>{});var run=engine.Start();for(int i=0;i<1200 && !run.IsCompleted && !engine.Waiting;i++)await Task.Delay(25);var events=store.History.Single().Events;int count=File.Exists(counter)?File.ReadAllLines(counter).Length:0;bool ok=shouldAdvance?count==1 && run.IsCompleted && events.Any(x=>x.Contains("已启动 visual-next")):count==0 && engine.Waiting && !events.Any(x=>x.Contains("已启动 visual-next"));if(!ok)Console.WriteLine("DETAIL visual "+mode+" "+engine.Status+" "+string.Join(" | ",events));if(!run.IsCompleted)engine.Stop();await run;VisualStartController.FrameTestHook=null;VisualStartController.ScreenTestHook=null;Check(ok,"visual start "+(actualScreen?"real-screen ":"simulated ")+mode+(wrongSize?" wrong-size":""));
         }
-        await Run("text",true);if(quick)return;await Run("text-changed",false);await Run("text-duplicate",false);await Run("icon",true);await Run("icon-duplicate",false);await Run("text",false,true);
+        if(iconOnly){await Run("icon",true);return;}await Run("text",true);if(actualScreen){await Run("icon",true);return;}if(quick)return;await Run("text-changed",false);await Run("text-duplicate",false);await Run("icon",true);await Run("icon-duplicate",false);await Run("text",false,true);
     }
     static async Task StartupErrorTests()
     {
@@ -609,8 +692,12 @@ class Program
         if (args.Length > 0 && args[0] == "probe-task-trial") { TaskTrialTests().GetAwaiter().GetResult(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-generic-start") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await GenericStartTests(); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-ocr-helper") { OcrHelperTests().GetAwaiter().GetResult(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-visual-evidence") { VisualEvidenceTests(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length == 3 && args[0] == "probe-rendered-image") { RenderedImageEvidenceTests(args[1],args[2]); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-visual-start") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await VisualStartTests(); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-visual-single") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await VisualStartTests(true); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-visual-icon") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await VisualStartTests(iconOnly:true); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-visual-real-screen") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await VisualStartTests(actualScreen:true); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length == 5 && args[0] == "fixture-visual-start")
         {
             string mode=args[1],log=args[2],counter=args[3],template=args[4];var app=new System.Windows.Application {ShutdownMode=System.Windows.ShutdownMode.OnMainWindowClose};var win=new System.Windows.Window {Title="V3 visual fixture",Width=600,Height=300,WindowStyle=System.Windows.WindowStyle.None,WindowStartupLocation=System.Windows.WindowStartupLocation.CenterScreen,Topmost=true,ShowInTaskbar=true};var panel=new System.Windows.Controls.StackPanel {Background=System.Windows.Media.Brushes.White};win.Content=panel;

@@ -171,13 +171,15 @@ public partial class MainWindow : Window
     {
         var target=editor;
         if(target==null || !File.Exists(target.Program)){System.Windows.MessageBox.Show("请先选择程序路径并自行打开该程序。");return;}
-        System.Windows.MessageBox.Show("确定后，请先点击目标窗口的安全空白处使其位于前台，并在 5 秒内将鼠标移至按钮区域左上角；随后 5 秒内移至右下角。软件只读取位置，不会点击。");
-        await Task.Delay(5000);var first=Forms.Cursor.Position;await Task.Delay(5000);var last=Forms.Cursor.Position;
+        if(target.VisualMode=="图片" && !File.Exists(target.VisualTemplatePath)){System.Windows.MessageBox.Show("请先选择图片模板，再选择目标区域。");return;}
+        System.Windows.MessageBox.Show("确定后，请先点击目标窗口的安全空白处使其位于前台，并在 5 秒内将鼠标移至按钮区域左上角；随后 5 秒内移至右下角；最后 3 秒移开鼠标。软件只读取画面指纹，不会点击或保存截图。");
+        await Task.Delay(5000);var first=Forms.Cursor.Position;await Task.Delay(5000);var last=Forms.Cursor.Position;await Task.Delay(3000);
         if(!ReferenceEquals(target,editor))return;
-        var selection=VisualStartController.Select(first,last,target.Program);
+        var selection=VisualStartController.Select(first,last,target.Program,target.VisualMode=="图片"?target.VisualTemplatePath:null);
         if(selection==null){System.Windows.MessageBox.Show("无法确认区域和程序；请检查窗口是否位于前台、未遮挡且缩放为 100%。");return;}
         target.VisualX=selection.X;target.VisualY=selection.Y;target.VisualWidth=selection.Width;target.VisualHeight=selection.Height;target.VisualWindowWidth=selection.WindowWidth;target.VisualWindowHeight=selection.WindowHeight;
-        Editor.DataContext=null;Editor.DataContext=target;System.Windows.MessageBox.Show($"已选择区域：窗口内 ({selection.X}, {selection.Y})，宽 {selection.Width}、高 {selection.Height}；窗口大小 {selection.WindowWidth} × {selection.WindowHeight}。请保存并先试运行。");
+        target.VisualWindowRegionHash=selection.WindowHash;target.VisualScreenRegionHash=selection.ScreenHash;target.VisualTemplateReferenceHash=selection.TemplateHash;
+        Editor.DataContext=null;Editor.DataContext=target;System.Windows.MessageBox.Show($"已选择区域：窗口内 ({selection.X}, {selection.Y})，宽 {selection.Width}、高 {selection.Height}；窗口大小 {selection.WindowWidth} × {selection.WindowHeight}。已记录画面指纹，请保存并先试运行。");
     }
     void ShowWindow() { Show(); WindowState = WindowState.Normal; Activate(); }
     void OnClosing(object? sender, CancelEventArgs e) { if (!exiting) { e.Cancel = true; Hide(); } }

@@ -28,6 +28,7 @@ internal static class TaskConfigurationReview
         if (task.StartWithSelectedButton && task.VisualMode != "无" && (task.VisualWidth <= 0 || task.VisualHeight <= 0 || (long)task.VisualWidth * task.VisualHeight > 262144 || task.VisualX < 0 || task.VisualY < 0 || task.VisualWindowWidth <= 0 || task.VisualWindowHeight <= 0 || (long)task.VisualX + task.VisualWidth > task.VisualWindowWidth || (long)task.VisualY + task.VisualHeight > task.VisualWindowHeight)) errors.Add("请先选择有效的窗口目标区域。");
         if (task.StartWithSelectedButton && task.VisualMode == "文字" && string.IsNullOrWhiteSpace(task.VisualText)) errors.Add("请填写按钮文字。");
         if (task.StartWithSelectedButton && task.VisualMode == "图片" && !File.Exists(task.VisualTemplatePath)) errors.Add("图片模板不存在。");
+        if (task.StartWithSelectedButton && task.VisualMode == "图片" && (string.IsNullOrEmpty(task.VisualWindowRegionHash) || string.IsNullOrEmpty(task.VisualScreenRegionHash) || string.IsNullOrEmpty(task.VisualTemplateReferenceHash))) errors.Add("图片任务缺少目标画面指纹，请选择模板后重新选择区域。");
         if (task.StartWithSelectedButton && task.VisualMode != "无" && task.Completion != "人工确认" && (task.Completion != "日志信号" || task.LogSource != "日志文件" || task.SharedLog || !task.CloseLogExclusiveConfirmed)) errors.Add("视觉启动需要人工确认，或使用明确确认不共享的日志文件作为完成依据。");
         if (task.StartWithSelectedButton && !task.StartManualLaunchConfirmed) errors.Add("请确认程序打开后不会自行开始任务。");
         if (task.StartWithSelectedButton && task.MaaStartByRunner) errors.Add("不能同时启用通用启动按钮和 MAA 专用启动。");
