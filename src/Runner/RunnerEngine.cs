@@ -10,7 +10,7 @@ public sealed class RunnerEngine
 {
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] static extern bool IsWindowVisible(IntPtr window);
-    internal Func<OwnedProcess, bool> MaaRequestClose { get; set; } = owned =>
+    internal Func<OwnedProcess, bool> RequestOwnedWindowClose { get; set; } = owned =>
     {
         var root = owned.Root;
         root.Refresh();
@@ -190,6 +190,12 @@ public sealed class RunnerEngine
         ManualConfirmed = false;
         manualMode = task.Completion == "人工确认";
         bool maaMode = task.Completion == "MAA日志";
+        if (task.StartWithSelectedButton && (maaMode || task.MaaStartByRunner || !task.StartManualLaunchConfirmed || (string.IsNullOrWhiteSpace(task.StartButtonName) && string.IsNullOrWhiteSpace(task.StartButtonId) && task.VisualMode == "无"))) return "结果不明：通用启动按钮或手动启动声明无效";
+        if (task.StartWithSelectedButton && task.VisualMode is not ("无" or "文字" or "图片")) return "结果不明：视觉识别方式无效";
+        if (task.StartWithSelectedButton && task.VisualMode != "无" && (task.VisualWidth <= 0 || task.VisualHeight <= 0 || (long)task.VisualWidth * task.VisualHeight > 262144 || task.VisualX < 0 || task.VisualY < 0 || task.VisualWindowWidth <= 0 || task.VisualWindowHeight <= 0 || (long)task.VisualX + task.VisualWidth > task.VisualWindowWidth || (long)task.VisualY + task.VisualHeight > task.VisualWindowHeight || (task.VisualMode == "文字" && string.IsNullOrWhiteSpace(task.VisualText)) || (task.VisualMode == "图片" && !File.Exists(task.VisualTemplatePath)))) return "结果不明：视觉区域、文字或图片模板无效";
+        if (task.StartWithSelectedButton && task.VisualMode != "无" && task.Completion != "人工确认" && (task.Completion != "日志信号" || task.LogSource != "日志文件" || task.SharedLog || !task.CloseLogExclusiveConfirmed)) return "结果不明：视觉启动需要人工确认或不共享的日志文件";
+        if (task.CloseAfterManualConfirmation && !manualMode) return "结果不明：人工确认后请求关闭需要选择人工确认";
+        if (task.CloseAfterLogSignal && (task.Completion != "日志信号" || task.LogSource != "日志文件" || task.SharedLog || !task.CloseLogExclusiveConfirmed || !task.TrustCompletion)) return "结果不明：日志关闭需要确认日志不共享及开启自动下一项";
         if (task.MaaStartByRunner && !maaMode) return "结果不明：由 V3 启动 MAA 任务需要选择 MAA日志";
         if (!File.Exists(task.Program)) { Event("程序不存在：" + task.Name); return maaMode ? "结果不明：MAA 程序不存在" : "失败"; }
         if (task.Completion == "日志信号" && string.IsNullOrWhiteSpace(task.SuccessText)) { Event("未配置成功信号"); return "失败"; }
@@ -223,6 +229,11 @@ public sealed class RunnerEngine
             var maaEvidence = new MaaLogEvidence(text => { if (maaMode && !storageFailed && !StopRequested) Event(text); }); int maaCandidateCount = 0; bool maaBoundaryPending = false;
             bool maaStartFinished = !task.MaaStartByRunner, maaStartFailed = false, maaStartRequested = false; long maaStartAt = clock.GetTimestamp();
             Task<MaaStartController.Probe>? maaProbe = null; Task<bool>? maaInvoke = null;
+            bool genericStartFinished = !task.StartWithSelectedButton, genericStartFailed = false, genericStartRequested = false; long genericStartAt = clock.GetTimestamp();
+            Task<GenericStartController.Probe>? genericProbe = null; Task<bool>? genericInvoke = null;
+            Task<VisualStartController.Probe>? visualProbe = null;
+            bool MayGenericInvoke() { lock (decisionGate) return !Volatile.Read(ref genericStartFinished) && !StopRequested && !storageFailed && !updateSignal && !timedOut && !found && !ManualConfirmed && !process.HasExited && clock.GetElapsedTime(genericStartAt) < TimeSpan.FromSeconds(30); }
+            bool DispatchVisual(Func<bool> invoke) { lock (decisionGate) { if (!MayGenericInvoke() || (task.Completion == "日志信号" && (file == null || file.Position != file.Length))) return false; return invoke(); } }
             void ApplyMaaBoundary()
             {
                 lock (decisionGate)
@@ -273,6 +284,8 @@ public sealed class RunnerEngine
             DateTimeOffset? stopAt = null;
             bool reportedChildren = false, reportedUpdateTracking = false, reportedCandidate = false, reportedCandidateExit = false, reportedAmbiguous = false, reportedIdentityError = false; uint maxGroupTotal = 0;
             var observedMembers = new HashSet<(int, DateTime)>(); bool memberObservationFailed = false, maaCloseAttempted = false, maaCloseWarned = false, maaCloseFailed = false; long? maaCloseEligible = null, maaCloseSent = null;
+            bool manualCloseAttempted = false, manualCloseFailed = false, manualCloseWarned = false; long? manualCloseSent = null;
+            long? logCloseEligible = null;
             void ObserveJobEvents()
             {
                 if (owned.JobEvents == null) return;
@@ -346,7 +359,7 @@ public sealed class RunnerEngine
                         if (maaAnchor != null && !maaAnchor.IsUnchanged()) return await ObserveUnknownProcess(owned, "MAA 日志已有内容发生变化", () => { FlushOutput(); CheckTimeout(); });
                         ApplyMaaBoundary();
                         byte[] bytes = new byte[Math.Min(4096, (int)Math.Min(int.MaxValue, file.Length - file.Position))];
-                        if (bytes.Length > 0) { maaCloseEligible = null; int count = await file.ReadAsync(bytes); maaAnchor?.Capture(); char[] chars = new char[Encoding.UTF8.GetMaxCharCount(count)]; int charCount = decoder.GetChars(bytes, 0, count, chars, 0); string chunk = new(chars, 0, charCount); bool markerInChunk = false; fileEvidence.Feed(chunk, text => { if (maaMode && UpdateMarkers.Find(text, markers) != null) markerInChunk = true; CheckUpdate(text, "日志文件"); }); lock (decisionGate) { if (maaMode && !maaBoundaryPending && !markerInChunk && (!updateSignal || maaCandidateCount > 0)) maaEvidence.Feed(chunk); } tail += chunk; if (tail.Contains(task.SuccessText, StringComparison.Ordinal)) found = true; if (tail.Length > 8192) tail = tail[^8192..]; }
+                        if (bytes.Length > 0) { maaCloseEligible = null; logCloseEligible = null; int count = await file.ReadAsync(bytes); maaAnchor?.Capture(); char[] chars = new char[Encoding.UTF8.GetMaxCharCount(count)]; int charCount = decoder.GetChars(bytes, 0, count, chars, 0); string chunk = new(chars, 0, charCount); bool markerInChunk = false; fileEvidence.Feed(chunk, text => { if (maaMode && UpdateMarkers.Find(text, markers) != null) markerInChunk = true; CheckUpdate(text, "日志文件"); }); lock (decisionGate) { if (maaMode && !maaBoundaryPending && !markerInChunk && (!updateSignal || maaCandidateCount > 0)) maaEvidence.Feed(chunk); } tail += chunk; if (tail.Contains(task.SuccessText, StringComparison.Ordinal)) found = true; if (tail.Length > 8192) tail = tail[^8192..]; }
                     }
                     catch (IOException e) { return await ObserveUnknownProcess(owned, "读取日志失败：" + e.Message, () => { FlushOutput(); CheckTimeout(); }); }
                 }
@@ -403,6 +416,45 @@ public sealed class RunnerEngine
                         { maaStartFailed = true; Volatile.Write(ref maaStartFinished, true); Event("MAA 启动状态不明：" + probe.Status + "；请人工核实，仍等待程序退出"); }
                     }
                 }
+                if (task.StartWithSelectedButton && !genericStartFinished)
+                {
+                    if (StopRequested || storageFailed || updateSignal || timedOut || process.HasExited || (!genericStartRequested && (found || ManualConfirmed)) || clock.GetElapsedTime(genericStartAt) >= TimeSpan.FromSeconds(30))
+                    {
+                        genericStartFailed = true; Volatile.Write(ref genericStartFinished, true);
+                        if (!StopRequested && !storageFailed) Event("通用启动状态不明或已变化；不会重试，请人工核实");
+                    }
+                    else if (genericInvoke is { IsCompleted: true })
+                    {
+                        bool invoked = false; try { invoked = await genericInvoke; } catch (Exception e) when (e is InvalidOperationException or Win32Exception or UnauthorizedAccessException or System.Runtime.InteropServices.COMException) { }
+                        genericInvoke = null; Volatile.Write(ref genericStartFinished, true); genericStartFailed = !invoked;
+                        Event(invoked ? "已请求启动本轮程序；业务结果仍需独立判定" : "通用启动窗口或按钮无法确认；不会重试");
+                    }
+                    else if (!genericStartRequested && visualProbe is { IsCompleted: true })
+                    {
+                        VisualStartController.Probe probe;try {probe=await visualProbe;}catch(Exception e) when(e is IOException or InvalidOperationException or Win32Exception or UnauthorizedAccessException or System.Runtime.InteropServices.COMException){probe=new("无法核实视觉目标");}visualProbe=null;
+                        if(probe.Status=="就绪" && probe.Match!=null)
+                        {
+                            genericStartRequested=true;Event("准备请求视觉启动；若状态不明不会重试");
+                            if(!storageFailed && !StopRequested)genericInvoke=Task.Run(()=>VisualStartController.Invoke(owned,task,probe.Match,DispatchVisual));
+                            else {genericStartFailed=true;Volatile.Write(ref genericStartFinished,true);}
+                        }
+                        else if(probe.Status!="等待窗口"){genericStartFailed=true;Volatile.Write(ref genericStartFinished,true);Event("视觉启动状态不明："+probe.Status+"；请人工核实");}
+                    }
+                    else if (!genericStartRequested && genericProbe == null && visualProbe == null) genericProbe = Task.Run(() => GenericStartController.Inspect(owned, task.StartButtonName, task.StartButtonId));
+                    else if (!genericStartRequested && genericProbe is { IsCompleted: true })
+                    {
+                        GenericStartController.Probe probe; try { probe = await genericProbe; } catch (Exception e) when (e is InvalidOperationException or Win32Exception or UnauthorizedAccessException or System.Runtime.InteropServices.COMException) { probe = new("无法核实窗口或按钮"); }
+                        genericProbe = null;
+                        if (probe.Status == "就绪")
+                        {
+                            genericStartRequested = true; Event("准备请求启动本轮程序；若状态不明不会重试");
+                            if (!storageFailed && !StopRequested) genericInvoke = Task.Run(() => GenericStartController.Invoke(owned, probe, task.StartButtonName, task.StartButtonId, MayGenericInvoke));
+                            else { genericStartFailed = true; Volatile.Write(ref genericStartFinished, true); }
+                        }
+                        else if (probe.Status is "等待按钮" or "未选择按钮" && task.VisualMode != "无") { var cancellation=stopDelay?.Token ?? CancellationToken.None; visualProbe=Task.Run(()=>VisualStartController.InspectAsync(owned,task,cancellation)); }
+                        else if (probe.Status is not ("等待窗口" or "等待按钮")) { genericStartFailed = true; Volatile.Write(ref genericStartFinished, true); Event("通用启动状态不明：" + probe.Status + "；请人工核实"); }
+                    }
+                }
                 lock (decisionGate)
                 {
                     bool eligible = maaMode && task.MaaCloseOnCompletion && (!task.MaaStartByRunner || (maaStartFinished && !maaStartFailed)) && !maaCloseAttempted && !process.HasExited && !StopRequested && !storageFailed && !timedOut && !updateSignal && !maaBoundaryPending && maaEvidence.Started && maaEvidence.Succeeded && !maaEvidence.Failed && !maaEvidence.Stopped && !maaEvidence.Uncertain && file != null && file.Position == file.Length;
@@ -416,12 +468,33 @@ public sealed class RunnerEngine
                             Event("MAA 日志完成线索已稳定，准备请求关闭本轮主窗口；仍需最终判定");
                             if (!storageFailed && !StopRequested)
                             {
-                                try { if (MaaRequestClose(owned)) { maaCloseSent = clock.GetTimestamp(); Event("已请求正常关闭本轮 MAA；等待受管进程退出"); } else { maaCloseFailed = true; Event("无法确认或关闭本轮 MAA 窗口；请人工处理，仍等待退出"); } }
+                                try { if (RequestOwnedWindowClose(owned)) { maaCloseSent = clock.GetTimestamp(); Event("已请求正常关闭本轮 MAA；等待受管进程退出"); } else { maaCloseFailed = true; Event("无法确认或关闭本轮 MAA 窗口；请人工处理，仍等待退出"); } }
                                 catch (Exception e) when (e is InvalidOperationException or Win32Exception or UnauthorizedAccessException or IOException) { maaCloseFailed = true; Event("请求关闭本轮 MAA 失败；请人工处理，仍等待退出：" + e.GetType().Name); }
                             }
                         }
                     }
                     if (maaCloseSent is long sent && !maaCloseWarned && !process.HasExited && clock.GetElapsedTime(sent) >= TimeSpan.FromSeconds(10)) { maaCloseWarned = true; maaCloseFailed = true; Event("请求关闭 MAA 已等待 10 秒；请人工处理，仍等待受管进程退出"); if (!storageFailed) Notice("等待人工处理", LocalNotifications.Name(task.Name) + " 尚未退出，请查看运行状态。", true); }
+                }
+                lock (decisionGate)
+                {
+                    bool startConfirmed = !task.StartWithSelectedButton || (genericStartFinished && !genericStartFailed);
+                    bool logEligible = startConfirmed && task.CloseAfterLogSignal && found && file != null && file.Position == file.Length && !process.HasExited && !StopRequested && !storageFailed && !timedOut && !updateSignal;
+                    if (!logEligible) logCloseEligible = null;
+                    else logCloseEligible ??= clock.GetTimestamp();
+                    bool logReady = logCloseEligible is long logAt && clock.GetElapsedTime(logAt) >= TimeSpan.FromSeconds(2);
+                    if (startConfirmed && ((task.CloseAfterManualConfirmation && ManualConfirmed) || logReady) && !manualCloseAttempted && !process.HasExited && !StopRequested && !storageFailed && !timedOut && !updateSignal)
+                    {
+                        manualCloseAttempted = true;
+                        Event(logReady ? "日志完成线索已稳定；准备请求正常关闭本轮主窗口" : "已人工确认；准备请求正常关闭本轮主窗口");
+                        bool logStillValid = !logReady || (file != null && LogFileIdentity.IsSame(file, task.LogPath) && file.Position == file.Length);
+                        if (!logStillValid) { manualCloseFailed = true; Event("关闭前日志已变化或被替换；请人工核实"); }
+                        else if (!storageFailed && !StopRequested && !updateSignal)
+                        {
+                            try { if (RequestOwnedWindowClose(owned)) { manualCloseSent = clock.GetTimestamp(); Event("已请求正常关闭本轮程序；仍等待受管进程退出"); } else { manualCloseFailed = true; Event("无法确认或关闭本轮窗口；请人工处理，仍等待退出"); } }
+                            catch (Exception e) when (e is InvalidOperationException or Win32Exception or UnauthorizedAccessException or IOException) { manualCloseFailed = true; Event("请求关闭本轮窗口失败；请人工处理：" + e.GetType().Name); }
+                        }
+                    }
+                    if (manualCloseSent is long manualSent && !manualCloseWarned && !process.HasExited && clock.GetElapsedTime(manualSent) >= TimeSpan.FromSeconds(10)) { manualCloseWarned = true; manualCloseFailed = true; Event("请求关闭程序已等待 10 秒；请人工处理，仍等待受管进程退出"); }
                 }
                 if (StopRequested) { stopAt ??= DateTimeOffset.Now; if ((DateTimeOffset.Now - stopAt.Value).TotalSeconds >= 10) { Event("停止请求已等待 10 秒；程序仍在运行，请手动处理后等待退出"); stopAt = DateTimeOffset.Now.AddYears(10); } }
                 await Task.Delay(200);
@@ -446,6 +519,7 @@ public sealed class RunnerEngine
             }
             int code = process.ExitCode; active = null;
             if (StopRequested) return "已停止";
+            if (task.StartWithSelectedButton && (!genericStartFinished || genericStartFailed || genericInvoke != null)) { Volatile.Write(ref genericStartFinished, true); return "结果不明：通用启动未确认，请人工核实"; }
             if (maaMode)
             {
                 Volatile.Write(ref maaStartFinished, true);
@@ -471,6 +545,7 @@ public sealed class RunnerEngine
                 Event(task.Name + " 成功，退出码 0；依据：本次 MAA 日志任务开始与全部完成");
                 return storageFailed ? "结果不明：记录保存失败" : "成功";
             }
+            if (manualCloseFailed) return "结果不明：关闭请求未确认，请人工核实";
             bool evidence = task.Completion == "人工确认" ? ManualConfirmed : task.Completion == "日志信号" && found;
             if (code != 0 && evidence) { Event($"{task.Name} 退出码 {code}，与成功证据冲突"); return "证据冲突"; }
             if (updateSignal)

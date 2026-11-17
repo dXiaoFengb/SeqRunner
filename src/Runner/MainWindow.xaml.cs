@@ -131,6 +131,54 @@ public partial class MainWindow : Window
         var dialog = new Microsoft.Win32.OpenFileDialog { Title = "选择任务程序", Filter = "可执行程序 (*.exe)|*.exe|所有文件 (*.*)|*.*", CheckFileExists = true };
         if (dialog.ShowDialog(this) == true) ProgramInput.Text = dialog.FileName;
     }
+    async void SelectStartButton(object sender, RoutedEventArgs e)
+    {
+        var target = editor;
+        if (target == null || !File.Exists(target.Program)) { System.Windows.MessageBox.Show("请先选择程序路径，并自行打开该程序。"); return; }
+        System.Windows.MessageBox.Show("点确定后请在 5 秒内将鼠标移动到目标程序的启动按钮上。本操作只读取按钮信息，不会点击。");
+        await Task.Delay(5000);
+        if (!ReferenceEquals(target, editor)) return;
+        var position = Forms.Cursor.Position;
+        var selection = GenericStartController.Select(new System.Windows.Point(position.X, position.Y), target.Program);
+        if (selection == null) { System.Windows.MessageBox.Show("无法确认该按钮及其程序，请重试；未修改配置。"); return; }
+        target.StartButtonName = selection.Name; target.StartButtonId = selection.Id;
+        Editor.DataContext = null; Editor.DataContext = target;
+        System.Windows.MessageBox.Show("已读取按钮信息，请保存配置并先试运行。");
+    }
+    async void PreviewOcr(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog { Title = "选择需要识别的图片", Filter = "图片 (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp", CheckFileExists = true };
+        if (dialog.ShowDialog(this) != true) return;
+        string helper = OcrHelperClient.ResolveHelperPath();
+        OcrPreviewInput.IsEnabled = false;
+        try
+        {
+            var lines = await OcrHelperClient.RecognizeAsync(dialog.FileName, helper, TimeSpan.FromSeconds(30));
+            string message = lines.Count == 0 ? "未识别到文字。" : string.Join(Environment.NewLine, lines.Take(30).Select(x => $"{x.Text}　位置：{string.Join("、", x.Points.Select(p => $"({p.X:0},{p.Y:0})"))}"));
+            System.Windows.MessageBox.Show(message, "图片文字识别结果");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or TimeoutException or System.Text.Json.JsonException or System.ComponentModel.Win32Exception or InvalidOperationException or ArgumentException)
+        { System.Windows.MessageBox.Show("识别未完成：" + ex.Message, "图片文字识别"); }
+        finally { OcrPreviewInput.IsEnabled = true; }
+    }
+    void BrowseVisualTemplate(object sender, RoutedEventArgs e)
+    {
+        if (editor == null) return;
+        var dialog = new Microsoft.Win32.OpenFileDialog { Title="选择按钮模板图片", Filter="图片 (*.png;*.bmp)|*.png;*.bmp", CheckFileExists=true };
+        if(dialog.ShowDialog(this)==true) VisualTemplateInput.Text=dialog.FileName;
+    }
+    async void SelectVisualRegion(object sender, RoutedEventArgs e)
+    {
+        var target=editor;
+        if(target==null || !File.Exists(target.Program)){System.Windows.MessageBox.Show("请先选择程序路径并自行打开该程序。");return;}
+        System.Windows.MessageBox.Show("确定后，请先点击目标窗口的安全空白处使其位于前台，并在 5 秒内将鼠标移至按钮区域左上角；随后 5 秒内移至右下角。软件只读取位置，不会点击。");
+        await Task.Delay(5000);var first=Forms.Cursor.Position;await Task.Delay(5000);var last=Forms.Cursor.Position;
+        if(!ReferenceEquals(target,editor))return;
+        var selection=VisualStartController.Select(first,last,target.Program);
+        if(selection==null){System.Windows.MessageBox.Show("无法确认区域和程序；请检查窗口是否位于前台、未遮挡且缩放为 100%。");return;}
+        target.VisualX=selection.X;target.VisualY=selection.Y;target.VisualWidth=selection.Width;target.VisualHeight=selection.Height;target.VisualWindowWidth=selection.WindowWidth;target.VisualWindowHeight=selection.WindowHeight;
+        Editor.DataContext=null;Editor.DataContext=target;System.Windows.MessageBox.Show($"已选择区域：窗口内 ({selection.X}, {selection.Y})，宽 {selection.Width}、高 {selection.Height}；窗口大小 {selection.WindowWidth} × {selection.WindowHeight}。请保存并先试运行。");
+    }
     void ShowWindow() { Show(); WindowState = WindowState.Normal; Activate(); }
     void OnClosing(object? sender, CancelEventArgs e) { if (!exiting) { e.Cancel = true; Hide(); } }
     void PowerChanged(object sender, Microsoft.Win32.PowerModeChangedEventArgs e) { if (e.Mode == Microsoft.Win32.PowerModes.Suspend) Dispatcher.BeginInvoke(() => { if(completion.Pending) completion.Cancel("系统进入睡眠或休眠"); }); if (e.Mode == Microsoft.Win32.PowerModes.Resume) Dispatcher.BeginInvoke(() => { scheduler.MarkResumed(); scheduler.Tick(DateTimeOffset.UtcNow, TimeZoneInfo.Local); }); }
@@ -189,7 +237,7 @@ public partial class MainWindow : Window
         if (selected != null) { editor = selected.Copy(); Editor.DataContext = editor; }
         TaskList.Items.Refresh(); Status.Text = "配置已保存"; return true;
     }
-    void RequestExit(bool fromCompletion=false) { if (!fromCompletion && !completion.Cancel("用户退出软件")) return; if (engine.Running || startup.IsActive) { System.Windows.MessageBox.Show("队列仍在运行。请先停止并等待受管程序退出。"); ShowWindow(); return; } if (!ResolveChanges()) return; try { store.Save(); } catch (Exception e) { System.Windows.MessageBox.Show("保存失败，软件保持打开：" + e.Message); return; } exiting = true; scheduleTimer.Stop(); Microsoft.Win32.SystemEvents.PowerModeChanged -= PowerChanged; tray.Visible = false; tray.Dispose(); activationWait?.Unregister(null); activation?.Dispose(); activationAck?.Dispose(); instanceLock.ReleaseMutex(); instanceLock.Dispose(); Close(); System.Windows.Application.Current.Shutdown(); }
+    void RequestExit(bool fromCompletion=false) { if (!OcrPreviewInput.IsEnabled) { System.Windows.MessageBox.Show("图片识别正在进行，请等待结束后再退出。"); return; } if (!fromCompletion && !completion.Cancel("用户退出软件")) return; if (engine.Running || startup.IsActive) { System.Windows.MessageBox.Show("队列仍在运行。请先停止并等待受管程序退出。"); ShowWindow(); return; } if (!ResolveChanges()) return; try { store.Save(); } catch (Exception e) { System.Windows.MessageBox.Show("保存失败，软件保持打开：" + e.Message); return; } exiting = true; scheduleTimer.Stop(); Microsoft.Win32.SystemEvents.PowerModeChanged -= PowerChanged; tray.Visible = false; tray.Dispose(); activationWait?.Unregister(null); activation?.Dispose(); activationAck?.Dispose(); instanceLock.ReleaseMutex(); instanceLock.Dispose(); Close(); System.Windows.Application.Current.Shutdown(); }
     void Exit(object sender, RoutedEventArgs e) => RequestExit();
     void SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {

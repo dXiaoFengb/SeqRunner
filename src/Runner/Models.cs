@@ -29,6 +29,22 @@ public sealed class TaskSpec
     public bool MaaExclusiveLog { get; set; }
     public bool MaaCloseOnCompletion { get; set; }
     public bool MaaStartByRunner { get; set; }
+    public bool CloseAfterManualConfirmation { get; set; }
+    public bool CloseAfterLogSignal { get; set; }
+    public bool CloseLogExclusiveConfirmed { get; set; }
+    public bool StartWithSelectedButton { get; set; }
+    public bool StartManualLaunchConfirmed { get; set; }
+    public string StartButtonName { get; set; } = "";
+    public string StartButtonId { get; set; } = "";
+    public string VisualMode { get; set; } = "无";
+    public string VisualText { get; set; } = "";
+    public string VisualTemplatePath { get; set; } = "";
+    public int VisualX { get; set; }
+    public int VisualY { get; set; }
+    public int VisualWidth { get; set; }
+    public int VisualHeight { get; set; }
+    public int VisualWindowWidth { get; set; }
+    public int VisualWindowHeight { get; set; }
     public int TimeoutMinutes { get; set; }
     public TaskSpec Copy() => (TaskSpec)MemberwiseClone();
 }

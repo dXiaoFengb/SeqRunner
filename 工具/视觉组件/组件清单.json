@@ -1,0 +1,71 @@
+{
+  "ocr": "RapidOcrNet 4.2.0",
+  "model_source": "RapidAI/RapidOCRCSharp commit 2c6e4d168e8c8cae3025f72e96479ea7be59b210",
+  "files": [
+    {
+      "name": "system.numerics.tensors.9.0.0.nupkg",
+      "sha256": "b750243c36002a62b28b1ac5d3fbc284ad340ba1494cc36aca110611a0b1f959",
+      "bytes": 453618
+    },
+    {
+      "name": "skiasharp.nativeassets.win32.3.119.1.nupkg",
+      "sha256": "c923e49fc4ab4a13aa862842df7109e0726df5d7ac0c8482e20008e054018b65",
+      "bytes": 13364090
+    },
+    {
+      "name": "skiasharp.nativeassets.macos.3.119.1.nupkg",
+      "sha256": "d1024670ef753162d2790a44e19367fca515a0745cacf7836ca925c42541d34a",
+      "bytes": 7099396
+    },
+    {
+      "name": "skiasharp.nativeassets.linux.nodependencies.3.119.1.nupkg",
+      "sha256": "4a9ad38720294e16c3a1e4e7fc969a4bb4ca766f5290ca153bc57c1ee0b2a692",
+      "bytes": 39482348
+    },
+    {
+      "name": "skiasharp.3.119.1.nupkg",
+      "sha256": "4c856be7636943d71a6f978909c1ff3981e334e4ca8700aaa4294ad9cf12e133",
+      "bytes": 4651523
+    },
+    {
+      "name": "rapidocrnet.4.2.0.nupkg",
+      "sha256": "df7424e3b613bf356c5cf53e546aaacdfd000181a49840bc05ee49c7e35e4574",
+      "bytes": 12824593
+    },
+    {
+      "name": "microsoft.ml.onnxruntime.managed.1.29.0.nupkg",
+      "sha256": "81484c028e827d90028f4a4229c4a5bdc444952d02da8463d819139b13aa7e27",
+      "bytes": 1013591
+    },
+    {
+      "name": "microsoft.ml.onnxruntime.1.29.0.nupkg",
+      "sha256": "4557021fec4da3924e2e12ff44b1cc50b176de0d2c5c7daa89ab11c208b3a454",
+      "bytes": 155008437
+    },
+    {
+      "name": "clipper2.2.0.0.nupkg",
+      "sha256": "f07dfcf6adccd035fde042f0ff6fd6d746b989e9bb361cda38216f185304172b",
+      "bytes": 68644
+    },
+    {
+      "name": "models/ch_PP-OCRv5_mobile_det.onnx",
+      "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae",
+      "bytes": 4819576
+    },
+    {
+      "name": "models/ch_PP-OCRv5_rec_mobile_infer.onnx",
+      "sha256": "5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5",
+      "bytes": 16631306
+    },
+    {
+      "name": "models/ch_ppocr_mobile_v2.0_cls_infer.onnx",
+      "sha256": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c",
+      "bytes": 585532
+    },
+    {
+      "name": "models/ppocrv5_dict.txt",
+      "sha256": "d1979e9f794c464c0d2e0b70a7fe14dd978e9dc644c0e71f14158cdf8342af1b",
+      "bytes": 74012
+    }
+  ]
+}
