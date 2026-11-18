@@ -107,9 +107,7 @@ internal static class VisualStartController
     }
     internal static bool ImageReferencesMatch(TaskSpec task,byte[] window,byte[] screen,byte[] template,Rectangle region)
     {
-        if(string.IsNullOrEmpty(task.VisualWindowRegionHash) || string.IsNullOrEmpty(task.VisualScreenRegionHash) || string.IsNullOrEmpty(task.VisualTemplateReferenceHash))return false;
-        return string.Equals(task.VisualWindowRegionHash,RegionHash(window,region),StringComparison.OrdinalIgnoreCase)
-            && string.Equals(task.VisualScreenRegionHash,RegionHash(screen,region),StringComparison.OrdinalIgnoreCase)
+        return !string.IsNullOrEmpty(task.VisualTemplateReferenceHash)
             && string.Equals(task.VisualTemplateReferenceHash,Convert.ToHexString(SHA256.HashData(template)),StringComparison.OrdinalIgnoreCase);
     }
     internal static RectangleF? FindText(IReadOnlyList<OcrHelperClient.Line> lines,string text,Rectangle region)

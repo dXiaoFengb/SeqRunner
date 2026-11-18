@@ -189,12 +189,20 @@ class Program
         using(var subtle=new System.Drawing.Bitmap(templatePath))using(var output=new MemoryStream())
         { var pixel=subtle.GetPixel(8,12);subtle.SetPixel(8,12,System.Drawing.Color.FromArgb(pixel.A,Math.Min(255,pixel.R+1),pixel.G,pixel.B));subtle.Save(output,System.Drawing.Imaging.ImageFormat.Png);Check(!VisualStartController.ImageReferencesMatch(reference,scene,scene,output.ToArray(),region),"image reference rejects valid subtly altered template"); }
         using(var imageCopy=new System.Drawing.Bitmap(scenePath))using(var output=new MemoryStream())
-        { imageCopy.SetPixel(10,10,System.Drawing.Color.Magenta);imageCopy.Save(output,System.Drawing.Imaging.ImageFormat.Png);Check(!VisualStartController.ImageReferencesMatch(reference,scene,output.ToArray(),template,region),"image reference rejects changed screen region");Check(!VisualStartController.ImageReferencesMatch(reference,output.ToArray(),scene,template,region),"image reference rejects changed window region"); }
+        { imageCopy.SetPixel(10,10,System.Drawing.Color.Magenta);imageCopy.Save(output,System.Drawing.Imaging.ImageFormat.Png);Check(VisualStartController.ImageReferencesMatch(reference,scene,output.ToArray(),template,region),"image reference permits changed screen region across instances");Check(VisualStartController.ImageReferencesMatch(reference,output.ToArray(),scene,template,region),"image reference permits changed window region across instances"); }
         Check(!VisualStartController.ImageReferencesMatch(new TaskSpec(),scene,scene,template,region),"legacy image task without reference remains blocked");
         var legacy=new TaskSpec { StartWithSelectedButton=true,VisualMode="图片",VisualTemplatePath=templatePath };
-        Check(TaskConfigurationReview.Check(legacy).Errors.Any(x=>x.Contains("画面指纹")),"legacy image task requires selecting its region again");
+        Check(TaskConfigurationReview.Check(legacy).Errors.Any(x=>x.Contains("模板指纹")),"legacy image task requires selecting its region again");
+        var templateOnly=new TaskSpec { VisualTemplateReferenceHash=reference.VisualTemplateReferenceHash };
+        Check(VisualStartController.ImageReferencesMatch(templateOnly,scene,scene,template,region),"image reference accepts template fingerprint without old region fingerprints");
         var point=VisualStartController.FindRenderedImage(scene,template,region);
         Check(point!=null,"OpenCV identifies rendered fixture template");
+        using(var changedInstance=new System.Drawing.Bitmap(scenePath))using(var changedBytes=new MemoryStream())
+        {
+            changedInstance.SetPixel(500,200,System.Drawing.Color.Magenta);changedInstance.Save(changedBytes,System.Drawing.Imaging.ImageFormat.Png);
+            byte[] other=changedBytes.ToArray();var nextPoint=VisualStartController.FindRenderedImage(other,template,region);
+            Check(VisualStartController.RegionHash(scene,region)!=VisualStartController.RegionHash(other,region) && VisualStartController.ImageReferencesMatch(reference,other,other,template,region) && point!=null && nextPoint==point,"changed instance region keeps unique unchanged target");
+        }
         Check(VisualStartController.FindRenderedImage(scene,template,new System.Drawing.Rectangle(300,150,100,100))==null,"OpenCV rejects candidate outside selected region");
         using var image=new System.Drawing.Bitmap(templatePath);int rejected=0;
         using(var blank=new System.Drawing.Bitmap(image.Width,image.Height))using(var graphics=System.Drawing.Graphics.FromImage(blank))using(var bytes=new MemoryStream())
@@ -260,7 +268,8 @@ class Program
                 if(selection==null){VisualStartController.ScreenTestHook=null;Check(false,"visual start "+(actualScreen?"real-screen ":"simulated ")+mode+" setup");return;}
                 task.VisualX=selection.X;task.VisualY=selection.Y;task.VisualWidth=selection.Width;task.VisualHeight=selection.Height;task.VisualWindowWidth=selection.WindowWidth;task.VisualWindowHeight=selection.WindowHeight;task.VisualWindowRegionHash=selection.WindowHash;task.VisualScreenRegionHash=selection.ScreenHash;task.VisualTemplateReferenceHash=selection.TemplateHash;
             }
-            var store=new Store(local);store.Tasks.Add(task);store.Tasks.Add(Spec("visual-next","echo next"));VisualStartController.FrameTestHook=iconOnly?frame=>File.WriteAllBytes(Path.Combine(local,"frame.png"),frame):null;
+            var store=new Store(local);store.Tasks.Add(task);store.Tasks.Add(Spec("visual-next","echo next"));
+            bool compared=false;VisualStartController.FrameTestHook=task.VisualMode=="图片"?frame=>{if(iconOnly)File.WriteAllBytes(Path.Combine(local,"frame.png"),frame);if(!compared){compared=true;var region=new System.Drawing.Rectangle(task.VisualX,task.VisualY,task.VisualWidth,task.VisualHeight);Console.WriteLine("DETAIL independent setup/runtime window region hashes equal="+(task.VisualWindowRegionHash==VisualStartController.RegionHash(frame,region)));}}:null;
             var engine=new RunnerEngine(store,()=>{});var run=engine.Start();for(int i=0;i<1200 && !run.IsCompleted && !engine.Waiting;i++)await Task.Delay(25);var events=store.History.Single().Events;int count=File.Exists(counter)?File.ReadAllLines(counter).Length:0;bool ok=shouldAdvance?count==1 && run.IsCompleted && events.Any(x=>x.Contains("已启动 visual-next")):count==0 && engine.Waiting && !events.Any(x=>x.Contains("已启动 visual-next"));if(!ok)Console.WriteLine("DETAIL visual "+mode+" "+engine.Status+" "+string.Join(" | ",events));if(!run.IsCompleted)engine.Stop();await run;VisualStartController.FrameTestHook=null;VisualStartController.ScreenTestHook=null;Check(ok,"visual start "+(actualScreen?"real-screen ":"simulated ")+mode+(wrongSize?" wrong-size":""));
         }
         if(iconOnly){await Run("icon",true);return;}await Run("text",true);if(actualScreen){await Run("icon",true);return;}if(quick)return;await Run("text-changed",false);await Run("text-duplicate",false);await Run("icon",true);await Run("icon-duplicate",false);await Run("text",false,true);
