@@ -15,8 +15,12 @@ internal sealed class MobileSettings
 {
     public bool ServerEnabled { get; set; }
     public bool WebhookEnabled { get; set; }
+    public bool QqEnabled { get; set; }
     public string ServerKey { get; set; } = "";
     public string WebhookUrl { get; set; } = "";
+    public string QqAppId { get; set; } = "";
+    public string QqSecret { get; set; } = "";
+    public string QqOpenId { get; set; } = "";
     public string Template { get; set; } = "{\"title\":\"{title}\",\"content\":\"{content}\"}";
 }
 
@@ -36,7 +40,7 @@ internal static class MobileSettingsStore
     {
         string recovered=Path.Combine(dir,"mobile-notifications-recovered.dat");string path=File.Exists(recovered)?recovered:Path.Combine(dir,"mobile-notifications.dat");if(!File.Exists(path))return new();
         if(new FileInfo(path).Length>262144)throw new InvalidDataException("通知配置过大");
-        byte[] plain=Transform(File.ReadAllBytes(path),false);try{var data=JsonSerializer.Deserialize<MobileSettings>(plain) ?? throw new InvalidDataException();if(data.ServerKey==null || data.WebhookUrl==null || data.Template==null)throw new InvalidDataException("通知配置无效");return data;}finally{CryptographicOperations.ZeroMemory(plain);}
+        byte[] plain=Transform(File.ReadAllBytes(path),false);try{var data=JsonSerializer.Deserialize<MobileSettings>(plain) ?? throw new InvalidDataException();if(data.ServerKey==null || data.WebhookUrl==null || data.Template==null || data.QqAppId==null || data.QqSecret==null || data.QqOpenId==null)throw new InvalidDataException("通知配置无效");return data;}finally{CryptographicOperations.ZeroMemory(plain);}
     }
     internal static void Save(string dir,MobileSettings settings,bool recover=false)
     {
@@ -55,29 +59,31 @@ internal sealed class MobileNotifications : IDisposable
     readonly Action<string> status;
     readonly CancellationTokenSource stopping=new();
     readonly Task worker;
+    readonly Func<QqBotClient> qqFactory;
     int generation;
     internal void InvalidatePending()=>Interlocked.Increment(ref generation);
-    internal MobileNotifications(Action<string> status,HttpMessageHandler? handler=null)
+    internal MobileNotifications(Action<string> status,HttpMessageHandler? handler=null,Func<QqBotClient>? qqFactory=null)
     {
-        this.status=status;client=handler==null ? new HttpClient(new HttpClientHandler{AllowAutoRedirect=false}) : new HttpClient(handler);client.Timeout=TimeSpan.FromSeconds(10);worker=Task.Run(ProcessAsync);
+        this.status=status;this.qqFactory=qqFactory ?? (()=>new QqBotClient());client=handler==null ? new HttpClient(new HttpClientHandler{AllowAutoRedirect=false}) : new HttpClient(handler);client.Timeout=TimeSpan.FromSeconds(10);worker=Task.Run(ProcessAsync);
     }
     internal static bool ShouldSend(LocalNotice notice) => notice.IsWarning || notice.Title is "队列已完成" or "队列已结束" or "队列已停止";
     internal void Publish(MobileSettings settings,LocalNotice notice)
     {
-        if((!settings.ServerEnabled && !settings.WebhookEnabled) || !ShouldSend(notice))return;
-        var snapshot=new MobileSettings{ServerEnabled=settings.ServerEnabled,WebhookEnabled=settings.WebhookEnabled,ServerKey=settings.ServerKey,WebhookUrl=settings.WebhookUrl,Template=settings.Template};
+        if((!settings.ServerEnabled && !settings.WebhookEnabled && !settings.QqEnabled) || !ShouldSend(notice))return;
+        var snapshot=Snapshot(settings);
         if(!queue.Writer.TryWrite((snapshot,notice,Volatile.Read(ref generation))))Report("通知队列已满，本次未发送");
     }
     internal void SendTest(MobileSettings settings)
     {
-        var snapshot=new MobileSettings{ServerEnabled=settings.ServerEnabled,WebhookEnabled=settings.WebhookEnabled,ServerKey=settings.ServerKey,WebhookUrl=settings.WebhookUrl,Template=settings.Template};
-        if(!snapshot.ServerEnabled && !snapshot.WebhookEnabled){Report("请先启用至少一个渠道");return;}
+        var snapshot=Snapshot(settings);
+        if(!snapshot.ServerEnabled && !snapshot.WebhookEnabled && !snapshot.QqEnabled){Report("请先启用至少一个渠道");return;}
         if(!queue.Writer.TryWrite((snapshot,new LocalNotice("测试通知","这是一条测试通知。",true),Volatile.Read(ref generation))))Report("通知队列已满，本次未发送");
     }
     void Report(string message){try{status(message);}catch(Exception){}}
+    static MobileSettings Snapshot(MobileSettings s)=>new(){ServerEnabled=s.ServerEnabled,WebhookEnabled=s.WebhookEnabled,QqEnabled=s.QqEnabled,ServerKey=s.ServerEnabled?s.ServerKey:"",WebhookUrl=s.WebhookEnabled?s.WebhookUrl:"",Template=s.Template,QqAppId=s.QqEnabled?s.QqAppId:"",QqSecret=s.QqEnabled?s.QqSecret:"",QqOpenId=s.QqEnabled?s.QqOpenId:""};
     async Task ProcessAsync()
     {
-        try{await foreach(var (settings,notice,version) in queue.Reader.ReadAllAsync(stopping.Token)) { if(version!=Volatile.Read(ref generation))continue;if(settings.ServerEnabled)await SendOne("Server酱",settings,notice,true);if(version==Volatile.Read(ref generation) && settings.WebhookEnabled)await SendOne("Webhook",settings,notice,false); }}catch(OperationCanceledException){}
+        try{await foreach(var (settings,notice,version) in queue.Reader.ReadAllAsync(stopping.Token)) { if(version!=Volatile.Read(ref generation))continue;if(settings.ServerEnabled)await SendOne("Server酱",settings,notice,true);if(version==Volatile.Read(ref generation) && settings.WebhookEnabled)await SendOne("Webhook",settings,notice,false);if(version==Volatile.Read(ref generation) && settings.QqEnabled)await SendQq(settings,notice); }}catch(OperationCanceledException){}
     }
     internal static Uri ServerUri(string key)
     {
@@ -101,7 +107,14 @@ internal sealed class MobileNotifications : IDisposable
     {
         if(s.ServerKey.Length>2048 || s.WebhookUrl.Length>4096 || s.Template.Length>16384)throw new ArgumentException("通知配置过长");
         if(s.ServerEnabled)_=ServerUri(s.ServerKey);
+        if(s.QqEnabled && (!QqBotClient.ValidId(s.QqAppId,s.QqOpenId) || string.IsNullOrWhiteSpace(s.QqSecret) || s.QqSecret.Length>1024))throw new ArgumentException("请先绑定 QQ 机器人");
         if(s.WebhookEnabled){if(!Uri.TryCreate(s.WebhookUrl,UriKind.Absolute,out var uri) || uri.Scheme!=Uri.UriSchemeHttps || !string.IsNullOrEmpty(uri.UserInfo))throw new ArgumentException("Webhook 地址必须是 HTTPS 地址");_ = RenderTemplate(s.Template,new("测试","测试"));}
+    }
+    async Task SendQq(MobileSettings settings,LocalNotice notice)
+    {
+        try{using var qq=qqFactory();await qq.SendAsync(new(settings.QqAppId,settings.QqSecret,settings.QqOpenId),notice,stopping.Token);Report("QQ：服务已接受（手机接收情况需自行确认）");}
+        catch(OperationCanceledException){if(!stopping.IsCancellationRequested)Report("QQ：请求超时");}
+        catch(Exception e) when(e is HttpRequestException or IOException or JsonException or ArgumentException or InvalidOperationException or CryptographicException){Report("QQ：发送失败，请检查网络及机器人主动消息权限");}
     }
     async Task SendOne(string channel,MobileSettings settings,LocalNotice notice,bool server)
     {

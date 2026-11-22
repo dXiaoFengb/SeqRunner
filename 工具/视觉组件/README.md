@@ -1,6 +1,6 @@
 # 本地 OCR 组件
 
-V3 使用 `RapidOcrNet` 4.2.0 和本地中文模型识别文字，使用 OpenCvSharp 4.13.0.20260627 与 Windows 精简运行库辅助定位图片候选。组件不连接网络，也不自行操作窗口；执行器负责窗口身份、画面和操作前检查。OCR 和图像匹配均不能证明业务成功，识别结果不明时暂停。
+V3 使用 `RapidOcrNet` 4.2.0 和本地中文模型识别文字，使用 OpenCvSharp 4.13.0.20260627 与 Windows 精简运行库辅助定位图片候选；QRCoder 1.9.0 用于在本机生成 QQ 绑定二维码。组件不自行操作窗口；执行器负责窗口身份、画面和操作前检查。OCR 和图像匹配均不能证明业务成功，识别结果不明时暂停。
 
 ## 新环境准备
 
@@ -8,4 +8,4 @@ V3 使用 `RapidOcrNet` 4.2.0 和本地中文模型识别文字，使用 OpenCvS
 
 在项目根目录执行 `dotnet build 工具/视觉组件/OcrHelper.csproj -p:NuGetAudit=false`；项目从本地 `nuget/` 还原，执行器和测试项目也会从该目录取得 OpenCvSharp。源码预览从本目录的构建输出查找 OCR 组件，缺少组件或模型时文字识别暂停。`OcrHelper.exe <图片路径>` 输出识别文字、置信度和坐标的 JSON，也支持由执行器通过标准输入传入图片，不落盘保存屏幕内容。
 
-已检查本地 NuGet 包的许可元数据或随包许可：`RapidOcrNet`、OpenCvSharp 为 Apache-2.0，SkiaSharp、ONNX Runtime 与 System.Numerics.Tensors 为 MIT，Clipper2 为 Boost Software License 1.0。模型所在仓库的固定版本没有找到独立许可证文件，模型权利、OpenCV 原生库的第三方组件及完整分发义务仍为 [待核实]，发布前须继续核对。本轮未制作发布包。
+已检查本地 NuGet 包的许可元数据或随包许可：`RapidOcrNet`、OpenCvSharp 为 Apache-2.0，QRCoder、SkiaSharp、ONNX Runtime 与 System.Numerics.Tensors 为 MIT，Clipper2 为 Boost Software License 1.0。QQ 相关 MIT 通知见项目根目录 `第三方许可-QQ通知.md`。模型所在仓库的固定版本没有找到独立许可证文件，模型权利、OpenCV 原生库的第三方组件及完整分发义务仍为 [待核实]，发布前须继续核对。本轮未制作发布包。

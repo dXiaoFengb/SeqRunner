@@ -3,6 +3,11 @@
   "model_source": "RapidAI/RapidOCRCSharp commit 2c6e4d168e8c8cae3025f72e96479ea7be59b210",
   "files": [
     {
+      "name": "qrcoder.1.9.0.nupkg",
+      "sha256": "555f647cf2cc5ee79d1ae9823ea559cb51e7af6b8f2aa5faf66cb15f55fd59e4",
+      "bytes": 1046923
+    },
+    {
       "name": "opencvsharp4.4.13.0.20260627.nupkg",
       "sha256": "8acee778364e5eee6495d923732cacd8d895c7f683d2144f622b54418623d12c",
       "bytes": 1743183

@@ -16,6 +16,7 @@ class Program
     static TaskSpec Spec(string name, string args) => new() { Name=name, Program=cmd, Arguments="/d /c " + args, WorkingDirectory=Environment.SystemDirectory, TrustCompletion=true };
     static async Task Tests(bool skipControlled=false)
     {
+        await QqNotificationTests();
         await MobileNotificationTests();
         VisualEvidenceTests();
         await TaskTrialTests();
@@ -306,6 +307,53 @@ class Program
         Check(lockedRun.shown && lockedRun.code==1 && !lockedRun.error.Contains("XamlParseException") && (await File.ReadAllBytesAsync(lockedFile)).SequenceEqual(valid),"startup locked data shows error exits and preserves bytes");
         using var retry=Launch(locked);await retry.WaitForExitAsync();Check(retry.ExitCode==0,"startup succeeds after lock released and single instance resources reclaimed");
     }
+    sealed class FakeQqHandler : System.Net.Http.HttpMessageHandler
+    {
+        public byte[] Key=[]; public int PollStatus=1; public bool Deny; public bool Tamper; public bool InvalidUser; public int Sends;
+        protected override async Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request,CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            if(Deny)return new(System.Net.HttpStatusCode.Forbidden){Content=new System.Net.Http.StringContent("private-response")};
+            string path=request.RequestUri!.AbsolutePath;string body=await request.Content!.ReadAsStringAsync(ct);string result;
+            if(path.EndsWith("create_bind_task")){using var doc=System.Text.Json.JsonDocument.Parse(body);Key=Convert.FromBase64String(doc.RootElement.GetProperty("key").GetString()!);result="{\"retcode\":0,\"data\":{\"task_id\":\"mock-task\"}}";}
+            else if(path.EndsWith("poll_bind_result"))
+            {
+                if(PollStatus!=2)result="{\"retcode\":0,\"data\":{\"status\":"+PollStatus+"}}";
+                else{byte[] iv=new byte[12],plain=Encoding.UTF8.GetBytes("fake-secret"),cipher=new byte[plain.Length],tag=new byte[16];using(var aes=new System.Security.Cryptography.AesGcm(Key,16))aes.Encrypt(iv,plain,cipher,tag);if(Tamper)tag[0]^=1;string packed=Convert.ToBase64String(iv.Concat(cipher).Concat(tag).ToArray());result="{\"retcode\":0,\"data\":{\"status\":2,\"bot_appid\":\"123\",\"user_openid\":\""+(InvalidUser?"invalid/path":"mock_user")+"\",\"bot_encrypt_secret\":\""+packed+"\"}}";}
+            }
+            else if(path.EndsWith("getAppAccessToken"))result="{\"access_token\":\"fake-token\"}";
+            else {Sends++;result="{\"id\":\"mock-id\"}";}
+            return new(System.Net.HttpStatusCode.OK){Content=new System.Net.Http.StringContent(result)};
+        }
+    }
+    static void QqWindowEvidenceTests()
+    {
+        string dir=Path.Combine(root,"qq-window");Directory.CreateDirectory(dir);var applied=new MobileSettings();using var sender=new MobileNotifications(_=>{});
+        var window=new MobileSettingsWindow(dir,new MobileSettings{ServerEnabled=true,ServerKey="SCTFake123",QqEnabled=true,QqAppId="123",QqSecret="fake-secret",QqOpenId="mock_user"},sender,value=>applied=value,"",false);
+        IEnumerable<System.Windows.DependencyObject> Descendants(System.Windows.DependencyObject parent){foreach(var child in System.Windows.LogicalTreeHelper.GetChildren(parent).OfType<System.Windows.DependencyObject>()){yield return child;foreach(var descendant in Descendants(child))yield return descendant;}}
+        var nodes=Descendants(window).ToArray();var check=nodes.OfType<System.Windows.Controls.CheckBox>().Single(x=>x.Name=="QqNoticeEnabledInput");var status=nodes.OfType<System.Windows.Controls.TextBlock>().Single(x=>x.Name=="QqNoticeStatus");var unbind=nodes.OfType<System.Windows.Controls.Button>().Single(x=>x.Name=="QqNoticeUnbindInput");
+        bool shown=check.IsChecked==true && status.Text.Contains("已绑定");unbind.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));var saved=MobileSettingsStore.Load(dir);
+        Check(shown && !saved.QqEnabled && saved.QqSecret=="" && saved.ServerEnabled && saved.ServerKey=="SCTFake123" && status.Text.Contains("已解绑"),"QQ unbind preserves other channels without showing window");window.Close();
+        var fresh=new MobileSettingsWindow(dir,new MobileSettings(),sender,_=>{},"",false);var freshNodes=Descendants(fresh).ToArray();Check(freshNodes.OfType<System.Windows.Controls.CheckBox>().Single(x=>x.Name=="QqNoticeEnabledInput").IsChecked==false && freshNodes.OfType<System.Windows.Controls.TextBlock>().Single(x=>x.Name=="QqNoticeStatus").Text.Contains("未绑定"),"QQ settings window defaults unbound and disabled");fresh.Close();
+    }
+    static async Task QqNotificationTests()
+    {
+        QqWindowEvidenceTests();
+        var fake=new FakeQqHandler();using var client=new QqBotClient(fake);using var session=await client.CreateAsync(CancellationToken.None);
+        Check(session.Url.StartsWith("https://q.qq.com/qqbot/openclaw/connect.html?task_id=") && session.Key.Length==32,"QQ bind creates local random key and official QR URL");
+        using(var generator=new QRCoder.QRCodeGenerator())using(var qrData=generator.CreateQrCode(session.Url,QRCoder.QRCodeGenerator.ECCLevel.Q))using(var qr=new QRCoder.PngByteQRCode(qrData))Check(qr.GetGraphic(5).AsSpan(0,8).SequenceEqual(new byte[]{137,80,78,71,13,10,26,10}),"QQ QR code is rendered locally");
+        Check((await client.PollAsync(session,CancellationToken.None)).Status==1,"QQ pending binding remains pending");fake.PollStatus=3;Check((await client.PollAsync(session,CancellationToken.None)).Status==3,"QQ expired binding does not produce credentials");fake.PollStatus=2;var done=await client.PollAsync(session,CancellationToken.None);Check(done.Credentials is {AppId:"123",Secret:"fake-secret",OpenId:"mock_user"},"QQ bound credentials decrypt with authenticated AES GCM");
+        fake.Tamper=true;bool tampered=false;try{await client.PollAsync(session,CancellationToken.None);}catch(System.Security.Cryptography.CryptographicException){tampered=true;}fake.Tamper=false;Check(tampered,"QQ tampered binding credentials are rejected");fake.InvalidUser=true;bool badUser=false;try{await client.PollAsync(session,CancellationToken.None);}catch(InvalidDataException){badUser=true;}fake.InvalidUser=false;Check(badUser,"QQ invalid recipient is rejected");
+        string dir=Path.Combine(root,"qq-notice");Directory.CreateDirectory(dir);var s=new MobileSettings{QqEnabled=true,QqAppId=done.Credentials!.AppId,QqSecret=done.Credentials.Secret,QqOpenId=done.Credentials.OpenId};MobileSettingsStore.Save(dir,s);var raw=File.ReadAllBytes(Path.Combine(dir,"mobile-notifications.dat"));var saved=MobileSettingsStore.Load(dir);Check(saved.QqEnabled && saved.QqSecret=="fake-secret" && !Encoding.UTF8.GetString(raw).Contains("fake-secret"),"QQ credentials persist only encrypted");
+        await client.SendAsync(done.Credentials,new("任务需要处理","请查看"),CancellationToken.None);Check(fake.Sends==1,"QQ sends only to bound user via simulated service");
+        fake.Deny=true;bool rejected=false;try{await client.SendAsync(done.Credentials,new("测试","测试"),CancellationToken.None);}catch(System.Net.Http.HttpRequestException){rejected=true;}Check(rejected,"QQ denied service is not counted as accepted");
+        using var cancelled=new CancellationTokenSource();cancelled.Cancel();bool stopped=false;try{await client.CreateAsync(cancelled.Token);}catch(OperationCanceledException){stopped=true;}Check(stopped,"QQ cancelled binding does not complete");
+        var events=new List<string>();var queueHandler=new FakeQqHandler();using(var notices=new MobileNotifications(x=>{lock(events)events.Add(x);},qqFactory:()=>new QqBotClient(queueHandler)))
+        {notices.Publish(s,new("需要处理","测试",true));for(int i=0;i<100;i++){lock(events)if(events.Count>0)break;await Task.Delay(20);}lock(events)Check(events.Any(x=>x.Contains("服务已接受")) && events.All(x=>!x.Contains("fake-secret")),"QQ queue reports acceptance without leaking credentials");}
+        var deniedEvents=new List<string>();using(var notices=new MobileNotifications(x=>{lock(deniedEvents)deniedEvents.Add(x);},qqFactory:()=>new QqBotClient(new FakeQqHandler{Deny=true})))
+        {notices.Publish(s,new("需要处理","测试",true));for(int i=0;i<100;i++){lock(deniedEvents)if(deniedEvents.Count>0)break;await Task.Delay(20);}lock(deniedEvents)Check(deniedEvents.Any(x=>x.Contains("发送失败")) && deniedEvents.All(x=>!x.Contains("private-response") && !x.Contains("fake-secret")),"QQ send failure is isolated and sanitized");}
+        var unbound=new MobileSettings{QqEnabled=true};bool invalid=false;try{MobileNotifications.Validate(unbound);}catch(ArgumentException){invalid=true;}Check(invalid && !new MobileSettings().QqEnabled,"QQ defaults off and requires binding");
+    }
     sealed class FakeMobileHandler : System.Net.Http.HttpMessageHandler
     {
         public readonly List<string> Bodies=[];
@@ -364,7 +412,7 @@ class Program
         var probe=new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback,0);probe.Start();int port=((System.Net.IPEndPoint)probe.LocalEndpoint).Port;probe.Stop();
         using(var listener=new System.Net.HttpListener())
         {
-            listener.Prefixes.Add($"http://127.0.0.1:{port}/");listener.Start();var results=new List<string>();
+            listener.Prefixes.Add($"http://127.0.0.1:{port}/");try { listener.Start(); } catch (System.Net.HttpListenerException ex) { Console.WriteLine($"DETAIL local mock listener: {ex.ErrorCode} {ex.Message}"); throw; } var results=new List<string>();
             using(var sender=new MobileNotifications(s=>{lock(results)results.Add(s);},new LoopbackMobileHandler(port)))
             {
                 sender.Publish(settings,new("队列已完成","isolated",false));
@@ -786,7 +834,8 @@ class Program
             void AddTarget(){System.Windows.FrameworkElement target;if(mode.StartsWith("text"))target=new System.Windows.Controls.TextBlock {Text="开始运行",FontSize=42,Foreground=System.Windows.Media.Brushes.Black,Background=System.Windows.Media.Brushes.White,Height=70};else target=new System.Windows.Controls.Image {Source=new System.Windows.Media.Imaging.BitmapImage(new Uri(template)),Width=40,Height=32,HorizontalAlignment=System.Windows.HorizontalAlignment.Left};panel.Children.Add(target);}
             AddTarget();if(mode.EndsWith("duplicate"))AddTarget();win.Loaded+=(_,_)=>{win.Activate();var source=System.Windows.PresentationSource.FromVisual(win) as System.Windows.Interop.HwndSource;source!.AddHook((IntPtr hwnd,int msg,IntPtr wp,IntPtr lp,ref bool handled)=>{if(msg==0x0202){File.AppendAllText(counter,"click\n");File.AppendAllText(log,"DONE\n");}return IntPtr.Zero;});var timer=new DispatcherTimer{Interval=TimeSpan.FromSeconds(18)};timer.Tick+=(_,_)=>{timer.Stop();win.Close();};timer.Start();};return app.Run(win);
         }
-        if (args.Length > 0 && args[0] == "probe-mobile-regression") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await MobileNotificationTests(); await NotificationTests(); await ScheduleTests(); await StartupAndIntervalTests(); await CompletionTests(); var s=NewStore("mobile-recovery-regression");s.History.Add(new RunRecord{State="中断"});s.Tasks.Add(Spec("blocked","echo blocked"));s.Save();var loaded=NewStore("mobile-recovery-regression");loaded.Load();var e=new RunnerEngine(loaded,()=>{});await e.Start();Check(e.NeedsRecovery && loaded.History.Count==1,"mobile regression interrupted run remains blocked"); } catch(Exception ex) { failures++; Console.WriteLine(ex.GetType().Name); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-mobile-regression") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await QqNotificationTests(); await MobileNotificationTests(); await NotificationTests(); await ScheduleTests(); await StartupAndIntervalTests(); await CompletionTests(); var s=NewStore("mobile-recovery-regression");s.History.Add(new RunRecord{State="中断"});s.Tasks.Add(Spec("blocked","echo blocked"));s.Save();var loaded=NewStore("mobile-recovery-regression");loaded.Load();var e=new RunnerEngine(loaded,()=>{});await e.Start();Check(e.NeedsRecovery && loaded.History.Count==1,"mobile regression interrupted run remains blocked"); } catch(Exception ex) { failures++; Console.WriteLine(ex.GetType().Name); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-qq-notifications") { QqNotificationTests().GetAwaiter().GetResult(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-mobile-notifications") { MobileNotificationTests().GetAwaiter().GetResult(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-notifications") { NotificationTests().GetAwaiter().GetResult(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-resume") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await MaaResumeTests(); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
