@@ -637,6 +637,7 @@ class Program
     }
     static async Task MaaResumeTests()
     {
+        await MaaEvidenceCounterexamples();
         var parser=new MaaLogEvidence();parser.Feed("开始任");parser.Feed("务: A\n任务已全部");parser.Feed("完成！\n");Check(parser.Started && parser.Succeeded && !parser.Failed,"MAA evidence recognizes split start and success");parser.ResetForRestart();Check(!parser.Started && !parser.Succeeded,"MAA restart clears old completion evidence");parser.Feed("开始任务: A\n任务出错: A\n任务已全部完成！\n");Check(parser.Failed,"MAA error remains evidence despite completion text");
         var later=new MaaLogEvidence();later.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n");Check(later.Started && !later.Succeeded,"MAA later task start invalidates earlier completion");
         var observed=new List<string>();var liveEvidence=new MaaLogEvidence(observed.Add);liveEvidence.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n任务出错: B\n已停止\n");Check(observed.Count(x=>x.Contains("任务开始"))==2 && observed.Any(x=>x.Contains("完成文字")) && observed.Any(x=>x.Contains("任务错误")) && observed.Any(x=>x.Contains("任务停止")) && !liveEvidence.Succeeded,"MAA live evidence reports transitions and invalidates old completion");
@@ -659,6 +660,55 @@ class Program
         string stopDir=Path.Combine(root,"maa-user-stop");Directory.CreateDirectory(stopDir);string stopLog=Path.Combine(stopDir,"gui.log");await File.WriteAllTextAsync(stopLog,"old\n");var stopStore=new Store(stopDir);stopStore.Tasks.Add(new TaskSpec{Name="maa",Program=Environment.ProcessPath!,Arguments="fixture-maa-success \""+stopLog+"\"",WorkingDirectory=AppContext.BaseDirectory,Completion="MAA日志",LogPath=stopLog,MaaExclusiveLog=true,TrustCompletion=true});stopStore.Tasks.Add(Spec("after-user-stop","echo wrong"));var stopEngine=new RunnerEngine(stopStore,()=>{}){MaaVersionSupported=_=>true};var stopped=stopEngine.Start();for(int i=0;i<100 && !stopStore.History.Single().Events.Any(x=>x.Contains("已启动 maa"));i++)await Task.Delay(20);stopEngine.Stop();await stopped;Check(stopStore.History.Single().State=="已停止" && !stopStore.History.Single().Events.Any(x=>x.Contains("已启动 after-user-stop")),"MAA user stop blocks next task");
         string lockDir=Path.Combine(root,"maa-log-locked");Directory.CreateDirectory(lockDir);string lockLog=Path.Combine(lockDir,"gui.log");await File.WriteAllTextAsync(lockLog,"old\n");using(var held=new FileStream(lockLog,FileMode.Open,FileAccess.ReadWrite,FileShare.None)){var lockStore=new Store(lockDir);lockStore.Tasks.Add(new TaskSpec{Name="maa",Program=Environment.ProcessPath!,Arguments="fixture-maa-success \""+lockLog+"\"",WorkingDirectory=AppContext.BaseDirectory,Completion="MAA日志",LogPath=lockLog,MaaExclusiveLog=true,TrustCompletion=true,ContinueOnFailure=true});lockStore.Tasks.Add(Spec("after-locked-log","echo wrong"));var lockEngine=new RunnerEngine(lockStore,()=>{}){MaaVersionSupported=_=>true};var locked=lockEngine.Start();for(int i=0;i<100 && !lockEngine.Waiting;i++)await Task.Delay(20);bool safe=lockEngine.Waiting && !lockStore.History.Single().Events.Any(x=>x.Contains("已启动 after-locked-log"));lockEngine.Stop();await locked;Check(safe,"MAA unreadable log blocks failure continuation");}
         var missingStore=NewStore("maa-program-missing");missingStore.Tasks.Add(new TaskSpec{Name="maa",Program=Path.Combine(root,"missing-maa.exe"),Completion="MAA日志",MaaExclusiveLog=true,TrustCompletion=true,ContinueOnFailure=true});missingStore.Tasks.Add(Spec("after-missing-maa","echo wrong"));var missingEngine=new RunnerEngine(missingStore,()=>{});var missingRun=missingEngine.Start();for(int i=0;i<100 && !missingEngine.Waiting;i++)await Task.Delay(20);bool missingSafe=missingEngine.Waiting && !missingStore.History.Single().Events.Any(x=>x.Contains("已启动 after-missing-maa"));missingEngine.Stop();await missingRun;Check(missingSafe,"missing MAA program blocks failure continuation");
+    }
+    static async Task MaaEvidenceCounterexamples()
+    {
+        foreach (string mode in new[] { "helper", "silent-change" })
+        {
+            string dir = Path.Combine(root, "maa-evidence-counterexample-" + mode);
+            Directory.CreateDirectory(dir);
+            string log = Path.Combine(dir, "gui.log"), asset = Path.Combine(dir, "fixture-resource.txt");
+            await File.WriteAllTextAsync(log, "old\n");
+            await File.WriteAllTextAsync(asset, "before");
+            var store = new Store(dir);
+            store.Tasks.Add(new TaskSpec { Name = "maa", Program = Environment.ProcessPath!, Arguments = $"fixture-evidence-parent {mode} \"{log}\" \"{asset}\"", WorkingDirectory = AppContext.BaseDirectory, Completion = "MAA日志", LogPath = log, MaaExclusiveLog = true, TrustCompletion = true });
+            store.Tasks.Add(Spec("after-counterexample", "echo wrong"));
+            var engine = new RunnerEngine(store, () => {}) { MaaVersionSupported = _ => true };
+            var run = engine.Start();
+            for (int i = 0; i < 500 && !engine.Waiting && !run.IsCompleted; i++) await Task.Delay(30);
+            var events = store.History.Single().Events;
+            bool evidence = (await File.ReadAllTextAsync(log)).Contains("开始任务: A\n任务已全部完成！\n");
+            bool changed = (await File.ReadAllTextAsync(asset)) == "changed";
+            bool safe = engine.Waiting && evidence && changed == (mode == "silent-change") && !events.Any(x => x.Contains("已启动 after-counterexample")) && events.Any(x => x.Contains("累计进程数 2"));
+            if (!run.IsCompleted) engine.Stop();
+            await run.WaitAsync(TimeSpan.FromSeconds(15));
+            Check(safe, "MAA identical business log with " + mode + " child remains blocked");
+        }
+        string mixedDir = Path.Combine(root, "maa-evidence-external-append");
+        Directory.CreateDirectory(mixedDir);
+        string mixedLog = Path.Combine(mixedDir, "gui.log");
+        await File.WriteAllTextAsync(mixedLog, "old\n");
+        using (var reader = new FileStream(mixedLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        {
+            reader.Seek(0, SeekOrigin.End);
+            var anchor = new MaaLogAnchor(reader); anchor.Capture();
+            var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+            start.ArgumentList.Add("fixture-evidence-append"); start.ArgumentList.Add(mixedLog);
+            using var writer = Process.Start(start)!;
+            await writer.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            using var text = new StreamReader(reader, new UTF8Encoding(false, true), false, 1024, true);
+            var evidence = new MaaLogEvidence(); evidence.Feed(await text.ReadToEndAsync()); evidence.Finish();
+            Check(writer.ExitCode == 0 && anchor.IsUnchanged() && evidence.Started && evidence.Succeeded, "MAA log anchor cannot authenticate a separate writer");
+        }
+        string restored = Path.Combine(mixedDir, "restored.txt");
+        await File.WriteAllTextAsync(restored, "before");
+        DateTime originalTime = File.GetLastWriteTimeUtc(restored);
+        string originalHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(restored)));
+        await File.WriteAllTextAsync(restored, "changed");
+        await File.WriteAllTextAsync(restored, "before");
+        File.SetLastWriteTimeUtc(restored, originalTime);
+        string restoredHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(restored)));
+        Check(originalHash == restoredHash && File.GetLastWriteTimeUtc(restored) == originalTime, "unchanged sampled fingerprint cannot prove no intermediate modification");
     }
     static async Task MaaControlledStartTests()
     {
@@ -999,6 +1049,17 @@ class Program
         if (skipStartup) args = args[1..];
         if (args.Length > 0 && args[0] == "probe-regression-local") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await Tests(true); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-job-events") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await JobEventTests(); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-maa-evidence-counterexamples") { try { MaaEvidenceCounterexamples().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length == 2 && args[0] == "fixture-evidence-append") { File.AppendAllText(args[1], "开始任务: A\n任务已全部完成！\n", new UTF8Encoding(false)); return 0; }
+        if (args.Length == 3 && args[0] == "fixture-evidence-child") { if (args[1] == "silent-change") File.WriteAllText(args[2], "changed"); Thread.Sleep(500); return 0; }
+        if (args.Length == 4 && args[0] == "fixture-evidence-parent")
+        {
+            var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+            start.ArgumentList.Add("fixture-evidence-child"); start.ArgumentList.Add(args[1]); start.ArgumentList.Add(args[3]);
+            using var child = Process.Start(start)!; child.WaitForExit();
+            File.AppendAllText(args[2], "开始任务: A\n任务已全部完成！\n", new UTF8Encoding(false));
+            Thread.Sleep(500); return 0;
+        }
         if (args.Length > 0 && args[0] == "fixture-job-parent") { var children=Enumerable.Range(0,6).Select(_=>Process.Start(new ProcessStartInfo(Environment.ProcessPath!,"fixture-job-short"){UseShellExecute=false})!).ToArray();foreach(var child in children){child.WaitForExit();child.Dispose();}Thread.Sleep(400);return 0; }
         if (args.Length > 0 && args[0] == "fixture-job-short") { Thread.Sleep(40);return 0; }
         if (args.Length > 0 && args[0] == "probe-maa-start") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await MaaControlledStartTests(); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
