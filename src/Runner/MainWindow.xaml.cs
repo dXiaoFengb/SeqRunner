@@ -15,6 +15,13 @@ public partial class MainWindow : Window
     readonly RunnerEngine engine = null!;
     readonly Forms.NotifyIcon tray = null!;
     LocalNotifications? notifications;
+    LocalNotifications? mobileProblems;
+    MobileNotifications? mobile;
+    MobileSettings mobileSettings = new();
+    MobileSettingsWindow? mobileWindow;
+    string mobileDirectory = "";
+    string mobileStatus = "手机通知未配置";
+    bool mobileSettingsAvailable = true;
     readonly Mutex instanceLock;
     internal bool StartupAborted { get; private set; }
     Scheduler scheduler = null!;
@@ -63,6 +70,12 @@ public partial class MainWindow : Window
             instanceLock.ReleaseMutex(); instanceLock.Dispose();
             throw new StartupDataException(e);
         }
+        mobileDirectory=dir;
+        try { mobileSettings=MobileSettingsStore.Load(dir); }
+        catch(Exception e) when(e is IOException or UnauthorizedAccessException or CryptographicException or JsonException or InvalidDataException) { mobileSettingsAvailable=false;mobileStatus="手机通知配置无法读取；请重新配置，原文件会保留。"; }
+        MobileNoticeStatus.Text=mobileStatus;
+        mobile=new MobileNotifications(value=>Dispatcher.BeginInvoke(()=>{if(exiting)return;mobileStatus=value;MobileNoticeStatus.Text=value;mobileWindow?.SetStatus(value);}));
+        mobileProblems=new LocalNotifications(()=>true,notice=>mobile.Publish(mobileSettings,notice));
         LocalNotificationsInput.IsChecked = store.LocalNotificationsEnabled;
         drafts = new(store.Tasks.Select(t => t.Copy()));
         TaskList.ItemsSource = drafts;
@@ -84,12 +97,12 @@ public partial class MainWindow : Window
             try { tray.ShowBalloonTip(5000, notice.Title, notice.Message, notice.IsWarning ? Forms.ToolTipIcon.Warning : Forms.ToolTipIcon.Info); }
             catch (Exception) { }
         }));
-        engine.Notify = notice => notifications.Publish(notice);
+        engine.Notify = notice => { notifications.Publish(notice); mobile.Publish(mobileSettings,notice); };
         tray.BalloonTipClicked += (_, _) => Dispatcher.BeginInvoke(ShowWindow);
         tray.DoubleClick += (_, _) => ShowWindow();
         Refresh();
         if (!store.NoticeSeen) Loaded += (_, _) => { if (Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE") != "1") ShowNoticeCore(true); };
-        Loaded += (_, _) => { if (engine.NeedsRecovery) notifications.Publish(new("需要人工核实", "存在待核实事项，请打开软件查看。", true)); };
+        Loaded += (_, _) => { if (engine.NeedsRecovery) { var notice=new LocalNotice("需要人工核实", "存在待核实事项，请打开软件查看。", true);notifications.Publish(notice);mobile.Publish(mobileSettings,notice); } };
         Loaded += async (_, _) => { await startup.StartAsync(DateTimeOffset.UtcNow, TimeZoneInfo.Local); if (engine.NeedsRecovery && Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE") != "1") ResolveRecovery(this, new RoutedEventArgs()); };
         if (Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE") == "1")
         {
@@ -97,7 +110,12 @@ public partial class MainWindow : Window
             Loaded += (_, _) => { var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(seconds) }; timer.Tick += (_, _) => { timer.Stop(); RequestExit(); }; timer.Start(); };
         }
     }
-    void Refresh() { notifications?.ObserveProblem("engine", engine.Status); notifications?.ObserveProblem("scheduler", scheduler?.Status); notifications?.ObserveProblem("startup", startup?.Status); notifications?.ObserveProblem("completion", completion?.Status); Status.Text = (engine.NeedsRecovery ? $"有 {Recovery.PendingCount(store)} 条待核实事项，请点击“查看待核实事项”；" : "") + engine.Status + (scheduler != null && !string.IsNullOrEmpty(scheduler.Status) ? "；" + scheduler.Status : "") + (startup != null && !string.IsNullOrEmpty(startup.Status) ? "；" + startup.Status : "") + (completion != null && !string.IsNullOrEmpty(completion.Status) ? "；" + completion.Status : ""); if(completionTrayStatus!=null) completionTrayStatus.Text="完成后操作："+(string.IsNullOrEmpty(completion?.Status) ? "无" : completion.Status); if (shownHistoryCount != store.History.Count) { HistoryList.Items.Refresh(); shownHistoryCount = store.History.Count; } if (HistoryList.SelectedItem == null && store.History.Count > 0) HistoryList.SelectedItem = store.History[^1]; ShowHistory(); }
+    void Refresh() { notifications?.ObserveProblem("engine", engine.Status); notifications?.ObserveProblem("scheduler", scheduler?.Status); notifications?.ObserveProblem("startup", startup?.Status); notifications?.ObserveProblem("completion", completion?.Status); mobileProblems?.ObserveProblem("engine", engine.Status); mobileProblems?.ObserveProblem("scheduler", scheduler?.Status); mobileProblems?.ObserveProblem("startup", startup?.Status); mobileProblems?.ObserveProblem("completion", completion?.Status); Status.Text = (engine.NeedsRecovery ? $"有 {Recovery.PendingCount(store)} 条待核实事项，请点击“查看待核实事项”；" : "") + engine.Status + (scheduler != null && !string.IsNullOrEmpty(scheduler.Status) ? "；" + scheduler.Status : "") + (startup != null && !string.IsNullOrEmpty(startup.Status) ? "；" + startup.Status : "") + (completion != null && !string.IsNullOrEmpty(completion.Status) ? "；" + completion.Status : ""); if(completionTrayStatus!=null) completionTrayStatus.Text="完成后操作："+(string.IsNullOrEmpty(completion?.Status) ? "无" : completion.Status); if (shownHistoryCount != store.History.Count) { HistoryList.Items.Refresh(); shownHistoryCount = store.History.Count; } if (HistoryList.SelectedItem == null && store.History.Count > 0) HistoryList.SelectedItem = store.History[^1]; ShowHistory(); }
+    void OpenMobileSettings(object sender,RoutedEventArgs e)
+    {
+        if(mobileWindow!=null){mobileWindow.Activate();return;}
+        mobileWindow=new MobileSettingsWindow(mobileDirectory,mobileSettings,mobile!,value=>{mobile!.InvalidatePending();mobileSettings=value;mobileSettingsAvailable=true;},mobileStatus,!mobileSettingsAvailable){Owner=this};mobileWindow.Closed+=(_,_)=>mobileWindow=null;mobileWindow.Show();
+    }
     void HistoryChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e) => ShowHistory();
     void ShowHistory()
     {
@@ -239,7 +257,7 @@ public partial class MainWindow : Window
         if (selected != null) { editor = selected.Copy(); Editor.DataContext = editor; }
         TaskList.Items.Refresh(); Status.Text = "配置已保存"; return true;
     }
-    void RequestExit(bool fromCompletion=false) { if (!OcrPreviewInput.IsEnabled) { System.Windows.MessageBox.Show("图片识别正在进行，请等待结束后再退出。"); return; } if (!fromCompletion && !completion.Cancel("用户退出软件")) return; if (engine.Running || startup.IsActive) { System.Windows.MessageBox.Show("队列仍在运行。请先停止并等待受管程序退出。"); ShowWindow(); return; } if (!ResolveChanges()) return; try { store.Save(); } catch (Exception e) { System.Windows.MessageBox.Show("保存失败，软件保持打开：" + e.Message); return; } exiting = true; scheduleTimer.Stop(); Microsoft.Win32.SystemEvents.PowerModeChanged -= PowerChanged; tray.Visible = false; tray.Dispose(); activationWait?.Unregister(null); activation?.Dispose(); activationAck?.Dispose(); instanceLock.ReleaseMutex(); instanceLock.Dispose(); Close(); System.Windows.Application.Current.Shutdown(); }
+    void RequestExit(bool fromCompletion=false) { if (!OcrPreviewInput.IsEnabled) { System.Windows.MessageBox.Show("图片识别正在进行，请等待结束后再退出。"); return; } if (!fromCompletion && !completion.Cancel("用户退出软件")) return; if (engine.Running || startup.IsActive) { System.Windows.MessageBox.Show("队列仍在运行。请先停止并等待受管程序退出。"); ShowWindow(); return; } if (!ResolveChanges()) return; try { store.Save(); } catch (Exception e) { System.Windows.MessageBox.Show("保存失败，软件保持打开：" + e.Message); return; } exiting = true; mobileWindow?.Close();mobile?.Dispose();scheduleTimer.Stop(); Microsoft.Win32.SystemEvents.PowerModeChanged -= PowerChanged; tray.Visible = false; tray.Dispose(); activationWait?.Unregister(null); activation?.Dispose(); activationAck?.Dispose(); instanceLock.ReleaseMutex(); instanceLock.Dispose(); Close(); System.Windows.Application.Current.Shutdown(); }
     void Exit(object sender, RoutedEventArgs e) => RequestExit();
     void SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {

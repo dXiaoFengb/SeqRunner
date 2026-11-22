@@ -16,6 +16,7 @@ class Program
     static TaskSpec Spec(string name, string args) => new() { Name=name, Program=cmd, Arguments="/d /c " + args, WorkingDirectory=Environment.SystemDirectory, TrustCompletion=true };
     static async Task Tests(bool skipControlled=false)
     {
+        await MobileNotificationTests();
         VisualEvidenceTests();
         await TaskTrialTests();
         await GenericStartTests();
@@ -270,7 +271,7 @@ class Program
             }
             var store=new Store(local);store.Tasks.Add(task);store.Tasks.Add(Spec("visual-next","echo next"));
             bool compared=false;VisualStartController.FrameTestHook=task.VisualMode=="图片"?frame=>{if(iconOnly)File.WriteAllBytes(Path.Combine(local,"frame.png"),frame);if(!compared){compared=true;var region=new System.Drawing.Rectangle(task.VisualX,task.VisualY,task.VisualWidth,task.VisualHeight);Console.WriteLine("DETAIL independent setup/runtime window region hashes equal="+(task.VisualWindowRegionHash==VisualStartController.RegionHash(frame,region)));}}:null;
-            var engine=new RunnerEngine(store,()=>{});var run=engine.Start();for(int i=0;i<1200 && !run.IsCompleted && !engine.Waiting;i++)await Task.Delay(25);var events=store.History.Single().Events;int count=File.Exists(counter)?File.ReadAllLines(counter).Length:0;bool ok=shouldAdvance?count==1 && run.IsCompleted && events.Any(x=>x.Contains("已启动 visual-next")):count==0 && engine.Waiting && !events.Any(x=>x.Contains("已启动 visual-next"));if(!ok)Console.WriteLine("DETAIL visual "+mode+" "+engine.Status+" "+string.Join(" | ",events));if(!run.IsCompleted)engine.Stop();await run;VisualStartController.FrameTestHook=null;VisualStartController.ScreenTestHook=null;Check(ok,"visual start "+(actualScreen?"real-screen ":"simulated ")+mode+(wrongSize?" wrong-size":""));
+            var engine=new RunnerEngine(store,()=>{});var run=engine.Start();for(int i=0;i<1200 && !run.IsCompleted && !engine.Waiting;i++)await Task.Delay(25);var events=store.History.Single().Events;int count=File.Exists(counter)?File.ReadAllLines(counter).Length:0;bool ok=shouldAdvance?count==1 && run.IsCompleted && events.Any(x=>x.Contains("已启动 visual-next")):count==0 && engine.Waiting && !events.Any(x=>x.Contains("已启动 visual-next"));if(!ok)Console.WriteLine("DETAIL visual "+mode+" clicks="+count+" completed="+run.IsCompleted+" waiting="+engine.Waiting+" "+engine.Status+" "+string.Join(" | ",events));if(!run.IsCompleted)engine.Stop();await run;VisualStartController.FrameTestHook=null;VisualStartController.ScreenTestHook=null;Check(ok,"visual start "+(actualScreen?"real-screen ":"simulated ")+mode+(wrongSize?" wrong-size":""));
         }
         if(iconOnly){await Run("icon",true);return;}await Run("text",true);if(actualScreen){await Run("icon",true);return;}if(quick)return;await Run("text-changed",false);await Run("text-duplicate",false);await Run("icon",true);await Run("icon-duplicate",false);await Run("text",false,true);
     }
@@ -304,6 +305,78 @@ class Program
         using(var held=new FileStream(lockedFile,FileMode.Open,FileAccess.ReadWrite,FileShare.None)) lockedRun=await RunFailure(locked);
         Check(lockedRun.shown && lockedRun.code==1 && !lockedRun.error.Contains("XamlParseException") && (await File.ReadAllBytesAsync(lockedFile)).SequenceEqual(valid),"startup locked data shows error exits and preserves bytes");
         using var retry=Launch(locked);await retry.WaitForExitAsync();Check(retry.ExitCode==0,"startup succeeds after lock released and single instance resources reclaimed");
+    }
+    sealed class FakeMobileHandler : System.Net.Http.HttpMessageHandler
+    {
+        public readonly List<string> Bodies=[];
+        public System.Net.HttpStatusCode Code=System.Net.HttpStatusCode.OK;
+        public bool Throw;
+        public bool Timeout;
+        public TaskCompletionSource<bool>? Gate;
+        protected override async Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request,CancellationToken cancellationToken)
+        {
+            if(Throw)throw new System.Net.Http.HttpRequestException("secret-must-not-leak");
+            if(Timeout)throw new TaskCanceledException();
+            if(Gate!=null)await Gate.Task.WaitAsync(cancellationToken);
+            string body=await request.Content!.ReadAsStringAsync(cancellationToken);lock(Bodies)Bodies.Add(body);
+            return new System.Net.Http.HttpResponseMessage(Code){Content=new System.Net.Http.StringContent("{\"code\":0}")};
+        }
+    }
+    sealed class LoopbackMobileHandler(int port) : System.Net.Http.DelegatingHandler(new System.Net.Http.HttpClientHandler { AllowAutoRedirect=false, UseProxy=false })
+    {
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request,CancellationToken cancellationToken)
+        {
+            request.RequestUri=new Uri($"http://127.0.0.1:{port}/mock");request.Headers.Host=null;return base.SendAsync(request,cancellationToken);
+        }
+    }
+    static async Task MobileNotificationTests()
+    {
+        string dir=Path.Combine(root,"mobile");Directory.CreateDirectory(dir);
+        var empty=MobileSettingsStore.Load(dir);Check(!empty.ServerEnabled && !empty.WebhookEnabled,"mobile notifications default off");
+        var settings=new MobileSettings{ServerEnabled=true,WebhookEnabled=true,ServerKey="SCTTestSecret123",WebhookUrl="https://example.invalid/secret-webhook",Template="{\"title\":\"{title}\",\"content\":\"{content}\"}"};
+        MobileSettingsStore.Save(dir,settings);byte[] disk=File.ReadAllBytes(Path.Combine(dir,"mobile-notifications.dat"));var loaded=MobileSettingsStore.Load(dir);
+        Check(loaded.ServerKey==settings.ServerKey && loaded.WebhookUrl==settings.WebhookUrl && loaded.ServerEnabled && loaded.WebhookEnabled,"mobile protected settings round trip");
+        Check(!Encoding.UTF8.GetString(disk).Contains("SCTTestSecret123") && !Encoding.UTF8.GetString(disk).Contains("secret-webhook"),"mobile credentials are encrypted on disk");
+        string recoverDir=Path.Combine(root,"mobile-recovery");Directory.CreateDirectory(recoverDir);string original=Path.Combine(recoverDir,"mobile-notifications.dat");File.WriteAllBytes(original,[1,2,3]);bool unreadable=false;try{MobileSettingsStore.Load(recoverDir);}catch(System.Security.Cryptography.CryptographicException){unreadable=true;}
+        MobileSettingsStore.Save(recoverDir,settings,true);Check(unreadable && File.ReadAllBytes(original).SequenceEqual(new byte[]{1,2,3}) && MobileSettingsStore.Load(recoverDir).ServerKey==settings.ServerKey,"mobile recovery preserves unreadable original and uses new configuration");
+        Check(MobileNotifications.ServerUri("SCTTestSecret123").Host=="sctapi.ftqq.com" && MobileNotifications.ServerUri("sctp123tExample123").Host=="123.push.ft07.com","mobile serverchan versions use separate endpoints");
+        bool invalidKey=false;try{MobileNotifications.ServerUri("sctp"+new string('9',200)+"tExample");}catch(ArgumentException){invalidKey=true;}Check(invalidKey,"mobile malformed serverchan identifier is rejected safely");
+        bool bad=false;try{MobileNotifications.Validate(new MobileSettings{WebhookEnabled=true,WebhookUrl="http://example.invalid"});}catch(ArgumentException){bad=true;}Check(bad,"mobile webhook requires HTTPS");
+        string payload=MobileNotifications.RenderTemplate(settings.Template,new LocalNotice("a\"b","line\nvalue"));using(var doc=System.Text.Json.JsonDocument.Parse(payload))Check(doc.RootElement.GetProperty("title").GetString()=="a\"b" && doc.RootElement.GetProperty("content").GetString()=="line\nvalue","mobile JSON template escapes substituted values");
+        Check(!MobileNotifications.ShouldSend(new("任务完成","ok")) && MobileNotifications.ShouldSend(new("队列已完成","ok")) && MobileNotifications.ShouldSend(new("等待人工处理","wait",true)),"mobile defaults to exception and queue end");
+        var problemNotices=new List<LocalNotice>();var observer=new LocalNotifications(()=>true,problemNotices.Add);observer.ObserveProblem("engine","保存失败");observer.ObserveProblem("engine","保存失败");observer.ObserveProblem("engine",null);observer.ObserveProblem("engine","保存失败");Check(problemNotices.Count==2,"mobile repeated ongoing storage error is deduplicated until recovered");
+        var messages=new List<string>();var fake=new FakeMobileHandler();using(var sender=new MobileNotifications(s=>{lock(messages)messages.Add(s);},fake))
+        {
+            sender.Publish(settings,new("任务完成","not sent"));await Task.Delay(100);lock(fake.Bodies)Check(fake.Bodies.Count==0,"mobile ignores ordinary task success");
+            sender.Publish(settings,new("队列已完成","all done"));for(int i=0;i<100;i++){lock(fake.Bodies)if(fake.Bodies.Count==2)break;await Task.Delay(20);}lock(fake.Bodies)Check(fake.Bodies.Count==2 && fake.Bodies.Any(x=>x.Contains("all+done")) && fake.Bodies.Any(x=>x.Contains("all done")),"mobile independent channels send via fake handler");
+            for(int i=0;i<100;i++){lock(messages)if(messages.Count>=2)break;await Task.Delay(20);}lock(messages)Check(messages.Any(x=>x.Contains("服务已接受")) && messages.Any(x=>x.Contains("HTTP 请求成功")) && messages.All(x=>x.Contains("自行确认")),"mobile acceptance is not claimed as delivery");
+        }
+        var failuresSeen=new List<string>();var rejected=new FakeMobileHandler{Code=System.Net.HttpStatusCode.Forbidden};using(var sender=new MobileNotifications(s=>{lock(failuresSeen)failuresSeen.Add(s);},rejected))
+        { sender.Publish(settings,new("需要处理","wait",true));for(int i=0;i<100;i++){lock(failuresSeen)if(failuresSeen.Count>=2)break;await Task.Delay(20);}lock(failuresSeen)Check(failuresSeen.Count>=2 && failuresSeen.All(x=>x.Contains("服务拒绝")) && failuresSeen.All(x=>!x.Contains("Secret")),"mobile failure is isolated and sanitized"); }
+        var offline=new List<string>();using(var sender=new MobileNotifications(s=>{lock(offline)offline.Add(s);},new FakeMobileHandler{Throw=true}))
+        {sender.Publish(settings,new("需要处理","wait",true));for(int i=0;i<100;i++){lock(offline)if(offline.Count>=2)break;await Task.Delay(20);}lock(offline)Check(offline.Count>=2 && offline.All(x=>!x.Contains("secret")),"mobile offline errors are sanitized");}
+        var timed=new List<string>();using(var sender=new MobileNotifications(s=>{lock(timed)timed.Add(s);},new FakeMobileHandler{Timeout=true}))
+        {sender.Publish(settings,new("需要处理","wait",true));for(int i=0;i<100;i++){lock(timed)if(timed.Count>=2)break;await Task.Delay(20);}lock(timed)Check(timed.Count>=2 && timed.All(x=>x.Contains("超时")),"mobile timeout reported without blocking");}
+        var overflow=new List<string>();var blocked=new FakeMobileHandler{Gate=new()};using(var sender=new MobileNotifications(s=>{lock(overflow)overflow.Add(s);},blocked))
+        {for(int i=0;i<40;i++)sender.Publish(settings,new("需要处理","wait",true));lock(overflow)Check(overflow.Any(x=>x.Contains("队列已满")),"mobile queue remains bounded");blocked.Gate.SetResult(true);}
+        var gateHandler=new FakeMobileHandler{Gate=new()};var gateResults=new List<string>();using(var sender=new MobileNotifications(s=>{lock(gateResults)gateResults.Add(s);},gateHandler))
+        {sender.Publish(settings,new("需要处理","one",true));await Task.Delay(100);sender.Publish(settings,new("需要处理","two",true));sender.InvalidatePending();gateHandler.Gate.SetResult(true);await Task.Delay(300);lock(gateHandler.Bodies)Check(gateHandler.Bodies.Count<=1 && gateHandler.Bodies.All(x=>!x.Contains("two")),"mobile setting change discards pending old notifications");}
+        var probe=new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback,0);probe.Start();int port=((System.Net.IPEndPoint)probe.LocalEndpoint).Port;probe.Stop();
+        using(var listener=new System.Net.HttpListener())
+        {
+            listener.Prefixes.Add($"http://127.0.0.1:{port}/");listener.Start();var results=new List<string>();
+            using(var sender=new MobileNotifications(s=>{lock(results)results.Add(s);},new LoopbackMobileHandler(port)))
+            {
+                sender.Publish(settings,new("队列已完成","isolated",false));
+                for(int i=0;i<2;i++)
+                {
+                    System.Net.HttpListenerContext context;try{context=await listener.GetContextAsync().WaitAsync(TimeSpan.FromSeconds(10));}catch(TimeoutException){lock(results)Console.WriteLine("DETAIL local mock: "+string.Join(" | ",results));throw;}using var reader=new StreamReader(context.Request.InputStream);_ = await reader.ReadToEndAsync();byte[] response=Encoding.UTF8.GetBytes("{\"code\":0}");context.Response.ContentLength64=response.Length;await context.Response.OutputStream.WriteAsync(response);context.Response.Close();
+                }
+                for(int i=0;i<100;i++){lock(results)if(results.Count>=2)break;await Task.Delay(20);}lock(results)Check(results.Count==2 && results.Any(x=>x.Contains("服务已接受")) && results.Any(x=>x.Contains("HTTP 请求成功")),"mobile channels reach temporary local mock service");
+            }
+            listener.Stop();
+        }
+        Check(!System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(x=>x.Address.Equals(System.Net.IPAddress.Loopback) && x.Port==port),"mobile temporary mock service listener closes after testing");
     }
     static async Task NotificationTests()
     {
@@ -713,6 +786,8 @@ class Program
             void AddTarget(){System.Windows.FrameworkElement target;if(mode.StartsWith("text"))target=new System.Windows.Controls.TextBlock {Text="开始运行",FontSize=42,Foreground=System.Windows.Media.Brushes.Black,Background=System.Windows.Media.Brushes.White,Height=70};else target=new System.Windows.Controls.Image {Source=new System.Windows.Media.Imaging.BitmapImage(new Uri(template)),Width=40,Height=32,HorizontalAlignment=System.Windows.HorizontalAlignment.Left};panel.Children.Add(target);}
             AddTarget();if(mode.EndsWith("duplicate"))AddTarget();win.Loaded+=(_,_)=>{win.Activate();var source=System.Windows.PresentationSource.FromVisual(win) as System.Windows.Interop.HwndSource;source!.AddHook((IntPtr hwnd,int msg,IntPtr wp,IntPtr lp,ref bool handled)=>{if(msg==0x0202){File.AppendAllText(counter,"click\n");File.AppendAllText(log,"DONE\n");}return IntPtr.Zero;});var timer=new DispatcherTimer{Interval=TimeSpan.FromSeconds(18)};timer.Tick+=(_,_)=>{timer.Stop();win.Close();};timer.Start();};return app.Run(win);
         }
+        if (args.Length > 0 && args[0] == "probe-mobile-regression") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await MobileNotificationTests(); await NotificationTests(); await ScheduleTests(); await StartupAndIntervalTests(); await CompletionTests(); var s=NewStore("mobile-recovery-regression");s.History.Add(new RunRecord{State="中断"});s.Tasks.Add(Spec("blocked","echo blocked"));s.Save();var loaded=NewStore("mobile-recovery-regression");loaded.Load();var e=new RunnerEngine(loaded,()=>{});await e.Start();Check(e.NeedsRecovery && loaded.History.Count==1,"mobile regression interrupted run remains blocked"); } catch(Exception ex) { failures++; Console.WriteLine(ex.GetType().Name); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-mobile-notifications") { MobileNotificationTests().GetAwaiter().GetResult(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-notifications") { NotificationTests().GetAwaiter().GetResult(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-resume") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await MaaResumeTests(); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length == 4 && args[0] == "fixture-maa-start")
