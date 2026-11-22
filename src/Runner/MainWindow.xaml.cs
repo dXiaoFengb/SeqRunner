@@ -19,6 +19,9 @@ public partial class MainWindow : Window
     MobileNotifications? mobile;
     MobileSettings mobileSettings = new();
     MobileSettingsWindow? mobileWindow;
+    SelfUpdateWindow? updateWindow;
+    SelfUpdateCoordinator updater = null!;
+    SelfUpdateInterlock updateInterlock = null!;
     string mobileDirectory = "";
     string mobileStatus = "手机通知未配置";
     bool mobileSettingsAvailable = true;
@@ -71,6 +74,8 @@ public partial class MainWindow : Window
             throw new StartupDataException(e);
         }
         mobileDirectory=dir;
+        updateInterlock = new SelfUpdateInterlock(dir);
+        updater = new SelfUpdateCoordinator(store, () => updateWindow?.RefreshStatus(updater.Status), () => false, async token => { using var client = new SelfUpdateClient(); return await client.CheckAsync(typeof(MainWindow).Assembly.GetName().Version!, token); });
         try { mobileSettings=MobileSettingsStore.Load(dir); }
         catch(Exception e) when(e is IOException or UnauthorizedAccessException or CryptographicException or JsonException or InvalidDataException) { mobileSettingsAvailable=false;mobileStatus="手机通知配置无法读取；请重新配置，原文件会保留。"; }
         MobileNoticeStatus.Text=mobileStatus;
@@ -80,11 +85,12 @@ public partial class MainWindow : Window
         drafts = new(store.Tasks.Select(t => t.Copy()));
         TaskList.ItemsSource = drafts;
         engine = new RunnerEngine(store, Refresh);
+        engine.UpdateHandoffPending = () => updateInterlock.Blocked;
         completion = new CompletionCoordinator(store, Refresh, DispatchCompletion);
         startup = new StartupCoordinator(store, engine, Refresh, completion);
         scheduler = new Scheduler(store, engine, Refresh, () => startup.IsActive || startup.Blocked, completion);
         scheduleTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
-        scheduleTimer.Tick += (_, _) => scheduler.Tick(DateTimeOffset.UtcNow, TimeZoneInfo.Local);
+        scheduleTimer.Tick += async (_, _) => { var now=DateTimeOffset.UtcNow; scheduler.Tick(now, TimeZoneInfo.Local); await updater.TickAsync(now, TimeZoneInfo.Local); };
         scheduler.Tick(DateTimeOffset.UtcNow, TimeZoneInfo.Local);
         scheduleTimer.Start();
         Microsoft.Win32.SystemEvents.PowerModeChanged += PowerChanged;
@@ -104,17 +110,27 @@ public partial class MainWindow : Window
         if (!store.NoticeSeen) Loaded += (_, _) => { if (Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE") != "1") ShowNoticeCore(true); };
         Loaded += (_, _) => { if (engine.NeedsRecovery) { var notice=new LocalNotice("需要人工核实", "存在待核实事项，请打开软件查看。", true);notifications.Publish(notice);mobile.Publish(mobileSettings,notice); } };
         Loaded += async (_, _) => { await startup.StartAsync(DateTimeOffset.UtcNow, TimeZoneInfo.Local); if (engine.NeedsRecovery && Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE") != "1") ResolveRecovery(this, new RoutedEventArgs()); };
+        Loaded += async (_, _) => await updater.OnStartupAsync();
         if (Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE") == "1")
         {
             int seconds = int.TryParse(Environment.GetEnvironmentVariable("RUNNER_V3_SMOKE_SECONDS"), out int configured) ? Math.Clamp(configured, 2, 30) : 2;
             Loaded += (_, _) => { var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(seconds) }; timer.Tick += (_, _) => { timer.Stop(); RequestExit(); }; timer.Start(); };
         }
     }
-    void Refresh() { notifications?.ObserveProblem("engine", engine.Status); notifications?.ObserveProblem("scheduler", scheduler?.Status); notifications?.ObserveProblem("startup", startup?.Status); notifications?.ObserveProblem("completion", completion?.Status); mobileProblems?.ObserveProblem("engine", engine.Status); mobileProblems?.ObserveProblem("scheduler", scheduler?.Status); mobileProblems?.ObserveProblem("startup", startup?.Status); mobileProblems?.ObserveProblem("completion", completion?.Status); Status.Text = (engine.NeedsRecovery ? $"有 {Recovery.PendingCount(store)} 条待核实事项，请点击“查看待核实事项”；" : "") + engine.Status + (scheduler != null && !string.IsNullOrEmpty(scheduler.Status) ? "；" + scheduler.Status : "") + (startup != null && !string.IsNullOrEmpty(startup.Status) ? "；" + startup.Status : "") + (completion != null && !string.IsNullOrEmpty(completion.Status) ? "；" + completion.Status : ""); if(completionTrayStatus!=null) completionTrayStatus.Text="完成后操作："+(string.IsNullOrEmpty(completion?.Status) ? "无" : completion.Status); if (shownHistoryCount != store.History.Count) { HistoryList.Items.Refresh(); shownHistoryCount = store.History.Count; } if (HistoryList.SelectedItem == null && store.History.Count > 0) HistoryList.SelectedItem = store.History[^1]; ShowHistory(); }
+    void Refresh() { notifications?.ObserveProblem("engine", engine.Status); notifications?.ObserveProblem("scheduler", scheduler?.Status); notifications?.ObserveProblem("startup", startup?.Status); notifications?.ObserveProblem("completion", completion?.Status); mobileProblems?.ObserveProblem("engine", engine.Status); mobileProblems?.ObserveProblem("scheduler", scheduler?.Status); mobileProblems?.ObserveProblem("startup", startup?.Status); mobileProblems?.ObserveProblem("completion", completion?.Status); Status.Text = (updateInterlock.Blocked ? "存在未完成的更新交接，请点击“查看待核实事项”；" : engine.NeedsRecovery ? $"有 {Recovery.PendingCount(store)} 条待核实事项，请点击“查看待核实事项”；" : "") + engine.Status + (scheduler != null && !string.IsNullOrEmpty(scheduler.Status) ? "；" + scheduler.Status : "") + (startup != null && !string.IsNullOrEmpty(startup.Status) ? "；" + startup.Status : "") + (completion != null && !string.IsNullOrEmpty(completion.Status) ? "；" + completion.Status : ""); if(completionTrayStatus!=null) completionTrayStatus.Text="完成后操作："+(string.IsNullOrEmpty(completion?.Status) ? "无" : completion.Status); if (shownHistoryCount != store.History.Count) { HistoryList.Items.Refresh(); shownHistoryCount = store.History.Count; } if (HistoryList.SelectedItem == null && store.History.Count > 0) HistoryList.SelectedItem = store.History[^1]; ShowHistory(); }
     void OpenMobileSettings(object sender,RoutedEventArgs e)
     {
         if(mobileWindow!=null){mobileWindow.Activate();return;}
         mobileWindow=new MobileSettingsWindow(mobileDirectory,mobileSettings,mobile!,value=>{mobile!.InvalidatePending();mobileSettings=value;mobileSettingsAvailable=true;},mobileStatus,!mobileSettingsAvailable){Owner=this};mobileWindow.Closed+=(_,_)=>mobileWindow=null;mobileWindow.Show();
+    }
+    void OpenUpdateSettings(object sender, RoutedEventArgs e)
+    {
+        if (updateWindow != null) { updateWindow.Activate(); return; }
+        Func<Action<string>, CancellationToken, Task>? simulation = SelfUpdateSimulation.Allowed(mobileDirectory)
+            ? (progress, token) => SelfUpdateSimulation.RunAsync(mobileDirectory, updateInterlock, () => !engine.Running && !engine.NeedsRecovery && !startup.IsActive && !startup.Blocked && !completion.Pending && !completion.Executing && !completion.Blocked, fixture => engine.TryReserveUpdate(updateInterlock, () => !startup.IsActive && !startup.Blocked && !completion.Pending && !completion.Executing && !completion.Blocked, fixture), progress, token)
+            : null;
+        updateWindow = new SelfUpdateWindow(store, updater, simulation) { Owner = this };
+        updateWindow.Closed += (_, _) => updateWindow = null; updateWindow.Show();
     }
     void HistoryChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e) => ShowHistory();
     void ShowHistory()
@@ -305,6 +321,7 @@ public partial class MainWindow : Window
     void Continue(object sender, RoutedEventArgs e) => engine.Continue();
     void ResolveRecovery(object sender, RoutedEventArgs e)
     {
+        if (updateInterlock.Blocked) { System.Windows.MessageBox.Show(updateInterlock.RecoverIsolatedFixture()); Refresh(); return; }
         if (engine.Running) { System.Windows.MessageBox.Show("请先等待当前运行结束，再核实事项。"); return; }
         new RecoveryWindow(store,engine,completion,Refresh) { Owner=this }.ShowDialog();
     }

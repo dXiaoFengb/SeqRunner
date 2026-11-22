@@ -16,6 +16,13 @@ class Program
     static TaskSpec Spec(string name, string args) => new() { Name=name, Program=cmd, Arguments="/d /c " + args, WorkingDirectory=Environment.SystemDirectory, TrustCompletion=true };
     static async Task Tests(bool skipControlled=false)
     {
+        SelfUpdatePackageTests();
+        await SelfUpdateReleaseTests();
+        await SelfUpdateCoordinatorTests();
+        await SelfUpdateInterlockTests();
+        SelfUpdateTransactionTests();
+        await SelfUpdateFullFixtureTests();
+        await SelfUpdateSimulationTests();
         await QqNotificationTests();
         await MobileNotificationTests();
         VisualEvidenceTests();
@@ -309,7 +316,7 @@ class Program
     }
     sealed class FakeQqHandler : System.Net.Http.HttpMessageHandler
     {
-        public byte[] Key=[]; public int PollStatus=1; public bool Deny; public bool Tamper; public bool InvalidUser; public int Sends;
+        public byte[] Key=[]; public int PollStatus=1; public bool Deny; public bool Tamper; public bool InvalidUser; public int Sends; public TaskCompletionSource<bool>? SendEntered, SendRelease;
         protected override async Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request,CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
@@ -322,9 +329,182 @@ class Program
                 else{byte[] iv=new byte[12],plain=Encoding.UTF8.GetBytes("fake-secret"),cipher=new byte[plain.Length],tag=new byte[16];using(var aes=new System.Security.Cryptography.AesGcm(Key,16))aes.Encrypt(iv,plain,cipher,tag);if(Tamper)tag[0]^=1;string packed=Convert.ToBase64String(iv.Concat(cipher).Concat(tag).ToArray());result="{\"retcode\":0,\"data\":{\"status\":2,\"bot_appid\":\"123\",\"user_openid\":\""+(InvalidUser?"invalid/path":"mock_user")+"\",\"bot_encrypt_secret\":\""+packed+"\"}}";}
             }
             else if(path.EndsWith("getAppAccessToken"))result="{\"access_token\":\"fake-token\"}";
-            else {Sends++;result="{\"id\":\"mock-id\"}";}
+            else {Sends++;SendEntered?.TrySetResult(true);if(SendRelease!=null)await SendRelease.Task.WaitAsync(ct);result="{\"id\":\"mock-id\"}";}
             return new(System.Net.HttpStatusCode.OK){Content=new System.Net.Http.StringContent(result)};
         }
+    }
+    sealed class FakeReleaseHandler(string json, System.Net.HttpStatusCode status=System.Net.HttpStatusCode.OK) : System.Net.Http.HttpMessageHandler
+    {
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request,CancellationToken cancellationToken)
+        {
+            if(request.RequestUri?.AbsoluteUri!="https://api.github.com/repos/dXiaoFengb/SeqRunner/releases/latest")throw new InvalidOperationException("unexpected URL");
+            return Task.FromResult(new System.Net.Http.HttpResponseMessage(status){Content=new System.Net.Http.StringContent(json)});
+        }
+    }
+    sealed class FakeUpdateDownloadHandler(bool badRedirect=false) : System.Net.Http.HttpMessageHandler
+    {
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request,CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if(request.RequestUri!.Host=="github.com")
+            {
+                var redirect=new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.Redirect);redirect.Headers.Location=new Uri(badRedirect?"https://example.com/file":"https://release-assets.githubusercontent.com/test?token=fixture");return Task.FromResult(redirect);
+            }
+            return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK){Content=new System.Net.Http.ByteArrayContent(Encoding.UTF8.GetBytes("fixture"))});
+        }
+    }
+    sealed class FakeCompleteUpdateHandler(byte[] package) : System.Net.Http.HttpMessageHandler
+    {
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request,CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if(request.RequestUri!.Host=="api.github.com")return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK){Content=new System.Net.Http.StringContent("{\"draft\":false,\"prerelease\":false,\"tag_name\":\"v1.20.0\",\"assets\":[{\"name\":\"SequentialRunnerV3-v1.20.0.zip\",\"browser_download_url\":\"https://github.com/dXiaoFengb/SeqRunner/releases/download/v1.20.0/SequentialRunnerV3-v1.20.0.zip\"}]}")});
+            if(request.RequestUri.Host=="github.com")return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK){Content=new System.Net.Http.ByteArrayContent(package)});
+            throw new InvalidOperationException("unexpected fixture request");
+        }
+    }
+    static async Task SelfUpdateSimulationTests()
+    {
+        string dir=Path.Combine(root,"simulation-data");Directory.CreateDirectory(dir);var gate=new SelfUpdateInterlock(dir);var entered=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);var progress=new List<string>();bool idle=false;
+        Task run=SelfUpdateSimulation.RunAsync(dir,gate,()=>idle,fixture=>gate.TryReserve(()=>idle,fixture),s=>{lock(progress)progress.Add(s);if(s.Contains("等待任务空闲"))entered.TrySetResult(true);},CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));Check(!gate.Blocked && !run.IsCompleted,"interactive update simulation waits without reserving while busy");idle=true;await run.WaitAsync(TimeSpan.FromSeconds(30));
+        lock(progress)Check(!gate.Blocked && progress.Any(s=>s.Contains("检查模拟版本")) && progress.Any(s=>s.Contains("下载模拟包")) && progress.Any(s=>s.Contains("验证签名")) && progress.Any(s=>s.Contains("独立进程安装")) && progress.Last().Contains("正式程序没有更新"),"interactive update simulation reports stages and completes without official update");
+        string fixture=Directory.EnumerateDirectories(dir,"update-fixture-*").Single();using(var status=System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(Path.Combine(fixture,"status.json"))))Check(status.RootElement.GetProperty("Status").GetString()=="隔离测试：完成；正式程序没有更新","interactive update simulation persists final test status");
+        Check(!SelfUpdateSimulation.Allowed(Path.GetTempPath()),"interactive update simulation rejects non-workspace directories");
+    }
+    static async Task SelfUpdateFullFixtureTests()
+    {
+        string dir=Path.Combine(root,"update-complete-chain");Directory.CreateDirectory(dir);using var key=System.Security.Cryptography.RSA.Create(2048);
+        byte[] payload=Encoding.UTF8.GetBytes("new");var manifest=new SelfUpdatePackage.Manifest("1.20.0",[new("Runner.dll",payload.Length,Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload)))]);
+        byte[] manifestBytes=System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(manifest);byte[] signature=key.SignData(manifestBytes,System.Security.Cryptography.HashAlgorithmName.SHA256,System.Security.Cryptography.RSASignaturePadding.Pss);
+        using var memory=new MemoryStream();using(var zip=new System.IO.Compression.ZipArchive(memory,System.IO.Compression.ZipArchiveMode.Create,true)){void Add(string name,byte[] bytes){using var output=zip.CreateEntry(name).Open();output.Write(bytes);}Add(".v3-update/manifest.json",manifestBytes);Add(".v3-update/manifest.sig",signature);Add("Runner.dll",payload);}
+        using var client=new SelfUpdateClient(new FakeCompleteUpdateHandler(memory.ToArray()));var release=await client.CheckAsync(new Version(1,19,0),CancellationToken.None);string package=await client.DownloadAsync(release!,dir,CancellationToken.None);
+        File.WriteAllText(Path.Combine(dir,".runner-update-test-root"),"fixture");Directory.CreateDirectory(Path.Combine(dir,"current"));File.WriteAllText(Path.Combine(dir,"current","Runner.dll"),"old");string publicKey=Path.Combine(dir,"public-key.der");File.WriteAllBytes(publicKey,key.ExportSubjectPublicKeyInfo());
+        string data=Path.Combine(dir,"data");var store=new Store(data);var gate=new SelfUpdateInterlock(data);var engine=new RunnerEngine(store,()=>{}){UpdateHandoffPending=()=>gate.Blocked};bool reserved=engine.TryReserveUpdate(gate,()=>true);
+        var info=new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false,CreateNoWindow=true};info.ArgumentList.Add("fixture-update-verified-install");info.ArgumentList.Add(dir);info.ArgumentList.Add(package);info.ArgumentList.Add(publicKey);using var process=Process.Start(info)!;
+        bool exited=process.WaitForExit(15000);bool blocked=engine.NeedsRecovery;bool acknowledged=exited && process.ExitCode==0 && gate.TryAcknowledge(()=>SelfUpdateTestTransaction.Recover(dir)=="完成");
+        Check(reserved && blocked && acknowledged && !engine.NeedsRecovery && File.ReadAllText(Path.Combine(dir,"current","Runner.dll"))=="new" && File.ReadAllText(Path.Combine(dir,"previous","Runner.dll"))=="old","update fixture chain checks downloads verifies stages and installs in independent process");
+        string bad=Path.Combine(root,"update-bad-helper");Directory.CreateDirectory(bad);File.WriteAllText(Path.Combine(bad,".runner-update-test-root"),"fixture");Directory.CreateDirectory(Path.Combine(bad,"current"));File.WriteAllText(Path.Combine(bad,"current","Runner.dll"),"old");string badPackage=Path.Combine(bad,"package.zip"),badKey=Path.Combine(bad,"public-key.der");File.WriteAllBytes(badPackage,memory.ToArray());using(var wrong=System.Security.Cryptography.RSA.Create(2048))File.WriteAllBytes(badKey,wrong.ExportSubjectPublicKeyInfo());
+        var invalidInfo=new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false,CreateNoWindow=true};invalidInfo.ArgumentList.Add("fixture-update-verified-install");invalidInfo.ArgumentList.Add(bad);invalidInfo.ArgumentList.Add(badPackage);invalidInfo.ArgumentList.Add(badKey);using var invalid=Process.Start(invalidInfo)!;bool invalidExited=invalid.WaitForExit(15000);
+        Check(invalidExited && invalid.ExitCode==5 && File.ReadAllText(Path.Combine(bad,"current","Runner.dll"))=="old" && !Directory.Exists(Path.Combine(bad,"previous")),"independent update helper rejects untrusted package before touching current version");
+        string appRoot=Path.Combine(root,"update-runner-helper");Directory.CreateDirectory(appRoot);File.WriteAllText(Path.Combine(appRoot,".runner-update-test-root"),"fixture");Directory.CreateDirectory(Path.Combine(appRoot,"current"));File.WriteAllText(Path.Combine(appRoot,"current","Runner.dll"),"old");string appPackage=Path.Combine(appRoot,"package.zip"),appKey=Path.Combine(appRoot,"public-key.der");File.WriteAllBytes(appPackage,memory.ToArray());File.WriteAllBytes(appKey,key.ExportSubjectPublicKeyInfo());
+        string runner=Path.Combine(AppContext.BaseDirectory,"Runner.exe");var appInfo=new ProcessStartInfo(runner){UseShellExecute=false,CreateNoWindow=true};appInfo.ArgumentList.Add("--isolated-update-helper");appInfo.ArgumentList.Add(appRoot);appInfo.ArgumentList.Add(appPackage);appInfo.ArgumentList.Add(appKey);using var app=Process.Start(appInfo)!;bool appExited=app.WaitForExit(15000);
+        Check(appExited && app.ExitCode==0 && SelfUpdateTestTransaction.Recover(appRoot)=="完成" && File.ReadAllText(Path.Combine(appRoot,"current","Runner.dll"))=="new","actual Runner helper entry installs only verified isolated fixture");
+    }
+    static async Task SelfUpdateReleaseTests()
+    {
+        string Json(string url,bool pre=false)=>System.Text.Json.JsonSerializer.Serialize(new{draft=false,prerelease=pre,tag_name="v1.20.0",assets=new[]{new{name="SequentialRunnerV3-v1.20.0.zip",browser_download_url=url}}});
+        const string valid="https://github.com/dXiaoFengb/SeqRunner/releases/download/v1.20.0/SequentialRunnerV3-v1.20.0.zip";
+        using(var client=new SelfUpdateClient(new FakeReleaseHandler(Json(valid)))) { var result=await client.CheckAsync(new Version(1,19,0),CancellationToken.None);Check(result?.Version==new Version(1,20,0),"self update selects official newer release");Check(await client.CheckAsync(new Version(1,20,0,0),CancellationToken.None)==null,"self update reports no newer release"); }
+        using(var client=new SelfUpdateClient(new FakeReleaseHandler("{}",System.Net.HttpStatusCode.NotFound)))Check(await client.CheckAsync(new Version(1,19,0),CancellationToken.None)==null,"self update handles missing release");
+        foreach(var (name,json) in new[]{("prerelease",Json(valid,true)),("foreign source",Json("https://example.com/SequentialRunnerV3-v1.20.0.zip")),("nonstandard port",Json("https://github.com:444/dXiaoFengb/SeqRunner/releases/download/v1.20.0/SequentialRunnerV3-v1.20.0.zip"))})
+        {using var client=new SelfUpdateClient(new FakeReleaseHandler(json));bool rejected=false;try{await client.CheckAsync(new Version(1,19,0),CancellationToken.None);}catch(InvalidDataException){rejected=true;}Check(rejected,"self update rejects "+name);}
+        string dir=Path.Combine(root,"self-update-download");Directory.CreateDirectory(dir);var release=new SelfUpdateRelease(new Version(1,20,0),"v1.20.0",new Uri(valid));
+        using(var client=new SelfUpdateClient(new FakeUpdateDownloadHandler())){string file=await client.DownloadAsync(release,dir,CancellationToken.None);Check(file.EndsWith(".unverified") && await File.ReadAllTextAsync(file)=="fixture","self update downloads only into unverified isolated file");}
+        using(var client=new SelfUpdateClient(new FakeUpdateDownloadHandler(true))){bool rejected=false;try{await client.DownloadAsync(release,dir,CancellationToken.None);}catch(InvalidDataException){rejected=true;}Check(rejected,"self update rejects download redirect outside trusted hosts");}
+        using(var client=new SelfUpdateClient(new FakeUpdateDownloadHandler()))using(var cancel=new CancellationTokenSource()){cancel.Cancel();bool cancelled=false;try{await client.DownloadAsync(release,dir,cancel.Token);}catch(OperationCanceledException){cancelled=true;}Check(cancelled,"self update interrupted download remains unverified");}
+    }
+    static async Task SelfUpdateCoordinatorTests()
+    {
+        var store=NewStore("update-coordinator");int requests=0;
+        var disabled=new SelfUpdateCoordinator(store,()=>{},()=>false,_=>{requests++;return Task.FromResult<SelfUpdateRelease?>(null);});
+        Check(!store.UpdateCheckOnStartup && !store.UpdateCheckScheduled,"self update automatic checks default off");
+        await disabled.CheckAsync();Check(requests==0 && disabled.Status.Contains("未配置可信发布公钥"),"self update missing trust key blocks network");
+        store.UpdateCheckOnStartup=true;await disabled.OnStartupAsync();Check(requests==0,"self update startup without trust key does not call network");
+        store.UpdateCheckScheduled=true;store.UpdateCheckTime="09:00";var now=new DateTimeOffset(2026,11,22,9,0,0,TimeSpan.Zero);
+        var enabled=new SelfUpdateCoordinator(store,()=>{},()=>true,_=>{requests++;return Task.FromResult<SelfUpdateRelease?>(null);});
+        await enabled.TickAsync(now,TimeZoneInfo.Utc);await enabled.TickAsync(now,TimeZoneInfo.Utc);
+        Check(requests==1 && store.UpdateLastCheckDate=="2026-11-22","self update schedule checks once per day after saving intent");
+        var loaded=NewStore("update-coordinator");loaded.Load();Check(loaded.UpdateCheckOnStartup && loaded.UpdateCheckScheduled && loaded.UpdateCheckTime=="09:00" && loaded.UpdateLastCheckDate=="2026-11-22","self update settings and schedule marker persist");
+        await enabled.TickAsync(now.AddDays(-1),TimeZoneInfo.Utc);Check(requests==1,"self update date rollback does not repeat checks");
+        var blocked=new Store(Path.Combine(root,"update-save-failure"),_=>throw new IOException("fixture")){UpdateCheckScheduled=true,UpdateCheckTime="09:00"};int blockedCalls=0;
+        var failedSave=new SelfUpdateCoordinator(blocked,()=>{},()=>true,_=>{blockedCalls++;return Task.FromResult<SelfUpdateRelease?>(null);});await failedSave.TickAsync(now,TimeZoneInfo.Utc);Check(blockedCalls==0 && blocked.UpdateLastCheckDate=="" && failedSave.Status.Contains("保存失败"),"self update schedule save failure prevents network check");
+        var offline=new SelfUpdateCoordinator(store,()=>{},()=>true,_=>throw new System.Net.Http.HttpRequestException("fixture"));await offline.CheckAsync();Check(offline.Status.Contains("检查失败"),"self update offline check failure is isolated");
+        var legacy=NewStore("update-legacy");Directory.CreateDirectory(Path.Combine(root,"update-legacy"));File.WriteAllText(Path.Combine(root,"update-legacy","data.json"),"{\"Format\":\"SequentialRunnerV3/1\"}");legacy.Load();Check(!legacy.UpdateCheckOnStartup && !legacy.UpdateCheckScheduled && legacy.UpdateCheckTime=="09:00","self update legacy data defaults remain disabled");
+        var window=new SelfUpdateWindow(store,disabled);IEnumerable<System.Windows.DependencyObject> Descendants(System.Windows.DependencyObject parent){foreach(var child in System.Windows.LogicalTreeHelper.GetChildren(parent).OfType<System.Windows.DependencyObject>()){yield return child;foreach(var descendant in Descendants(child))yield return descendant;}}
+        var nodes=Descendants(window).ToArray();Check(nodes.OfType<System.Windows.Controls.Button>().Any(x=>x.Name=="UpdateCheckInput") && nodes.OfType<System.Windows.Controls.CheckBox>().Count(x=>x.Name is "UpdateStartupInput" or "UpdateScheduledInput")==2,"self update window exposes check and settings without display");
+        var time=nodes.OfType<System.Windows.Controls.TextBox>().Single(x=>x.Name=="UpdateTimeInput");var save=nodes.OfType<System.Windows.Controls.Button>().Single(x=>x.Name=="UpdateSaveInput");var viewStatus=nodes.OfType<System.Windows.Controls.TextBlock>().Single(x=>x.Name=="UpdateStatus");
+        time.Text="30:99";save.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));Check(store.UpdateCheckTime=="09:00" && viewStatus.Text.Contains("请输入"),"self update window rejects invalid schedule");
+        time.Text="10:30";save.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));var reopened=NewStore("update-coordinator");reopened.Load();Check(reopened.UpdateCheckTime=="10:30" && viewStatus.Text.Contains("已保存"),"self update window saves settings independently");window.Close();
+        var simulateWindow=new SelfUpdateWindow(store,disabled,(report,_)=>{report("隔离测试：完成；正式程序没有更新");return Task.CompletedTask;});var simulationNodes=Descendants(simulateWindow).ToArray();var simulationButton=simulationNodes.OfType<System.Windows.Controls.Button>().Single(x=>x.Name=="UpdateSimulationInput");simulationButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));Check(simulationNodes.OfType<System.Windows.Controls.TextBlock>().Single(x=>x.Name=="UpdateStatus").Text=="隔离测试：完成；正式程序没有更新","update window reports isolated simulation without claiming official update");simulateWindow.Close();
+    }
+    static async Task SelfUpdateInterlockTests()
+    {
+        string activeDir=Path.Combine(root,"update-active");var activeStore=new Store(activeDir);activeStore.Tasks.Add(new TaskSpec{Name="wait",Program=Environment.ProcessPath!,Arguments="fixture-wait",WorkingDirectory=AppContext.BaseDirectory,TrustCompletion=true});var activeEngine=new RunnerEngine(activeStore,()=>{});var activeGate=new SelfUpdateInterlock(activeDir);Task activeRun=activeEngine.Start();
+        Check(activeEngine.Running && !activeEngine.TryReserveUpdate(activeGate,()=>true) && !activeGate.Blocked,"update reservation waits while an owned task runs");await activeRun;
+        string waitingDir=Path.Combine(root,"update-manual-wait");var waitingStore=new Store(waitingDir);waitingStore.Tasks.Add(new TaskSpec{Name="manual",Program=Environment.ProcessPath!,Arguments="fixture-wait",WorkingDirectory=AppContext.BaseDirectory,Completion="人工确认"});var waitingEngine=new RunnerEngine(waitingStore,()=>{});var waitingGate=new SelfUpdateInterlock(waitingDir);Task waitingRun=waitingEngine.Start();
+        for(int i=0;i<200 && !waitingEngine.Waiting;i++)await Task.Delay(20);Check(waitingEngine.Waiting && !waitingEngine.TryReserveUpdate(waitingGate,()=>true) && !waitingGate.Blocked,"update reservation waits for manual decision");waitingEngine.Stop();await waitingRun;
+        string dir=Path.Combine(root,"update-interlock");var store=new Store(dir);var task=Spec("blocked","echo should-not-start");store.Tasks.Add(task);store.Save();
+        var gate=new SelfUpdateInterlock(dir);Check(!gate.TryReserve(()=>false) && !gate.Blocked,"update interlock refuses busy or uncertain reservation");
+        Check(gate.TryReserve(()=>true) && gate.Blocked && !gate.TryReserve(()=>true),"update interlock persists one exclusive intent");
+        var engine=new RunnerEngine(store,()=>{}){UpdateHandoffPending=()=>new SelfUpdateInterlock(dir).Blocked};await engine.Start();
+        Check(engine.NeedsRecovery && !engine.Running && store.History.Count==0,"persisted update intent blocks manual queue after recreation");
+        var trial=TaskTrial.Start(store,engine,task.Id,()=>false,()=>true);Check(trial.Error!=null && !engine.Running,"persisted update intent blocks task trial");
+        var now=new DateTimeOffset(2026,11,22,9,0,0,TimeSpan.Zero);store.Plans.Add(new SchedulePlan{Name="blocked",Enabled=true,StartupMode="always",EffectiveFrom=now.AddDays(-1),Items=[new ScheduleItem{TaskId=task.Id,Days=[now.DayOfWeek]}],Slots=[new ScheduleSlot{Time="09:00",Days=[now.DayOfWeek]}]});
+        var startup=new StartupCoordinator(store,engine,()=>{});await startup.StartAsync(now,TimeZoneInfo.Utc);Check(store.History.Any(x=>x.State=="已跳过" && x.Events.Any(y=>y.Contains("启动计划未运行"))),"persisted update intent blocks startup plans");
+        var scheduler=new Scheduler(store,engine,()=>{});scheduler.Tick(now.AddMinutes(-1),TimeZoneInfo.Utc);scheduler.Tick(now,TimeZoneInfo.Utc);
+        Check(store.History.Any(x=>x.Trigger=="定时" && x.State=="已跳过" && x.Events.Any(y=>y.Contains("存在待核实事项"))) && !engine.Running,"persisted update intent skips due schedules");
+        Check(!gate.TryAcknowledge(()=>false) && gate.Blocked,"update interlock remains blocked without verified recovery");
+        Check(gate.TryAcknowledge(()=>true) && !gate.Blocked && !engine.NeedsRecovery,"verified recovery clears update interlock");
+        string corruptDir=Path.Combine(root,"update-interlock-corrupt");Directory.CreateDirectory(corruptDir);File.WriteAllText(Path.Combine(corruptDir,"self-update-intent.json"),"invalid");var corrupt=new SelfUpdateInterlock(corruptDir);Check(corrupt.Blocked && !corrupt.TryAcknowledge(()=>true) && corrupt.Blocked,"malformed update intent remains blocked even if recovery claims success");
+        Check(new SelfUpdateInterlock(Path.Combine(root,"update-missing-directory")).Blocked,"missing update data directory fails closed");
+        string recoveryData=Path.Combine(root,"update-recovery-data"),fixtureName="update-fixture-"+Guid.NewGuid().ToString("N"),recoveryFixture=Path.Combine(recoveryData,fixtureName);Directory.CreateDirectory(recoveryFixture);File.WriteAllText(Path.Combine(recoveryFixture,".runner-update-test-root"),"fixture");Directory.CreateDirectory(Path.Combine(recoveryFixture,"current"));Directory.CreateDirectory(Path.Combine(recoveryFixture,"staged"));File.WriteAllText(Path.Combine(recoveryFixture,"current","Runner.fixture"),"old");File.WriteAllText(Path.Combine(recoveryFixture,"staged","Runner.fixture"),"new");
+        var recoverGate=new SelfUpdateInterlock(recoveryData);bool reservedForRecovery=recoverGate.TryReserve(()=>true,fixtureName);var helperInfo=new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false,CreateNoWindow=true};helperInfo.ArgumentList.Add("fixture-update-transaction-delayed");helperInfo.ArgumentList.Add(recoveryFixture);helperInfo.ArgumentList.Add("新程序已移动");using(var helper=Process.Start(helperInfo)!){bool recorded=recoverGate.TryRecordHelper(helper);bool running=recoverGate.RecoverIsolatedFixture().Contains("仍在运行");bool exited=helper.WaitForExit(15000);string recovered=recoverGate.RecoverIsolatedFixture();Check(reservedForRecovery && recorded && running && exited && helper.ExitCode==73 && recovered.Contains("已恢复旧程序") && !recoverGate.Blocked && File.ReadAllText(Path.Combine(recoveryFixture,"current","Runner.fixture"))=="old","isolated recovery waits for recorded helper and restores after interruption");}
+        string unknownDir=Path.Combine(root,"update-recovery-unknown");Directory.CreateDirectory(unknownDir);var unknownGate=new SelfUpdateInterlock(unknownDir);bool unknownReserved=unknownGate.TryReserve(()=>true,"update-fixture-"+Guid.NewGuid().ToString("N"));Check(unknownReserved && unknownGate.RecoverIsolatedFixture().Contains("身份不明") && unknownGate.Blocked,"isolated recovery keeps intent blocked when helper identity is missing");
+        string raceDir=Path.Combine(root,"update-race");var raceStore=new Store(raceDir);raceStore.Tasks.Add(Spec("race","echo should-not-start"));var raceGate=new SelfUpdateInterlock(raceDir);var raceEngine=new RunnerEngine(raceStore,()=>{}){UpdateHandoffPending=()=>raceGate.Blocked};using var release=new ManualResetEventSlim();var entered=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);var attempted=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reserve=Task.Run(()=>raceEngine.TryReserveUpdate(raceGate,()=>{entered.TrySetResult(true);return release.Wait(TimeSpan.FromSeconds(5));}));await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));var start=Task.Run(async()=>{attempted.TrySetResult(true);await raceEngine.Start();});await attempted.Task.WaitAsync(TimeSpan.FromSeconds(5));release.Set();bool reserved=await reserve;await start;
+        Check(reserved && raceGate.Blocked && !raceEngine.Running && raceStore.History.Count==0,"update reservation and task start are serialized under race");
+    }
+    static void SelfUpdateTransactionTests()
+    {
+        string NewFixture(string name)
+        {
+            string path=Path.Combine(root,"update-transaction",name);Directory.CreateDirectory(path);
+            File.WriteAllText(Path.Combine(path,".runner-update-test-root"),"fixture");Directory.CreateDirectory(Path.Combine(path,"current"));Directory.CreateDirectory(Path.Combine(path,"staged"));
+            File.WriteAllText(Path.Combine(path,"current","Runner.dll"),"old");File.WriteAllText(Path.Combine(path,"staged","Runner.dll"),"new");return path;
+        }
+        var success=NewFixture("success");SelfUpdateTestTransaction.Install(success);Check(SelfUpdateTestTransaction.Recover(success)=="完成" && File.ReadAllText(Path.Combine(success,"current","Runner.dll"))=="new" && File.ReadAllText(Path.Combine(success,"previous","Runner.dll"))=="old","update transaction retains verified previous version after success");
+        bool repeated=false;try{SelfUpdateTestTransaction.Install(success);}catch(IOException){repeated=true;}Check(repeated && File.ReadAllText(Path.Combine(success,"current","Runner.dll"))=="new" && File.ReadAllText(Path.Combine(success,"previous","Runner.dll"))=="old","update transaction refuses repeated installation without changing versions");
+        foreach(string phase in new[]{"准备","旧程序已移动","新程序已移动"})
+        {
+            string fixture=NewFixture("interrupt-"+phase);var info=new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false,CreateNoWindow=true};info.ArgumentList.Add("fixture-update-transaction");info.ArgumentList.Add(fixture);info.ArgumentList.Add(phase);
+            using var process=Process.Start(info)!;bool exited=process.WaitForExit(15000);bool recovered=exited && process.ExitCode==73 && SelfUpdateTestTransaction.Recover(fixture)=="已恢复" && File.ReadAllText(Path.Combine(fixture,"current","Runner.dll"))=="old";
+            Check(recovered,"update transaction independent process interrupt recovers "+phase);
+        }
+        foreach(string phase in new[]{"隔离新程序","还原旧程序"})
+        {
+            string fixture=NewFixture("recovery-interrupt-"+phase);try{SelfUpdateTestTransaction.Install(fixture,p=>{if(p=="新程序已移动")throw new IOException("fixture");});}catch(IOException){}
+            var info=new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false,CreateNoWindow=true};info.ArgumentList.Add("fixture-update-recovery");info.ArgumentList.Add(fixture);info.ArgumentList.Add(phase);
+            using var process=Process.Start(info)!;bool exited=process.WaitForExit(15000);bool recovered=exited && process.ExitCode==73 && SelfUpdateTestTransaction.Recover(fixture)=="已恢复" && File.ReadAllText(Path.Combine(fixture,"current","Runner.dll"))=="old";
+            Check(recovered,"update transaction recovery can resume after interrupt "+phase);
+        }
+        string finished=NewFixture("after-finish");var doneInfo=new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false,CreateNoWindow=true};doneInfo.ArgumentList.Add("fixture-update-transaction");doneInfo.ArgumentList.Add(finished);doneInfo.ArgumentList.Add("完成");using(var process=Process.Start(doneInfo)!){bool exited=process.WaitForExit(15000);Check(exited && process.ExitCode==73 && SelfUpdateTestTransaction.Recover(finished)=="完成" && File.ReadAllText(Path.Combine(finished,"current","Runner.dll"))=="new","completed update remains committed after helper exits");}
+        string conflict=NewFixture("conflict");try{SelfUpdateTestTransaction.Install(conflict,p=>{if(p=="旧程序已移动")throw new IOException("fixture");});}catch(IOException){}File.WriteAllText(Path.Combine(conflict,"previous","Runner.dll"),"changed");bool refused=false;try{SelfUpdateTestTransaction.Recover(conflict);}catch(InvalidDataException){refused=true;}Check(refused && !Directory.Exists(Path.Combine(conflict,"current")),"update transaction refuses recovery when backup changed");
+        string locked=NewFixture("locked");using(var held=new FileStream(Path.Combine(locked,".update-lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None)){bool denied=false;try{SelfUpdateTestTransaction.Install(locked);}catch(IOException){denied=true;}Check(denied && File.ReadAllText(Path.Combine(locked,"current","Runner.dll"))=="old","update transaction concurrent helper is blocked");}
+        string occupied=NewFixture("occupied");using(var held=new FileStream(Path.Combine(occupied,"current","Runner.dll"),FileMode.Open,FileAccess.ReadWrite,FileShare.None)){bool denied=false;try{SelfUpdateTestTransaction.Install(occupied);}catch(IOException){denied=true;}Check(denied,"update transaction refuses a locked program file");}Check(File.ReadAllText(Path.Combine(occupied,"current","Runner.dll"))=="old","locked file leaves prior version unchanged");
+        string userdata=NewFixture("userdata");File.WriteAllText(Path.Combine(userdata,"current","data.json"),"protected");bool deniedData=false;try{SelfUpdateTestTransaction.Install(userdata);}catch(InvalidDataException){deniedData=true;}Check(deniedData && File.ReadAllText(Path.Combine(userdata,"current","data.json"))=="protected","update transaction refuses to move user data");
+    }
+    static void SelfUpdatePackageTests()
+    {
+        string dir=Path.Combine(root,"self-update-package");Directory.CreateDirectory(dir);
+        using var key=System.Security.Cryptography.RSA.Create(2048);using var wrong=System.Security.Cryptography.RSA.Create(2048);
+        byte[] content=Encoding.UTF8.GetBytes("controlled update fixture");string hash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content));
+        string Create(string name,string path="Runner.dll",string? recordedHash=null,bool tamperSignature=false,bool duplicate=false,string version="1.20.0")
+        {
+            byte[] manifest=System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new SelfUpdatePackage.Manifest(version,[new(path,content.Length,recordedHash ?? hash)]));
+            byte[] signature=key.SignData(manifest,System.Security.Cryptography.HashAlgorithmName.SHA256,System.Security.Cryptography.RSASignaturePadding.Pss);if(tamperSignature)signature[0]^=1;
+            string file=Path.Combine(dir,name+".zip");using var archive=System.IO.Compression.ZipFile.Open(file,System.IO.Compression.ZipArchiveMode.Create);
+            void Add(string entry,byte[] bytes){using var output=archive.CreateEntry(entry).Open();output.Write(bytes);}
+            Add(".v3-update/manifest.json",manifest);Add(".v3-update/manifest.sig",signature);Add(path,content);if(duplicate)Add(path.ToUpperInvariant(),content);return file;
+        }
+        bool Reject(string file,System.Security.Cryptography.RSA verifyKey){try{SelfUpdatePackage.Verify(file,verifyKey,new Version(1,19,0));return false;}catch(Exception e) when(e is InvalidDataException or System.Security.Cryptography.CryptographicException or System.Text.Json.JsonException){return true;}}
+        string valid=Create("valid");Check(SelfUpdatePackage.Verify(valid,key,new Version(1,19,0)).Version=="1.20.0","self update accepts signed valid newer package");
+        string stage=SelfUpdatePackage.Stage(valid,key,new Version(1,19,0),new Version(1,20,0),dir);Check(File.ReadAllBytes(Path.Combine(stage,"Runner.dll")).SequenceEqual(content),"self update stages verified files in a new directory");
+        bool mismatched=false;try{SelfUpdatePackage.Stage(valid,key,new Version(1,19,0),new Version(1,21,0),dir);}catch(InvalidDataException){mismatched=true;}Check(mismatched,"self update rejects signed package with wrong release version");
+        Check(Reject(valid,wrong),"self update rejects untrusted signing key");Check(Reject(Create("signature",tamperSignature:true),key),"self update rejects tampered signature");
+        Check(Reject(Create("digest",recordedHash:new string('0',64)),key),"self update rejects mismatched file digest");Check(Reject(Create("old",version:"1.19.0"),key),"self update rejects non-newer version");
+        Check(Reject(Create("traversal",path:"../Runner.dll"),key),"self update rejects traversal paths");Check(Reject(Create("userdata",path:"data.json"),key),"self update rejects user data in package");Check(Reject(Create("reserved",path:"CON.txt"),key),"self update rejects Windows reserved file names");
+        Check(Reject(Create("duplicates",duplicate:true),key),"self update rejects duplicate case-insensitive paths");
     }
     static void QqWindowEvidenceTests()
     {
@@ -332,8 +512,10 @@ class Program
         var window=new MobileSettingsWindow(dir,new MobileSettings{ServerEnabled=true,ServerKey="SCTFake123",QqEnabled=true,QqAppId="123",QqSecret="fake-secret",QqOpenId="mock_user"},sender,value=>applied=value,"",false);
         IEnumerable<System.Windows.DependencyObject> Descendants(System.Windows.DependencyObject parent){foreach(var child in System.Windows.LogicalTreeHelper.GetChildren(parent).OfType<System.Windows.DependencyObject>()){yield return child;foreach(var descendant in Descendants(child))yield return descendant;}}
         var nodes=Descendants(window).ToArray();var check=nodes.OfType<System.Windows.Controls.CheckBox>().Single(x=>x.Name=="QqNoticeEnabledInput");var status=nodes.OfType<System.Windows.Controls.TextBlock>().Single(x=>x.Name=="QqNoticeStatus");var unbind=nodes.OfType<System.Windows.Controls.Button>().Single(x=>x.Name=="QqNoticeUnbindInput");
-        bool shown=check.IsChecked==true && status.Text.Contains("已绑定");unbind.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));var saved=MobileSettingsStore.Load(dir);
-        Check(shown && !saved.QqEnabled && saved.QqSecret=="" && saved.ServerEnabled && saved.ServerKey=="SCTFake123" && status.Text.Contains("已解绑"),"QQ unbind preserves other channels without showing window");window.Close();
+        var result=nodes.OfType<System.Windows.Controls.TextBlock>().Single(x=>x.Name=="MobileNoticeResult");var save=nodes.OfType<System.Windows.Controls.Button>().Single(x=>x.Name=="SaveMobileNoticeInput");
+        bool shown=check.IsChecked==true && status.Text=="QQ：已绑定并启用";check.IsChecked=false;save.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));bool disabled=status.Text=="QQ：已绑定，尚未启用";check.IsChecked=true;save.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        Check(disabled && status.Text=="QQ：已绑定并启用","QQ saved binding state refreshes without showing window");result.Text="QQ：服务已接受";unbind.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));var saved=MobileSettingsStore.Load(dir);
+        Check(shown && !saved.QqEnabled && saved.QqSecret=="" && saved.ServerEnabled && saved.ServerKey=="SCTFake123" && status.Text.Contains("已解绑") && result.Text=="","QQ unbind preserves other channels and clears old status without showing window");window.Close();
         var fresh=new MobileSettingsWindow(dir,new MobileSettings(),sender,_=>{},"",false);var freshNodes=Descendants(fresh).ToArray();Check(freshNodes.OfType<System.Windows.Controls.CheckBox>().Single(x=>x.Name=="QqNoticeEnabledInput").IsChecked==false && freshNodes.OfType<System.Windows.Controls.TextBlock>().Single(x=>x.Name=="QqNoticeStatus").Text.Contains("未绑定"),"QQ settings window defaults unbound and disabled");fresh.Close();
     }
     static async Task QqNotificationTests()
@@ -352,6 +534,8 @@ class Program
         {notices.Publish(s,new("需要处理","测试",true));for(int i=0;i<100;i++){lock(events)if(events.Count>0)break;await Task.Delay(20);}lock(events)Check(events.Any(x=>x.Contains("服务已接受")) && events.All(x=>!x.Contains("fake-secret")),"QQ queue reports acceptance without leaking credentials");}
         var deniedEvents=new List<string>();using(var notices=new MobileNotifications(x=>{lock(deniedEvents)deniedEvents.Add(x);},qqFactory:()=>new QqBotClient(new FakeQqHandler{Deny=true})))
         {notices.Publish(s,new("需要处理","测试",true));for(int i=0;i<100;i++){lock(deniedEvents)if(deniedEvents.Count>0)break;await Task.Delay(20);}lock(deniedEvents)Check(deniedEvents.Any(x=>x.Contains("发送失败")) && deniedEvents.All(x=>!x.Contains("private-response") && !x.Contains("fake-secret")),"QQ send failure is isolated and sanitized");}
+        var lateEvents=new List<string>();var lateHandler=new FakeQqHandler{SendEntered=new(),SendRelease=new()};using(var notices=new MobileNotifications(x=>{lock(lateEvents)lateEvents.Add(x);},qqFactory:()=>new QqBotClient(lateHandler)))
+        {notices.Publish(s,new("需要处理","测试",true));await lateHandler.SendEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));notices.InvalidatePending();lateHandler.SendRelease.SetResult(true);await Task.Delay(100);lock(lateEvents)Check(lateEvents.Count==0,"QQ stale in-flight result does not restore old status after unbind");}
         var unbound=new MobileSettings{QqEnabled=true};bool invalid=false;try{MobileNotifications.Validate(unbound);}catch(ArgumentException){invalid=true;}Check(invalid && !new MobileSettings().QqEnabled,"QQ defaults off and requires binding");
     }
     sealed class FakeMobileHandler : System.Net.Http.HttpMessageHandler
@@ -835,6 +1019,21 @@ class Program
             AddTarget();if(mode.EndsWith("duplicate"))AddTarget();win.Loaded+=(_,_)=>{win.Activate();var source=System.Windows.PresentationSource.FromVisual(win) as System.Windows.Interop.HwndSource;source!.AddHook((IntPtr hwnd,int msg,IntPtr wp,IntPtr lp,ref bool handled)=>{if(msg==0x0202){File.AppendAllText(counter,"click\n");File.AppendAllText(log,"DONE\n");}return IntPtr.Zero;});var timer=new DispatcherTimer{Interval=TimeSpan.FromSeconds(18)};timer.Tick+=(_,_)=>{timer.Stop();win.Close();};timer.Start();};return app.Run(win);
         }
         if (args.Length > 0 && args[0] == "probe-mobile-regression") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await QqNotificationTests(); await MobileNotificationTests(); await NotificationTests(); await ScheduleTests(); await StartupAndIntervalTests(); await CompletionTests(); var s=NewStore("mobile-recovery-regression");s.History.Add(new RunRecord{State="中断"});s.Tasks.Add(Spec("blocked","echo blocked"));s.Save();var loaded=NewStore("mobile-recovery-regression");loaded.Load();var e=new RunnerEngine(loaded,()=>{});await e.Start();Check(e.NeedsRecovery && loaded.History.Count==1,"mobile regression interrupted run remains blocked"); } catch(Exception ex) { failures++; Console.WriteLine(ex.GetType().Name); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "--isolated-update-helper") return SelfUpdateSimulation.RunHelper(args);
+        if (args.Length > 0 && args[0] == "fixture-update-verified-install")
+        {
+            try
+            {
+                string fixture=Path.GetFullPath(args[1]);string prefix=fixture+Path.DirectorySeparatorChar;string package=Path.GetFullPath(args[2]),publicKey=Path.GetFullPath(args[3]);
+                if(!File.Exists(Path.Combine(fixture,".runner-update-test-root")) || !package.StartsWith(prefix,StringComparison.OrdinalIgnoreCase) || !publicKey.StartsWith(prefix,StringComparison.OrdinalIgnoreCase))return 1;
+                using var key=System.Security.Cryptography.RSA.Create();key.ImportSubjectPublicKeyInfo(File.ReadAllBytes(publicKey),out _);string stage=SelfUpdatePackage.Stage(package,key,new Version(1,19,0),new Version(1,20,0),fixture);Directory.Move(stage,Path.Combine(fixture,"staged"));SelfUpdateTestTransaction.Install(fixture);return 0;
+            }
+            catch(Exception e) when(e is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException or System.Text.Json.JsonException){return 5;}
+        }
+        if (args.Length > 0 && args[0] == "fixture-update-transaction") { SelfUpdateTestTransaction.Install(args[1],phase=>{if(phase==args[2])Environment.Exit(73);}); return 0; }
+        if (args.Length > 0 && args[0] == "fixture-update-transaction-delayed") { Thread.Sleep(2000); SelfUpdateTestTransaction.Install(args[1],phase=>{if(phase==args[2])Environment.Exit(73);}); return 0; }
+        if (args.Length > 0 && args[0] == "fixture-update-recovery") { SelfUpdateTestTransaction.Recover(args[1],phase=>{if(phase==args[2])Environment.Exit(73);}); return 0; }
+        if (args.Length > 0 && args[0] == "probe-self-update-package") { SelfUpdatePackageTests(); SelfUpdateReleaseTests().GetAwaiter().GetResult(); SelfUpdateCoordinatorTests().GetAwaiter().GetResult(); SelfUpdateInterlockTests().GetAwaiter().GetResult(); SelfUpdateTransactionTests(); SelfUpdateFullFixtureTests().GetAwaiter().GetResult(); SelfUpdateSimulationTests().GetAwaiter().GetResult(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-qq-notifications") { QqNotificationTests().GetAwaiter().GetResult(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-mobile-notifications") { MobileNotificationTests().GetAwaiter().GetResult(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-notifications") { NotificationTests().GetAwaiter().GetResult(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }

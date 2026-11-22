@@ -21,3 +21,5 @@ credentials.json
 mobile-notifications.dat
 mobile-notifications-recovered.dat
 mobile-notifications.*.tmp
+self-update-intent.json
+self-update-intent.json.*

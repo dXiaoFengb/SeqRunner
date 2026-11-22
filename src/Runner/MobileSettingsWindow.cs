@@ -37,7 +37,7 @@ internal sealed class MobileSettingsWindow : Window
         var qqButtons=new WrapPanel();body.Children.Add(qqButtons);qqButtons.Children.Add(bind);
         var cancel=new Button{Name="QqNoticeCancelInput",Content="取消扫码",Padding=new Thickness(12,6,12,6),Margin=new Thickness(0,0,8,8)};qqButtons.Children.Add(cancel);
         var unbind=new Button{Name="QqNoticeUnbindInput",Content="解绑 QQ",Padding=new Thickness(12,6,12,6),Margin=new Thickness(0,0,8,8)};qqButtons.Children.Add(unbind);
-        void ShowBinding()=>qqStatus.Text=string.IsNullOrEmpty(this.settings.QqSecret)?"QQ：未绑定":"QQ：已绑定；需启用并保存后发送";
+        void ShowBinding()=>qqStatus.Text=string.IsNullOrEmpty(this.settings.QqSecret)?"QQ：未绑定":this.settings.QqEnabled?"QQ：已绑定并启用":"QQ：已绑定，尚未启用";
         ShowBinding();
         var buttons=new WrapPanel{Margin=new Thickness(0,12,0,0)};body.Children.Add(buttons);
         var save=new Button{Name="SaveMobileNoticeInput",Content="保存",Margin=new Thickness(0,0,8,8),Padding=new Thickness(12,6,12,6)};buttons.Children.Add(save);
@@ -48,7 +48,7 @@ internal sealed class MobileSettingsWindow : Window
             try
             {
                 var next=new MobileSettings{ServerEnabled=server.IsChecked==true,WebhookEnabled=webhook.IsChecked==true,QqEnabled=qq.IsChecked==true,ServerKey=string.IsNullOrEmpty(key.Password)?this.settings.ServerKey:key.Password.Trim(),WebhookUrl=string.IsNullOrEmpty(url.Password)?this.settings.WebhookUrl:url.Password.Trim(),Template=template.Text,QqAppId=this.settings.QqAppId,QqSecret=this.settings.QqSecret,QqOpenId=this.settings.QqOpenId};
-                MobileNotifications.Validate(next);MobileSettingsStore.Save(directory,next,recover);recover=false;this.settings=next;apply(next);key.Clear();url.Clear();result.Text="配置已保存；凭证不会显示。";return true;
+                MobileNotifications.Validate(next);MobileSettingsStore.Save(directory,next,recover);recover=false;this.settings=next;apply(next);ShowBinding();key.Clear();url.Clear();result.Text="配置已保存；凭证不会显示。";return true;
             }
             catch(Exception e) when(e is ArgumentException or System.Text.Json.JsonException or System.IO.IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException){result.Text="配置无效或保存失败，请检查渠道配置及数据目录。";return false;}
         }
@@ -74,7 +74,7 @@ internal sealed class MobileSettingsWindow : Window
             finally{qr.Source=null;qr.Visibility=Visibility.Collapsed;binding=null;bind.IsEnabled=true;cts.Dispose();}
         };
         cancel.Click+=(_,_)=>binding?.Cancel();
-        unbind.Click+=(_,_)=>{binding?.Cancel();try{var previous=this.settings;var next=new MobileSettings{ServerEnabled=previous.ServerEnabled,WebhookEnabled=previous.WebhookEnabled,ServerKey=previous.ServerKey,WebhookUrl=previous.WebhookUrl,Template=previous.Template};MobileSettingsStore.Save(directory,next,recover);recover=false;this.settings=next;apply(next);qq.IsChecked=false;qqStatus.Text="QQ：已解绑";}catch(Exception e) when(e is System.IO.IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException){qqStatus.Text="QQ：解绑记录保存失败，原设置保留";}};
+        unbind.Click+=(_,_)=>{binding?.Cancel();try{var previous=this.settings;var next=new MobileSettings{ServerEnabled=previous.ServerEnabled,WebhookEnabled=previous.WebhookEnabled,ServerKey=previous.ServerKey,WebhookUrl=previous.WebhookUrl,Template=previous.Template};MobileSettingsStore.Save(directory,next,recover);recover=false;this.settings=next;apply(next);qq.IsChecked=false;qqStatus.Text="QQ：已解绑";result.Text="";}catch(Exception e) when(e is System.IO.IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException){qqStatus.Text="QQ：解绑记录保存失败，原设置保留";}};
         Closed+=(_,_)=>binding?.Cancel();
     }
     internal void SetStatus(string value)=>result.Text=value;

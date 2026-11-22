@@ -83,7 +83,7 @@ internal sealed class MobileNotifications : IDisposable
     static MobileSettings Snapshot(MobileSettings s)=>new(){ServerEnabled=s.ServerEnabled,WebhookEnabled=s.WebhookEnabled,QqEnabled=s.QqEnabled,ServerKey=s.ServerEnabled?s.ServerKey:"",WebhookUrl=s.WebhookEnabled?s.WebhookUrl:"",Template=s.Template,QqAppId=s.QqEnabled?s.QqAppId:"",QqSecret=s.QqEnabled?s.QqSecret:"",QqOpenId=s.QqEnabled?s.QqOpenId:""};
     async Task ProcessAsync()
     {
-        try{await foreach(var (settings,notice,version) in queue.Reader.ReadAllAsync(stopping.Token)) { if(version!=Volatile.Read(ref generation))continue;if(settings.ServerEnabled)await SendOne("Server酱",settings,notice,true);if(version==Volatile.Read(ref generation) && settings.WebhookEnabled)await SendOne("Webhook",settings,notice,false);if(version==Volatile.Read(ref generation) && settings.QqEnabled)await SendQq(settings,notice); }}catch(OperationCanceledException){}
+        try{await foreach(var (settings,notice,version) in queue.Reader.ReadAllAsync(stopping.Token)) { if(version!=Volatile.Read(ref generation))continue;if(settings.ServerEnabled)await SendOne("Server酱",settings,notice,true);if(version==Volatile.Read(ref generation) && settings.WebhookEnabled)await SendOne("Webhook",settings,notice,false);if(version==Volatile.Read(ref generation) && settings.QqEnabled)await SendQq(settings,notice,version); }}catch(OperationCanceledException){}
     }
     internal static Uri ServerUri(string key)
     {
@@ -110,11 +110,12 @@ internal sealed class MobileNotifications : IDisposable
         if(s.QqEnabled && (!QqBotClient.ValidId(s.QqAppId,s.QqOpenId) || string.IsNullOrWhiteSpace(s.QqSecret) || s.QqSecret.Length>1024))throw new ArgumentException("请先绑定 QQ 机器人");
         if(s.WebhookEnabled){if(!Uri.TryCreate(s.WebhookUrl,UriKind.Absolute,out var uri) || uri.Scheme!=Uri.UriSchemeHttps || !string.IsNullOrEmpty(uri.UserInfo))throw new ArgumentException("Webhook 地址必须是 HTTPS 地址");_ = RenderTemplate(s.Template,new("测试","测试"));}
     }
-    async Task SendQq(MobileSettings settings,LocalNotice notice)
+    async Task SendQq(MobileSettings settings,LocalNotice notice,int version)
     {
-        try{using var qq=qqFactory();await qq.SendAsync(new(settings.QqAppId,settings.QqSecret,settings.QqOpenId),notice,stopping.Token);Report("QQ：服务已接受（手机接收情况需自行确认）");}
-        catch(OperationCanceledException){if(!stopping.IsCancellationRequested)Report("QQ：请求超时");}
-        catch(Exception e) when(e is HttpRequestException or IOException or JsonException or ArgumentException or InvalidOperationException or CryptographicException){Report("QQ：发送失败，请检查网络及机器人主动消息权限");}
+        void Current(string message){if(version==Volatile.Read(ref generation))Report(message);}
+        try{using var qq=qqFactory();await qq.SendAsync(new(settings.QqAppId,settings.QqSecret,settings.QqOpenId),notice,stopping.Token);Current("QQ：服务已接受（手机接收情况需自行确认）");}
+        catch(OperationCanceledException){if(!stopping.IsCancellationRequested)Current("QQ：请求超时");}
+        catch(Exception e) when(e is HttpRequestException or IOException or JsonException or ArgumentException or InvalidOperationException or CryptographicException){Current("QQ：发送失败，请检查网络及机器人主动消息权限");}
     }
     async Task SendOne(string channel,MobileSettings settings,LocalNotice notice,bool server)
     {

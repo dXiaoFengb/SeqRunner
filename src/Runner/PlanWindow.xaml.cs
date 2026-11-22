@@ -33,7 +33,7 @@ public partial class PlanWindow : Window
         }
         plans = new(Clone(store.Plans)); PlansList.ItemsSource=plans; TaskChoices.ItemsSource=store.Tasks; Details.IsEnabled=false;
         var statusTimer = new System.Windows.Threading.DispatcherTimer { Interval=TimeSpan.FromMilliseconds(250) };
-        statusTimer.Tick += (_, _) => PlanRunStatus.Text=(engine.NeedsRecovery ? $"有 {Recovery.PendingCount(store)} 条待核实事项，请回主窗口查看；" : "") + engine.Status + (completion != null && !string.IsNullOrEmpty(completion.Status) ? "；"+completion.Status : "");
+        statusTimer.Tick += (_, _) => PlanRunStatus.Text=(engine.UpdateHandoffPending() ? "存在未完成的更新交接，请回主窗口查看；" : engine.NeedsRecovery ? $"有 {Recovery.PendingCount(store)} 条待核实事项，请回主窗口查看；" : "") + engine.Status + (completion != null && !string.IsNullOrEmpty(completion.Status) ? "；"+completion.Status : "");
         statusTimer.Start(); Closed += (_, _) => statusTimer.Stop();
     }
     static List<DayOfWeek> Days(StackPanel panel) => panel.Children.OfType<CheckBox>().Where(c => c.IsChecked == true).Select(c => (DayOfWeek)c.Tag).ToList();

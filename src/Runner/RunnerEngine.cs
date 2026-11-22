@@ -33,8 +33,14 @@ public sealed class RunnerEngine
     bool manualMode;
     bool uncertainOwnership;
     bool storageFailed;
-    public bool NeedsRecovery => uncertainOwnership || Recovery.HasPending(store);
+    internal Func<bool> UpdateHandoffPending { get; set; } = () => false;
+    public bool NeedsRecovery => uncertainOwnership || Recovery.HasPending(store) || UpdateHandoffPending();
     readonly object decisionGate = new();
+    readonly object startGate = new();
+    internal bool TryReserveUpdate(SelfUpdateInterlock gate, Func<bool> otherReady, string? fixture = null)
+    {
+        lock (startGate) return gate.TryReserve(() => !Running && !NeedsRecovery && otherReady(), fixture);
+    }
     enum ManualDecision { Confirmed, Skipped, Stopped }
     TaskCompletionSource<bool>? decision;
     TaskCompletionSource<ManualDecision>? manualDecision;
@@ -147,12 +153,17 @@ public sealed class RunnerEngine
     public Task Start() => StartTasks(store.Tasks.Select(t => t.Copy()).ToList());
     public async Task StartTasks(IReadOnlyList<TaskSpec> tasks, RunRecord? reserved = null, IReadOnlyList<int>? intervals = null)
     {
-        if (Running || NeedsRecovery || tasks.Count == 0) return;
-        if (intervals != null && (intervals.Count != tasks.Count || intervals.Any(i => i < 0 || i > 86400))) throw new ArgumentException("任务间隔无效");
-        var snapshot = tasks.Select(t => t.Copy()).ToList();
-        stopDelay = new CancellationTokenSource();
+        List<TaskSpec> snapshot;
+        lock (startGate)
+        {
+            if (Running || NeedsRecovery || tasks.Count == 0) return;
+            if (intervals != null && (intervals.Count != tasks.Count || intervals.Any(i => i < 0 || i > 86400))) throw new ArgumentException("任务间隔无效");
+            snapshot = tasks.Select(t => t.Copy()).ToList();
+            stopDelay = new CancellationTokenSource();
+            Running = true; StopRequested = false; storageFailed = false; run = reserved ?? new RunRecord(); if (reserved == null) store.History.Add(run);
+        }
         bool allSucceeded = true;
-        Running = true; StopRequested = false; storageFailed = false; run = reserved ?? new RunRecord(); if (reserved == null) store.History.Add(run); Event("队列开始");
+        Event("队列开始");
         try
         {
             for (int index=0; index<snapshot.Count; index++)
@@ -183,7 +194,7 @@ public sealed class RunnerEngine
             else Notice(run.State == "已停止" ? "队列已停止" : run.State == "需人工核实" ? "队列需要核实" : run.AllSucceeded == true ? "队列已完成" : "队列已结束", run.State == "已停止" ? "后续任务不会启动。" : run.AllSucceeded == true ? "本轮任务已全部成功完成。" : "本轮包含未成功或未确认的任务，请查看历史。", run.AllSucceeded != true && run.State != "已停止");
         }
         catch (Exception ex) { run.AllSucceeded=false; run.State = "需人工核实"; uncertainOwnership=true; Event("运行异常，请检查相关程序：" + ex.Message); if (!storageFailed) Notice("运行异常", "请打开软件核实本轮运行。", true); }
-        finally { lock (decisionGate) { active = null; Running = false; Waiting = false; decision = null; manualDecision = null; manualMode = false; } stopDelay?.Dispose(); stopDelay=null; changed(); run = null; }
+        finally { lock (startGate) { lock (decisionGate) { active = null; Waiting = false; decision = null; manualDecision = null; manualMode = false; } stopDelay?.Dispose(); stopDelay=null; run = null; Running = false; } changed(); }
     }
     async Task<string> RunOne(TaskSpec task, ControlledRestartChannel? controlled)
     {
