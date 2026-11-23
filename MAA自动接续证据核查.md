@@ -35,3 +35,10 @@
 - 独立进程向同一测试日志追加开始与完成文字时，旧内容锚点仍未改变，解析器也能识别出完成；这验证日志锚点不认证写入来源。测试文件中途改变后恢复原内容和写入时间，前后哈希与时间一致；这验证有限次指纹采样不能排除采样间变化。
 - 上述四项专项结果均为 PASS、Failures: 0。现有“外部实例无法写入同一日志”的用户声明是使用前提，不能由该锚点独立证明；对更新、重启和组外行为仍未建立可安全放行的充分依据。保留现有阻断，未修改产品功能。
 - `probe-maa-resume` 专项退出码 0、Failures: 0。完整回归首次在沙箱内因本机模拟监听返回错误 5 中止，沙箱外在同一隔离夹具范围重跑退出码 0、Failures: 0；未统计本轮完整回归项目总数。未运行真实 MAA、游戏、真实更新或源码预览。
+
+## 2026-11-23 续查：MaaCore 结构化回调日志
+
+- 更正并细化此前“是否存在其他完整外部记录待核实”：MAA 6.22.0 [Assistant.cpp](https://raw.githubusercontent.com/MaaAssistantArknights/MaaAssistantArknights/v6.22.0/src/MaaCore/Assistant.cpp) 的 `append_callback` 在将消息加入队列前，以 `Log.info` 写入回调类型与 JSON；[Logger.hpp](https://raw.githubusercontent.com/MaaAssistantArknights/MaaAssistantArknights/v6.22.0/src/MaaCore/Utils/Logger.hpp) 指向 `debug/asst.log`，日志前缀包含进程 ID，INFO 默认启用。这是固定版本源码证据，真实运行是否完整写入 [待核实]。
+- 核心源码区分任务开始、错误、停止和完成；`finished_tasks` 包含已运行任务，即使任务报错也可能被记录，不能单靠 `AllTasksCompleted` 断定全部成功。回调在写日志之后才排队，不能仅凭该行证明界面最终接收或游戏内真实结果。
+- 这是可研究的本轮关联候选，但日志中的 PID 与任务 ID 不等于不可伪造的会话身份；PID 复用、日志被替换或截断、重启、日志滚动、写入失败和多个实例仍须验证。源码中日志文件可滚动且写入打开失败时存在回退，不能将日志存在或 PID 一致视作完整性证明。
+- 本轮没有读取或修改用户的实际 `asst.log`，没有将该线索接入产品成功判定；下一步如研究此方案，应先使用隔离合成数据验证实例关联、事件遗漏、重启和失败处理，再由验收方在具体授权下验证真实行为。

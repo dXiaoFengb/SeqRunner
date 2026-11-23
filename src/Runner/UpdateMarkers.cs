@@ -3,6 +3,10 @@ namespace Runner;
 internal static class UpdateMarkers
 {
     internal static readonly string[] BuiltIn = ["正在更新", "更新中", "正在重启", "重启中", "updating", "restarting"];
+    internal static readonly string[] Maa622 = [
+        "Pending update package detected, applying before full startup",
+        "Pending update package handed off to external updater, exiting current process",
+        "Delegated pending update failed. Reason:"];
     internal static bool TryParse(string? input, out string[] markers)
     {
         markers = (input ?? "").Split(["\r\n", "\n", "\r"], StringSplitOptions.None)

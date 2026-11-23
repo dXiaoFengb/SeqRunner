@@ -637,6 +637,7 @@ class Program
     }
     static async Task MaaResumeTests()
     {
+        await Maa622ClueTests();
         await MaaEvidenceCounterexamples();
         var parser=new MaaLogEvidence();parser.Feed("开始任");parser.Feed("务: A\n任务已全部");parser.Feed("完成！\n");Check(parser.Started && parser.Succeeded && !parser.Failed,"MAA evidence recognizes split start and success");parser.ResetForRestart();Check(!parser.Started && !parser.Succeeded,"MAA restart clears old completion evidence");parser.Feed("开始任务: A\n任务出错: A\n任务已全部完成！\n");Check(parser.Failed,"MAA error remains evidence despite completion text");
         var later=new MaaLogEvidence();later.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n");Check(later.Started && !later.Succeeded,"MAA later task start invalidates earlier completion");
@@ -660,6 +661,57 @@ class Program
         string stopDir=Path.Combine(root,"maa-user-stop");Directory.CreateDirectory(stopDir);string stopLog=Path.Combine(stopDir,"gui.log");await File.WriteAllTextAsync(stopLog,"old\n");var stopStore=new Store(stopDir);stopStore.Tasks.Add(new TaskSpec{Name="maa",Program=Environment.ProcessPath!,Arguments="fixture-maa-success \""+stopLog+"\"",WorkingDirectory=AppContext.BaseDirectory,Completion="MAA日志",LogPath=stopLog,MaaExclusiveLog=true,TrustCompletion=true});stopStore.Tasks.Add(Spec("after-user-stop","echo wrong"));var stopEngine=new RunnerEngine(stopStore,()=>{}){MaaVersionSupported=_=>true};var stopped=stopEngine.Start();for(int i=0;i<100 && !stopStore.History.Single().Events.Any(x=>x.Contains("已启动 maa"));i++)await Task.Delay(20);stopEngine.Stop();await stopped;Check(stopStore.History.Single().State=="已停止" && !stopStore.History.Single().Events.Any(x=>x.Contains("已启动 after-user-stop")),"MAA user stop blocks next task");
         string lockDir=Path.Combine(root,"maa-log-locked");Directory.CreateDirectory(lockDir);string lockLog=Path.Combine(lockDir,"gui.log");await File.WriteAllTextAsync(lockLog,"old\n");using(var held=new FileStream(lockLog,FileMode.Open,FileAccess.ReadWrite,FileShare.None)){var lockStore=new Store(lockDir);lockStore.Tasks.Add(new TaskSpec{Name="maa",Program=Environment.ProcessPath!,Arguments="fixture-maa-success \""+lockLog+"\"",WorkingDirectory=AppContext.BaseDirectory,Completion="MAA日志",LogPath=lockLog,MaaExclusiveLog=true,TrustCompletion=true,ContinueOnFailure=true});lockStore.Tasks.Add(Spec("after-locked-log","echo wrong"));var lockEngine=new RunnerEngine(lockStore,()=>{}){MaaVersionSupported=_=>true};var locked=lockEngine.Start();for(int i=0;i<100 && !lockEngine.Waiting;i++)await Task.Delay(20);bool safe=lockEngine.Waiting && !lockStore.History.Single().Events.Any(x=>x.Contains("已启动 after-locked-log"));lockEngine.Stop();await locked;Check(safe,"MAA unreadable log blocks failure continuation");}
         var missingStore=NewStore("maa-program-missing");missingStore.Tasks.Add(new TaskSpec{Name="maa",Program=Path.Combine(root,"missing-maa.exe"),Completion="MAA日志",MaaExclusiveLog=true,TrustCompletion=true,ContinueOnFailure=true});missingStore.Tasks.Add(Spec("after-missing-maa","echo wrong"));var missingEngine=new RunnerEngine(missingStore,()=>{});var missingRun=missingEngine.Start();for(int i=0;i<100 && !missingEngine.Waiting;i++)await Task.Delay(20);bool missingSafe=missingEngine.Waiting && !missingStore.History.Single().Events.Any(x=>x.Contains("已启动 after-missing-maa"));missingEngine.Stop();await missingRun;Check(missingSafe,"missing MAA program blocks failure continuation");
+    }
+    static async Task Maa622ClueTests()
+    {
+        async Task Run(int index, string order, bool is622 = true, bool maa = true, bool old = false, string custom = "")
+        {
+            string dir = Path.Combine(root, $"maa622-{index}-{order}-{is622}-{maa}-{old}-{custom.Length}");
+            Directory.CreateDirectory(dir); string log = Path.Combine(dir, "gui.log");
+            await File.WriteAllTextAsync(log, old ? UpdateMarkers.Maa622[index] + "\n" : "old\n");
+            var store = new Store(dir);
+            store.Tasks.Add(new TaskSpec { Name = "maa", Program = Environment.ProcessPath!, Arguments = $"fixture-maa622 \"{log}\" {index} {(old ? "none" : order)}", WorkingDirectory = AppContext.BaseDirectory, Completion = maa ? "MAA日志" : "日志信号", LogSource = "日志文件", LogPath = log, SuccessText = "任务已全部完成！", MaaExclusiveLog = maa, MaaCloseOnCompletion = maa && is622 && !old, TrustCompletion = true, UpdateMarkers = custom });
+            store.Tasks.Add(Spec("after-622", "echo next")); int closeCalls = 0;
+            var engine = new RunnerEngine(store, () => {}) { MaaVersionSupported = _ => true, MaaVersion622 = _ => is622, RequestOwnedWindowClose = _ => { closeCalls++; return false; } };
+            var run = engine.Start();
+            for (int i = 0; i < 500 && !engine.Waiting && !run.IsCompleted; i++) await Task.Delay(30);
+            bool advance = store.History.Single().Events.Any(x => x.Contains("已启动 after-622"));
+            bool marker = store.History.Single().Events.Any(x => x.Contains("检测到更新或重启线索"));
+            bool shouldBlock = maa && is622 && !old;
+            bool explicitBlock = order == "custom" || store.History.Single().Events.Any(x => x.Contains("MAA 6.22.0 更新线索"));
+            bool ok = shouldBlock ? engine.Waiting && marker && explicitBlock && !advance && closeCalls == 0 : advance && !marker;
+            if (!ok) Console.WriteLine("DETAIL MAA622 " + string.Join(" | ", store.History.Single().Events));
+            if (!run.IsCompleted) engine.Stop(); await run.WaitAsync(TimeSpan.FromSeconds(15));
+            Check(ok, $"MAA622 clue {index} {order} version622={is622} maa={maa} old={old}");
+        }
+        for (int i = 0; i < UpdateMarkers.Maa622.Length; i++) await Run(i, "before");
+        await Run(0, "after-split");
+        await Run(0, "before", is622: false);
+        await Run(0, "before", maa: false);
+        await Run(0, "before", old: true);
+        await Run(0, "before", custom: "MyCustomMarker");
+        await Run(0, "custom", custom: "MyCustomMarker");
+        string versionDir = Path.Combine(root, "maa622-version-unknown"); Directory.CreateDirectory(versionDir); string versionLog = Path.Combine(versionDir, "gui.log"); await File.WriteAllTextAsync(versionLog, "old\n");
+        string noVersionFile = Path.Combine(versionDir, "no-version.exe"); await File.WriteAllTextAsync(noVersionFile, "fixture");
+        Check(new RunnerEngine(new Store(versionDir), () => {}).MaaVersion622(noVersionFile) == null, "MAA622 file with no version remains unknown");
+        var versionStore = new Store(versionDir); versionStore.Tasks.Add(new TaskSpec { Name = "maa", Program = Environment.ProcessPath!, Arguments = $"fixture-maa622 \"{versionLog}\" 0 none", WorkingDirectory = AppContext.BaseDirectory, Completion = "MAA日志", LogPath = versionLog, MaaExclusiveLog = true, TrustCompletion = true }); versionStore.Tasks.Add(Spec("after-version-unknown", "echo wrong"));
+        var versionEngine = new RunnerEngine(versionStore, () => {}) { MaaVersionSupported = _ => true, MaaVersion622 = _ => null }; var versionRun = versionEngine.Start();
+        for (int i = 0; i < 100 && !versionEngine.Waiting; i++) await Task.Delay(20);
+        bool versionBlocked = versionEngine.Waiting && !versionStore.History.Single().Events.Any(x => x.Contains("已启动 maa")) && !versionStore.History.Single().Events.Any(x => x.Contains("已启动 after-version-unknown"));
+        versionEngine.Stop(); await versionRun.WaitAsync(TimeSpan.FromSeconds(10)); Check(versionBlocked, "MAA622 unknown version blocks before launch");
+        string dir = Path.Combine(root, "maa622-stop"); Directory.CreateDirectory(dir); string log = Path.Combine(dir, "gui.log"); await File.WriteAllTextAsync(log, "old\n");
+        var stoppedStore = new Store(dir); stoppedStore.Tasks.Add(new TaskSpec { Name = "maa", Program = Environment.ProcessPath!, Arguments = $"fixture-maa622 \"{log}\" 0 before", WorkingDirectory = AppContext.BaseDirectory, Completion = "MAA日志", LogPath = log, MaaExclusiveLog = true, TrustCompletion = true }); stoppedStore.Tasks.Add(Spec("after-622-stop", "echo wrong"));
+        var stoppedEngine = new RunnerEngine(stoppedStore, () => {}) { MaaVersionSupported = _ => true, MaaVersion622 = _ => true }; var stopped = stoppedEngine.Start();
+        for (int i = 0; i < 150 && !stoppedStore.History.Single().Events.Any(x => x.Contains("检测到更新或重启线索")); i++) await Task.Delay(30);
+        bool sawMarker = stoppedStore.History.Single().Events.Any(x => x.Contains("检测到更新或重启线索")); stoppedEngine.Stop(); await stopped.WaitAsync(TimeSpan.FromSeconds(15));
+        Check(sawMarker && stoppedStore.History.Single().State == "已停止" && !stoppedStore.History.Single().Events.Any(x => x.Contains("已启动 after-622-stop")), "MAA622 clue and stop never advance");
+        string failDir = Path.Combine(root, "maa622-save-failure"); Directory.CreateDirectory(failDir); string failLog = Path.Combine(failDir, "gui.log"); await File.WriteAllTextAsync(failLog, "old\n");
+        bool failSave = false; RunnerEngine? failedEngine = null;
+        var failedStore = new Store(failDir, p => { if (failedEngine?.Status.Contains("检测到更新或重启线索") == true) { failSave = true; return new FaultWriteStream(p); } return new FileStream(p, FileMode.CreateNew, FileAccess.Write, FileShare.None); });
+        failedStore.Tasks.Add(new TaskSpec { Name = "maa", Program = Environment.ProcessPath!, Arguments = $"fixture-maa622 \"{failLog}\" 0 before", WorkingDirectory = AppContext.BaseDirectory, Completion = "MAA日志", LogPath = failLog, MaaExclusiveLog = true, TrustCompletion = true }); failedStore.Tasks.Add(Spec("after-622-save", "echo wrong"));
+        failedEngine = new RunnerEngine(failedStore, () => {}) { MaaVersionSupported = _ => true, MaaVersion622 = _ => true };
+        await failedEngine.Start().WaitAsync(TimeSpan.FromSeconds(20));
+        Check(failSave && failedStore.History.Single().Events.Any(x => x.Contains("检测到更新或重启线索")) && !failedStore.History.Single().Events.Any(x => x.Contains("已启动 after-622-save")) && failedStore.History.Single().AllSucceeded == false, "MAA622 marker save failure never advances");
     }
     static async Task MaaEvidenceCounterexamples()
     {
@@ -1049,6 +1101,16 @@ class Program
         if (skipStartup) args = args[1..];
         if (args.Length > 0 && args[0] == "probe-regression-local") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await Tests(true); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-job-events") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await JobEventTests(); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-maa622-clues") { try { Maa622ClueTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length == 4 && args[0] == "fixture-maa622")
+        {
+            string path = args[1], marker = UpdateMarkers.Maa622[int.Parse(args[2])], order = args[3];
+            void Write(string s) { using var f = new StreamWriter(new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete), new UTF8Encoding(false)) { AutoFlush = true }; f.Write(s); }
+            Thread.Sleep(300);
+            if (order == "after-split") { Write("开始任务: A\n任务已全部完成！\n"); Thread.Sleep(300); Write(marker[..(marker.Length / 2)]); Thread.Sleep(300); Write(marker[(marker.Length / 2)..] + "\n"); }
+            else { if (order != "none") Write((order == "custom" ? "MyCustomMarker" : marker) + "\n"); Thread.Sleep(300); Write("开始任务: A\n任务已全部完成！\n"); }
+            Thread.Sleep(2200); return 0;
+        }
         if (args.Length > 0 && args[0] == "probe-maa-evidence-counterexamples") { try { MaaEvidenceCounterexamples().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length == 2 && args[0] == "fixture-evidence-append") { File.AppendAllText(args[1], "开始任务: A\n任务已全部完成！\n", new UTF8Encoding(false)); return 0; }
         if (args.Length == 3 && args[0] == "fixture-evidence-child") { if (args[1] == "silent-change") File.WriteAllText(args[2], "changed"); Thread.Sleep(500); return 0; }

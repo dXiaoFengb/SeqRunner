@@ -57,6 +57,11 @@ public sealed class RunnerEngine
         try { var version = FileVersionInfo.GetVersionInfo(path); return version.FileMajorPart == 6 && ((version.FileMinorPart == 21 && version.FileBuildPart == 4) || (version.FileMinorPart == 22 && version.FileBuildPart == 0)); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or ArgumentException) { return false; }
     };
+    internal Func<string, bool?> MaaVersion622 { get; set; } = path =>
+    {
+        try { var version = FileVersionInfo.GetVersionInfo(path); if (version.FileMajorPart == 0 && version.FileMinorPart == 0 && version.FileBuildPart == 0 && version.FilePrivatePart == 0) return null; return version.FileMajorPart == 6 && version.FileMinorPart == 22 && version.FileBuildPart == 0; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or ArgumentException) { return null; }
+    };
     internal async Task StartControlledFixture(IReadOnlyList<TaskSpec> tasks, Action<string>? channelCreated = null)
     {
         if (Running || controlledFixture != null || tasks.Count == 0) return;
@@ -219,6 +224,10 @@ public sealed class RunnerEngine
         if (maaMode && (!task.MaaExclusiveLog || task.SharedLog)) return "结果不明：请先确认 MAA 日志不与其他实例共享";
         if (maaMode && (string.IsNullOrWhiteSpace(task.LogPath) || !File.Exists(task.LogPath))) return "结果不明：MAA 日志文件不存在，请先检查路径";
         if (maaMode && !MaaVersionSupported(task.Program)) return "结果不明：MAA 版本不受支持，请人工核实";
+        bool? version622 = maaMode ? MaaVersion622(task.Program) : false;
+        if (version622 == null) return "结果不明：无法确认 MAA 更新线索适用版本，请人工核实";
+        bool maa622 = version622 == true;
+        if (maa622) markers = markers.Concat(UpdateMarkers.Maa622).ToArray();
         FileStream? file = null;
         MaaLogAnchor? maaAnchor = null;
         OwnedProcess? owned = null;
@@ -237,7 +246,7 @@ public sealed class RunnerEngine
             if (owned.JobEvents != null) JobEventsTestHook?.Invoke(owned.JobEvents);
             if ((maaMode || task.TrackUpdateRestart) && owned.JobEvents == null) Event("Job 事件观察不可用：" + owned.JobEventsUnavailable + "；进程身份仍需人工核实");
             candidateTracker = task.TrackUpdateRestart || maaMode ? (CandidateTrackerFactory?.Invoke(owned) ?? new RestartCandidateTracker(owned, report: Event)) : null;
-            bool found = false, updateSignal = false, timedOut = false, updateTrackingTimedOut = false; long? updateStarted = null; long started = clock.GetTimestamp(); string tail = ""; Decoder decoder = maaMode ? new UTF8Encoding(false, true).GetDecoder() : Encoding.UTF8.GetDecoder();
+            bool found = false, updateSignal = false, maa622UpdateSignal = false, timedOut = false, updateTrackingTimedOut = false; long? updateStarted = null; long started = clock.GetTimestamp(); string tail = ""; Decoder decoder = maaMode ? new UTF8Encoding(false, true).GetDecoder() : Encoding.UTF8.GetDecoder();
             var maaEvidence = new MaaLogEvidence(text => { if (maaMode && !storageFailed && !StopRequested) Event(text); }); int maaCandidateCount = 0; bool maaBoundaryPending = false;
             bool maaStartFinished = !task.MaaStartByRunner, maaStartFailed = false, maaStartRequested = false; long maaStartAt = clock.GetTimestamp();
             Task<MaaStartController.Probe>? maaProbe = null; Task<bool>? maaInvoke = null;
@@ -256,10 +265,12 @@ public sealed class RunnerEngine
             }
             void CheckUpdate(string text, string source)
             {
+                bool maa622Marker = maa622 && UpdateMarkers.Find(text, UpdateMarkers.Maa622) != null;
                 string? marker = UpdateMarkers.Find(text, markers);
                 if (marker == null) return;
                 lock (decisionGate)
                 {
+                    if (maa622Marker) maa622UpdateSignal = true;
                     if (maaMode) { maaEvidence.ResetForRestart(); maaBoundaryPending = true; }
                     if (!updateSignal) { updateSignal = true; updateStarted = clock.GetTimestamp(); Event($"检测到更新或重启线索（{source}：{marker}），程序及受管子进程退出后需要人工核实"); }
                 }
@@ -535,6 +546,7 @@ public sealed class RunnerEngine
             if (maaMode)
             {
                 Volatile.Write(ref maaStartFinished, true);
+                if (maa622UpdateSignal) return storageFailed ? "结果不明：记录保存失败" : "结果不明：检测到 MAA 6.22.0 更新线索，请人工核实";
                 if (task.MaaStartByRunner && (maaStartFailed || (maaInvoke != null && !maaInvoke.IsCompleted))) return "结果不明：MAA 启动未确认，请人工核实";
                 decoder.GetChars([], 0, 0, new char[4], 0, true);
                 lock (decisionGate) maaEvidence.Finish();
