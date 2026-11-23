@@ -351,12 +351,12 @@
 
 - 当前任务见 `TASK.md`；本轮只改测试与文档，`src/` 零改动，`VERSION.md` 未改，开发版本不推进，v1.20.2 暂停保留。
 - 为什么还要再做一轮：上一轮 S4 证伪的是**简化** `JudgeHolder`（中文文字、无写探测、无 deny-write 条件、无退出封存），不能直接宣布完整 G 被击穿。本轮在 `tests/Runner.Checks/Program.cs` 建测试专用 `GPrototype`（不入产品），把 G 草案逐条显式建模：文件身份（卷号+索引）、打开前 256B 锚点、长度收缩、Restart Manager 使用者列表（排除读取者自身）、根 PID+创建时间、deny-write 写探测、结构化回调（`TaskChainStart/Completed/Error/Stopped/AllTasksCompleted` + `taskid` + `finished_tasks`）、错误/停止否决、退出码、退出后封存、缺失/失败/冲突即暂停。
-- 21 例正反例（`probe-maa-g-prototype`，25 PASS / 0 FAIL / 退出码 0）：正例判“成功”；伪造 `Px<根PID>`（g2）被写探测挡住；外部先占位（g3）被 RM 挡住；滚动/截断/打不开/只读（g7）、五类事件（g9）、RM 失败/创建时间漂移/根缺席（g10）、退出码非零（g11）、写完即退出（g12）、退出边缘追加（g8）全部暂停。
+- 21 个场景、25 条断言（`probe-maa-g-prototype`，全部 PASS / 0 FAIL / 退出码 0）：正例判“成功”；伪造 `Px<根PID>`（g2）被写探测挡住；外部先占位（g3）被 RM 挡住；滚动/截断/打不开/只读（g7）、五类事件（g9）、RM 失败/创建时间漂移/根缺席（g10）、退出码非零（g11）、写完即退出（g12）、退出边缘追加（g8）全部暂停。
 - **残余误放行 g5**：写句柄关闭 → 外部写入同身份文件 → 重新打开；三次采样都只见根、三次探测都被拒、事件完整、退出码 0，规则仍判“成功”。根因是 G 的证据都是**采样时刻快照**，两次采样之间的写入不可见；夹具里的“外部”就是测试进程自身（V3 读取者替身），不是换进程就能排除。
 - g5 对真实 MAA 的含义：6.22.0 Logger 用 `_SH_DENYWR`，只在 `rotate()`（64 MiB）关闭再重开，而 rotate 会 `rename` 成 `asst.bak.log`、文件身份变化已被另一条条件挡住。所以 g5 窗口在真实 MAA 上只能由 rotate 触发——但这依赖“MAA 不以其他方式关闭/重开同一文件”，未在真实运行中核实，标 `[待核实]`。
 - **g12 是取舍不是缺陷**：信“退出后读到的字节”就会漏 g8 那类退出后追加；不信就会在“写完即退出”时假暂停。本轮选择保守暂停，验收流程里明确写了不得把它当误报去放宽。
 - 新增夹具 `fixture-gap-holder`（按 stdin 指令 close/reopen/write/exit）与 `fixture-holder` 可选退出码参数；`probe-maa-g-prototype` 已加入 `Main` 分发与无参数 `Tests()`。
 - 验证：构建 0 警告 0 错误；受影响 16 条专项全部退出码 0、0 FAIL（g-prototype 25、holder-matrix 13、session-rule 9、event-model 5、log-exclusive 3、writer-identity 3、instance-evidence 15、external-writer 13、counterexamples 4、channel-boundary 5、job-events 8、short-lived 8、maa-start 17、maa-resume 165、restart-candidates 20、controlled-success 1）；**无参数完整回归 524 PASS / 1 FAIL / 0 SKIP（退出码 1）**，FAIL 为既有偶发 `MAA controlled start refuses another process window`，同构建 `probe-maa-start` 单跑 17 PASS；`probe-regression-local` 第一次因测试侧 `File.ReadAllText` 读仍被 deny-write 占用的日志抛 `IOException` 中断（120 PASS 后），第二次 510 PASS / 0 FAIL / 1 SKIP 通过。
-- 报告 `MAA自动接续证据核查.md` 新增 §10（10.1 条件对照、10.2 21 例矩阵、10.3 g5/g12/RM 限制、10.4 结论、10.5 候选比较、10.6 推荐、10.7 实跑表）；`人工验收流程.md` 追加 v1.20.5 五小节。
+- 报告 `MAA自动接续证据核查.md` 新增 §10（10.1 条件对照、10.2 21 个场景矩阵、10.3 g5/g12/RM 限制、10.4 结论、10.5 候选比较、10.6 推荐、10.7 实跑表）；`人工验收流程.md` 追加 v1.20.5 五小节。
 - 结论与建议：G 可作“辅助证据 + 更准确的暂停理由”，**不能单独放行**；产品化只建议做“结构化回调解析但仍输出结果不明 + 证据清单”这一增量（需用户认可）。真自动接续只剩 C（目标回执）或 H（官方 C API 自建宿主），都需另行授权与真实运行验收。
 - 历史位置仍含参考样本派生内容：`对话记录/04-问题、风险与恢复.md:1227`、Git 旧提交（`8800fbb` 及更早）、旧备份目录；未清理。真实 MAA、游戏、真实更新、多日、休眠、6.23.1 均未执行，仍 [待核实]。
