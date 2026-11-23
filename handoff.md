@@ -310,3 +310,13 @@
 - 完整回归 `probe-regression-local` 共三次：第一次 429 PASS / 2 FAIL（均为 `visual start simulated *`，DETAIL `通用启动未确认`），第二次 431 PASS / 1 FAIL（`TaskTrialTests` 读 `trial-manual-close-window\fixture.log` 时该文件被占用，既有竞态），第三次 431 PASS / 0 FAIL、退出码 0（`.build/evidence/probe-regression-local-rerun2.log`）。视觉夹具要求受管窗口当时是前台窗口（`src/Runner/VisualStartController.cs:169`），同步跑探针时 DeepSeek Harness 窗口会抢回前台；改为后台任务、桌面空闲时 `probe-visual-single` 与第三次回归都通过。两次失败都与本轮新增代码无关，重跑通过，但完整回归在本机存在桌面焦点与文件占用两类不稳定。
 - 用户报告：v1.20.1 受控专项、完整回归和源码预览通过；真实 6.23.1 在“MAA日志”模式下被版本门限在启动前阻止；测试用 6.21.4 副本已由 MAA 自身更新到 6.23.1；真实 6.22.0 更新时是否识别新增更新线索 [待核实]。本轮未运行真实 MAA、游戏或真实更新。源码预览入口本轮回实际启动过一次：窗口标题“顺序化软件执行工具 V3”出现，随后由我关闭（`CloseMainWindow` 3 秒未退出后 Kill）；页面操作与人工验收未执行，也不代表任何功能通过。
 - 修复方向 A（要求证据与本轮根进程实例关联，需先核实真实日志是否有可核对标识）、B（把仅有日志文字判为不明，属产品判定修改）、C（仅文档与验收提示）已写入 `MAA自动接续证据核查.md`，均未实施，等用户认可后再动产品。
+
+## v1.20.2 参考样本虚构化与证据通道（2026-11-23）
+
+- 当前任务见 `TASK.md`；本轮按用户当场指令处理参考样本边界并新增通道证据，只改测试与文档，`src/` 产品代码零改动，`VERSION.md` 未改，开发版本不推进，v1.20.2 暂停保留。
+- `tests/Runner.Checks/Program.cs`：`MaaInstanceEvidence` 中复刻参考日志的六行回调样例改为完全虚构数据（虚构日期、虚构 `Px`/`Tx`、`uuid":"synthetic-fixture-0001"`、虚构 taskchain 与 taskid），注释声明不读取真实日志，断言同步改为虚构值；新增 `probe-maa-channel-boundary` 与 `fixture-channel-root`、`fixture-channel-outsider`。
+- `MAA自动接续证据核查.md`：`asst.log` 一节删除只读副本字节数、时间、计数、完整日志行和文件行号，只留路径并标 [待核实]；新增「2026-11-23 参考样本边界整改与证据通道实测」（四案实测、六方案比较、推荐路径、无法取得的证据）。`人工验收流程.md` 新增同日四条步骤；`TASK.md`、`handoff.md` 删除样本派生数值。
+- 实测结论（受控夹具，不是真实 MAA）：按 `Px` 绑定证据行可被组外进程伪造；受管 stdout 对把完成写进文件的 MAA 没有任何证据；命名管道回执可用客户端 PID+创建时间绑定根实例，但需目标程序主动配合；Job 与保留句柄只能证明“同一 Job 内仍是这个实例”。方案 E（独占工作目录 + 结构化回调解析 + `finished_tasks`/错误交叉 + Job 核对）已写入报告，未实施，等用户认可。
+- 验证：构建 0 警告 0 错误；`probe-maa-channel-boundary` 5 PASS、`probe-maa-instance-evidence` 15 PASS、`probe-maa-resume` 107 PASS、组外 13 PASS、短命 8 PASS、Job 8 PASS、反例 4 PASS、6.22 线索 13 PASS；无参数完整回归 467 PASS / 0 FAIL / 0 SKIP（退出码 0）。证据在 `对话记录/证据/v3-reference-samples-20261123/`。真实 MAA、游戏、真实更新、多日、休眠与 6.23.1 均未执行，仍 [待核实]。
+- 历史位置仍含参考样本派生内容：`对话记录/04-问题、风险与恢复.md:1227`、Git 旧提交（`8800fbb` 及更早）、旧备份目录；本轮未改写，需用户决定。备份只覆盖 5 个可编辑文件，不含 `参考/`、`对话记录/` 与 Git 对象。
+- 本地提交 `fe03e08`（检查点:v1.20.2 参考样本虚构化与证据通道实测），未推送。
