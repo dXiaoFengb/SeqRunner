@@ -649,6 +649,7 @@ class Program
         await MaaWriterIdentityTests();
         await MaaEventModelTests();
         await MaaSessionRuleTests();
+        await MaaHolderMatrixTests();
         var parser=new MaaLogEvidence();parser.Feed("开始任");parser.Feed("务: A\n任务已全部");parser.Feed("完成！\n");Check(parser.Started && parser.Succeeded && !parser.Failed,"MAA evidence recognizes split start and success");parser.ResetForRestart();Check(!parser.Started && !parser.Succeeded,"MAA restart clears old completion evidence");parser.Feed("开始任务: A\n任务出错: A\n任务已全部完成！\n");Check(parser.Failed,"MAA error remains evidence despite completion text");
         var later=new MaaLogEvidence();later.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n");Check(later.Started && !later.Succeeded,"MAA later task start invalidates earlier completion");
         var observed=new List<string>();var liveEvidence=new MaaLogEvidence(observed.Add);liveEvidence.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n任务出错: B\n已停止\n");Check(observed.Count(x=>x.Contains("任务开始"))==2 && observed.Any(x=>x.Contains("完成文字")) && observed.Any(x=>x.Contains("任务错误")) && observed.Any(x=>x.Contains("任务停止")) && !liveEvidence.Succeeded,"MAA live evidence reports transitions and invalidates old completion");
@@ -1409,6 +1410,196 @@ class Program
         Case("exit-nonzero", normal, true, true, false, "暂停：进程退出码非零或退出方式不明");
         await File.WriteAllLinesAsync(evidence, lines);
     }
+    sealed class LinePump
+    {
+        readonly System.Collections.Concurrent.ConcurrentQueue<string> lines = new();
+        readonly SemaphoreSlim signal = new(0);
+        public LinePump(StreamReader reader) { _ = Task.Run(async () => { string? line; while ((line = await reader.ReadLineAsync()) != null) { lines.Enqueue(line); signal.Release(); } }); }
+        public async Task<string> Next(TimeSpan timeout)
+        {
+            if (!await signal.WaitAsync(timeout)) return "<timeout>";
+            return lines.TryDequeue(out var line) ? line : "<none>";
+        }
+    }
+    record HolderRun(Process Proc, EventWaitHandle Step, EventWaitHandle Done, string Prefix, LinePump Pump);
+    static HolderRun StartHolder(string path, string mode, string payload)
+    {
+        string prefix = "sh-" + Guid.NewGuid().ToString("N");
+        Directory.CreateDirectory(root);
+        string payloadPath = Path.Combine(root, "payload-" + prefix + ".txt");
+        File.WriteAllText(payloadPath, payload);
+        var step = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + "-step");
+        var done = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + "-done");
+        var proc = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "fixture-holder \"" + path + "\" " + mode + " " + prefix + " \"" + payloadPath + "\"")
+        { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true })!;
+        return new HolderRun(proc, step, done, prefix, new LinePump(proc.StandardOutput));
+    }
+    static Task<string> HolderLine(HolderRun run) => run.Pump.Next(TimeSpan.FromSeconds(15));
+    static async Task<(string Open, string Stepped, string Closed)> RunHolder(HolderRun run)
+    {
+        string open = await HolderLine(run);
+        if (open.StartsWith("OPENFAIL")) { run.Proc.WaitForExit(10_000); return (open, "", ""); }
+        run.Step.Set();
+        string stepped = await HolderLine(run);
+        run.Done.Set();
+        string closed = await HolderLine(run);
+        run.Proc.WaitForExit(10_000);
+        return (open, stepped, closed);
+    }
+    static string JudgeHolder(bool rootInSample, bool otherInSample, bool identityStable, bool eventsComplete, bool hasError, bool cleanExit)
+    {
+        if (!rootInSample) return "暂停：采样时未见根进程持有日志";
+        if (otherInSample) return "暂停：采样时发现其他持有者";
+        if (!identityStable) return "暂停：日志文件身份变化（滚动或替换）";
+        if (hasError) return "暂停：出现任务链错误";
+        if (!eventsComplete) return "暂停：完成事件不完整";
+        if (!cleanExit) return "暂停：退出码非零或退出方式不明";
+        return "成功：采样时仅见根进程持有且事件完整";
+    }
+    static string JudgeReceipt(bool boundToRoot, bool hasTaskId, bool stopped, bool errored)
+    {
+        if (!boundToRoot) return "暂停：回执无法绑定本轮根进程";
+        if (errored) return "暂停：回执包含错误";
+        if (stopped) return "暂停：回执包含停止";
+        if (!hasTaskId) return "暂停：回执缺少任务标识";
+        return "成功：回执来自本轮根进程且内容完整";
+    }
+    static async Task MaaHolderMatrixTests()
+    {
+        Directory.CreateDirectory(root);
+        string evidence = Path.Combine(root, "evidence-maa-holder-matrix.txt");
+        var lines = new List<string>();
+        void Record(string text) { lines.Add(text); Console.WriteLine("EVIDENCE " + text); }
+        string ReadShared(string path) { using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete); using var reader = new StreamReader(stream, new UTF8Encoding(false)); return reader.ReadToEnd(); }
+        string Pids((bool Ok, List<(int Pid, DateTime Started)> Users) rm) => "ok=" + rm.Ok + "[" + string.Join(",", rm.Users.Select(u => u.Pid)) + "]";
+        try
+        {
+            string d1 = Path.Combine(root, "holder-s1"); Directory.CreateDirectory(d1);
+            string p1 = Path.Combine(d1, "gui.log"); await File.WriteAllTextAsync(p1, "old\n");
+            var root1 = StartHolder(p1, "read", "");
+            string open1 = await HolderLine(root1);
+            var rm1a = RestartManagerUsers(p1);
+            var writer1 = StartHolder(p1, "write", "开始任务: A\n");
+            string open1b = await HolderLine(writer1);
+            var rm1b = RestartManagerUsers(p1);
+            Record($"s1 rootPid={root1.Proc.Id} writerPid={writer1.Proc.Id} open={open1}/{open1b} rmRootOnly={Pids(rm1a)} rmBoth={Pids(rm1b)} rootListed={rm1a.Users.Any(u => u.Pid == root1.Proc.Id)} writerListed={rm1b.Users.Any(u => u.Pid == writer1.Proc.Id)}");
+            Check(open1 == "OPEN read" && open1b == "OPEN write" && rm1b.Users.Any(u => u.Pid == root1.Proc.Id) && rm1b.Users.Any(u => u.Pid == writer1.Proc.Id), "holder: rm lists the read-only root and the outside writer alike, with no read/write field");
+            var done1 = await RunHolder(writer1);
+            var rm1c = RestartManagerUsers(p1);
+            Record($"s1-after-writer closed={done1.Closed} rmNow={Pids(rm1c)} appended={ReadShared(p1).Contains("开始任务")}");
+            Check(done1.Closed == "CLOSED" && rm1c.Users.All(u => u.Pid == root1.Proc.Id), "holder: after the writer closes rm lists only the read-only root, so presence never identifies the writer");
+            root1.Done.Set(); await HolderLine(root1); root1.Proc.WaitForExit(10_000);
+
+            string d2 = Path.Combine(root, "holder-s2"); Directory.CreateDirectory(d2);
+            string p2 = Path.Combine(d2, "gui.log"); await File.WriteAllTextAsync(p2, "old\n");
+            var root2 = StartHolder(p2, "write", "开始任务: A\n");
+            string open2 = await HolderLine(root2);
+            using (var reader2 = new FileStream(p2, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            {
+                var rm2 = RestartManagerUsers(p2);
+                Record($"s2 holderPid={root2.Proc.Id} selfPid={Environment.ProcessId} open={open2} rm={Pids(rm2)} holderListed={rm2.Users.Any(u => u.Pid == root2.Proc.Id)} readerListed={rm2.Users.Any(u => u.Pid == Environment.ProcessId)}");
+                Check(rm2.Users.Any(u => u.Pid == root2.Proc.Id) && rm2.Users.Any(u => u.Pid == Environment.ProcessId), "holder: a write holder and a read-only reader are both listed, so membership cannot separate them");
+            }
+            var done2 = await RunHolder(root2);
+            Check(done2.Stepped == "STEPPED" && done2.Closed == "CLOSED", "holder: the deny-write holder wrote and closed under the shared reader");
+
+            string d3 = Path.Combine(root, "holder-s3"); Directory.CreateDirectory(d3);
+            string p3 = Path.Combine(d3, "gui.log"); await File.WriteAllTextAsync(p3, "old\n");
+            var root3 = StartHolder(p3, "read", "");
+            string open3 = await HolderLine(root3);
+            var before3 = RestartManagerUsers(p3);
+            var gap3 = StartHolder(p3, "write", "任务已全部完成！\n");
+            var gap3Done = await RunHolder(gap3);
+            var after3 = RestartManagerUsers(p3);
+            bool sameSamples = before3.Users.Count == after3.Users.Count && before3.Users.Select(u => u.Pid).OrderBy(x => x).SequenceEqual(after3.Users.Select(u => u.Pid).OrderBy(x => x));
+            Record($"s3 open={open3} before={Pids(before3)} after={Pids(after3)} same={sameSamples} writerRan={gap3Done.Open}/{gap3Done.Closed} textAdded={ReadShared(p3).Contains("任务已全部完成")}");
+            Check(sameSamples && gap3Done.Closed == "CLOSED" && ReadShared(p3).Contains("任务已全部完成"), "holder: a writer can open, append and close entirely between two samples that both show only the root");
+            root3.Done.Set(); await HolderLine(root3); root3.Proc.WaitForExit(10_000);
+
+            string d4 = Path.Combine(root, "holder-s4"); Directory.CreateDirectory(d4);
+            string p4 = Path.Combine(d4, "gui.log"); await File.WriteAllTextAsync(p4, "old\n");
+            var root4 = StartHolder(p4, "read", "");
+            await HolderLine(root4);
+            var holder4 = StartHolder(p4, "write", "开始任务: A\n");
+            var holder4Done = await RunHolder(holder4);
+            var outsider4 = StartHolder(p4, "write", "任务已全部完成！\n");
+            var outsider4Done = await RunHolder(outsider4);
+            var rm4 = RestartManagerUsers(p4);
+            string text4 = ReadShared(p4);
+            var ev4 = new MaaLogEvidence(); ev4.Feed(text4);
+            string verdict4 = JudgeHolder(rm4.Users.Any(u => u.Pid == root4.Proc.Id), rm4.Users.Any(u => u.Pid != root4.Proc.Id), true, ev4.Started && ev4.Succeeded, ev4.Failed, true);
+            Record($"s4 holderClosed={holder4Done.Closed} outsiderClosed={outsider4Done.Closed} rmNow={Pids(rm4)} started={ev4.Started} succeeded={ev4.Succeeded} rule={verdict4}");
+            Check(ev4.Started && ev4.Succeeded && verdict4.StartsWith("成功") && rm4.Users.All(u => u.Pid == root4.Proc.Id), "holder: text written by an outsider after the writer exits makes the candidate rule report success");
+            root4.Done.Set(); await HolderLine(root4); root4.Proc.WaitForExit(10_000);
+
+            string d5 = Path.Combine(root, "holder-s5"); Directory.CreateDirectory(d5);
+            string p5 = Path.Combine(d5, "gui.log"); await File.WriteAllTextAsync(p5, "old\n");
+            using (var handle5 = new FileStream(p5, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            {
+                handle5.Seek(0, SeekOrigin.End);
+                var anchor5 = new MaaLogAnchor(handle5); anchor5.Capture();
+                File.Move(p5, p5 + ".bak");
+                await File.WriteAllTextAsync(p5, "new\n");
+                bool identityKept = LogFileIdentity.IsSame(handle5, p5);
+                Record($"s5 rotate identityKept={identityKept} anchorUnchanged={anchor5.IsUnchanged()}");
+                Check(!identityKept, "holder: rotation to a new file is detected by file identity while the old handle keeps reading the old file");
+                }
+            string p5c = Path.Combine(d5, "truncated.log"); await File.WriteAllTextAsync(p5c, "oldtext\n");
+            using (var handle5c = new FileStream(p5c, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            {
+                handle5c.Seek(0, SeekOrigin.End);
+                using (var trunc = new FileStream(p5c, FileMode.Truncate, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete)) { }
+                bool shortened = handle5c.Length < handle5c.Position;
+                Record($"s5 truncate shortened={shortened} position={handle5c.Position} length={handle5c.Length}");
+                Check(shortened, "holder: an in-place truncation by another handle is visible as length behind position");
+            }
+            string p5b = Path.Combine(d5, "locked.log"); await File.WriteAllTextAsync(p5b, "old\n");
+            File.SetAttributes(p5b, FileAttributes.ReadOnly);
+            bool writeOpenFailed = false; string writeOpenError = "";
+            try { using var w = new FileStream(p5b, FileMode.Append, FileAccess.Write, FileShare.Read); } catch (Exception ex) { writeOpenFailed = true; writeOpenError = ex.GetType().Name; }
+            File.SetAttributes(p5b, FileAttributes.Normal);
+            Record($"s5 open-failure denied={writeOpenFailed} error={writeOpenError}");
+            Check(writeOpenFailed, "holder: a holder that cannot open the log produces no events, so the rule can only pause on silence");
+
+            string d6 = Path.Combine(root, "holder-s6"); Directory.CreateDirectory(d6);
+            string p6 = Path.Combine(d6, "gui.log"); await File.WriteAllTextAsync(p6, "old\n");
+            var root6 = StartHolder(p6, "read", "");
+            await HolderLine(root6);
+            root6.Step.Set(); await HolderLine(root6);
+            root6.Done.Set(); await HolderLine(root6); root6.Proc.WaitForExit(10_000);
+            bool exited6 = root6.Proc.HasExited;
+            AppendLog(p6, "开始任务: A\n任务已全部完成！\n");
+            var rm6 = RestartManagerUsers(p6);
+            var ev6 = new MaaLogEvidence(); ev6.Feed(ReadShared(p6));
+            string verdict6 = JudgeHolder(rm6.Users.Any(u => u.Pid == root6.Proc.Id), rm6.Users.Count > 0, true, ev6.Started && ev6.Succeeded, ev6.Failed, true);
+            Record($"s6 rootExited={exited6} rmAfterExit={Pids(rm6)} started={ev6.Started} succeeded={ev6.Succeeded} rule={verdict6}");
+            Check(exited6 && rm6.Users.Count == 0 && ev6.Succeeded && verdict6.StartsWith("暂停"), "holder: text appended after the root exits leaves no holder yet still reads as completion");
+
+            var rmMissing = RestartManagerUsers(Path.Combine(root, "does-not-exist.log"));
+            bool pidQueryFailed = false;
+            int deadPid;
+            using (var deadRun = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "fixture-wait") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true })!)
+            { deadPid = deadRun.Id; deadRun.WaitForExit(20_000); }
+            try { using var dead = Process.GetProcessById(deadPid); } catch (ArgumentException) { pidQueryFailed = true; }
+            var recorded = rm4.Users.FirstOrDefault(u => u.Pid == root4.Proc.Id);
+            bool driftDetected = recorded.Pid == root4.Proc.Id && Math.Abs((recorded.Started.AddSeconds(5) - root4.Proc.StartTime.ToUniversalTime()).TotalSeconds) >= 2;
+            Record($"s7 rmMissing={Pids(rmMissing)} pidQueryFailed={pidQueryFailed}({deadPid}) driftDetected={driftDetected}");
+            Check(rmMissing.Ok && rmMissing.Users.Count == 0 && pidQueryFailed && driftDetected, "holder: rm reports no users for a missing path, dead pids fail lookup and start-time drift is the only identity guard");
+
+            var mixed = new MaaLogEvidence();
+            mixed.Feed("开始任务: A\n任务出错: A\n任务已全部完成！\n");
+            string verdictMixed = JudgeHolder(true, false, true, mixed.Started && mixed.Succeeded, mixed.Failed, true);
+            Record($"s8 failed={mixed.Failed} succeeded={mixed.Succeeded} rule={verdictMixed}");
+            Check(mixed.Failed && mixed.Succeeded && verdictMixed == "暂停：出现任务链错误", "holder: completion text after an error is still rejected when the rule reads the error flag");
+            string receiptIncomplete = JudgeReceipt(true, false, false, false);
+            string receiptOutsider = JudgeReceipt(false, true, false, false);
+            string receiptStopped = JudgeReceipt(true, true, true, false);
+            Record($"s9 incomplete={receiptIncomplete} outsider={receiptOutsider} stopped={receiptStopped}");
+            Check(receiptIncomplete.StartsWith("暂停") && receiptOutsider.StartsWith("暂停") && receiptStopped.StartsWith("暂停"), "receipt: a root-bound receipt still needs task identity and no stop or error before it can pass");
+        }
+        catch (Exception ex) { failures++; Console.WriteLine("holder matrix error: " + ex); }
+        await File.WriteAllLinesAsync(evidence, lines);
+    }
     static async Task MaaControlledStartTests()
     {
         Check(!new TaskSpec().MaaStartByRunner, "MAA controlled start defaults off");
@@ -1766,6 +1957,7 @@ class Program
         if (args.Length > 0 && args[0] == "probe-maa-log-exclusive") { try { MaaLogExclusiveTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-writer-identity") { try { MaaWriterIdentityTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-session-rule") { try { MaaSessionRuleTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-maa-holder-matrix") { try { MaaHolderMatrixTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
     if (args.Length > 0 && args[0] == "probe-maa-event-model") { try { MaaEventModelTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-channel-boundary") { try { MaaChannelBoundaryTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-short-lived-processes") { try { ShortLivedProcessObservation().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
@@ -1931,6 +2123,34 @@ class Program
             Console.ReadLine();
             writer.WriteLine("开始任务: A");
             writer.WriteLine("任务已全部完成！");
+            return 0;
+        }
+        if (args.Length > 4 && args[0] == "fixture-holder")
+        {
+            FileStream? stream;
+            try
+            {
+                stream = args[2] switch
+                {
+                    "read" => new FileStream(args[1], FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete),
+                    "write" => new FileStream(args[1], FileMode.Append, FileAccess.Write, FileShare.Read),
+                    "rw" => new FileStream(args[1], FileMode.Open, FileAccess.ReadWrite, FileShare.Read),
+                    _ => throw new ArgumentException("mode")
+                };
+                Console.WriteLine("OPEN " + args[2]); Console.Out.Flush();
+            }
+            catch (Exception ex) { Console.WriteLine("OPENFAIL " + ex.GetType().Name); Console.Out.Flush(); return 2; }
+            using (stream)
+            {
+                using var step = EventWaitHandle.OpenExisting(args[3] + "-step");
+                using var done = EventWaitHandle.OpenExisting(args[3] + "-done");
+                if (!step.WaitOne(TimeSpan.FromSeconds(30))) { Console.WriteLine("STEPTIMEOUT"); return 3; }
+                string payload = File.ReadAllText(args[4]);
+                if (payload.Length > 0) { stream.Seek(0, SeekOrigin.End); byte[] bytes = new UTF8Encoding(false).GetBytes(payload); stream.Write(bytes, 0, bytes.Length); stream.Flush(true); }
+                Console.WriteLine("STEPPED"); Console.Out.Flush();
+                done.WaitOne(TimeSpan.FromSeconds(30));
+                Console.WriteLine("CLOSED"); Console.Out.Flush();
+            }
             return 0;
         }
         if (args.Length > 1 && args[0] == "fixture-channel-root")

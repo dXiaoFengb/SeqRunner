@@ -205,9 +205,9 @@
 方案 E 的两个前提都不成立：
 
 1. **改启动工作目录不能改变 MAA 日志位置。** `Bootstrapper.OnStart` 在任何 MaaCore 代码加载前执行 `Directory.SetCurrentDirectory(AppContext.BaseDirectory)`，`Logger` 的目录来自 `UserDir`，而 `Logger::set_directory` 在 6.22.0 已被整段注释，没有任何 API 或配置能改。
-2. **现有解析器读错了文件格式。** 它读 `asst.log`，却匹配 GUI 本地化中文（`开始任务:`、`任务出错:`、`任务已全部完成！`）；真实 `asst.log` 里是英文 `Assistant::append_callback | <Event> {json}`，这些中文来自 GUI 日志。夹具之所以能“成功”，是因为夹具按解析器的口味写中文，而不是按 MAA 的实际格式写。
+2. **现有解析器与 `asst.log` 的格式不匹配。**（2026-11-23 续查二更正，见 §9.1）产品读的是任务配置的 `task.LogPath`（`RunnerEngine.cs:225/239`），界面提示「MAA日志请选择 gui.log」（`MainWindow.xaml:38`）；它匹配的是 GUI 本地化中文（`开始任务:`、`任务出错:`、`任务已全部完成！`），而 `asst.log` 里是英文 `Assistant::append_callback | <Event> {json}`。所以准确说法是：**若任务把日志路径指向 `asst.log`，当前解析器不支持其结构化回调**；不是“产品固定读错文件”。格式匹配本身也不构成来源认证。
 
-替代路径（方案 G）在“写入者身份”这一环有可测证据：MAA 以 deny-write 独占 `asst.log`，运行期间只有持有句柄的进程能写，Restart Manager 能把持有者绑定到 PID + 创建时间。它能在根进程存活期间证明“这些字节来自本轮根进程”，但只能证明“任务链无异常跑完”，**不能证明链内每一步业务成功**。
+替代路径（方案 G）在“写入者身份”这一环的证据被本轮证伪（见 §9.2、§9.3）：Restart Manager 只列“采样时刻正在使用已登记资源的应用”，不区分读写、不覆盖采样间隙；只读打开者同样被列出，写者可在两次采样之间完成打开/追加/关闭，写者退出后外部追加还能让候选规则判“成功”。它最多能支撑“采样时刻未观察到根进程以外的持有者”，**不能证明每个字节来自本轮根进程**，也不能证明链内每一步业务成功。
 
 ### 1. 方案 E 的四问核对（源码事实，tag `v6.22.0`）
 
@@ -261,7 +261,7 @@
 | D Job + 句柄 | 只能证明同 Job | 否 | 部分 | 现有能力 | 不触碰 |
 | E 工作目录 + `asst.log` | **否（前提否定）** | 中 | 需新增 | 只改 V3，但换不来隔离 | 不成方案 |
 | F ETW/Sysmon/4688 | 补进程创建事实 | 否 | 未测 | 需管理员/系统配置 | 红线，不做 |
-| **G 独占句柄 + Restart Manager + 结构化回调** | **是（根进程存活期间）** | 中（任务链无异常跑完） | 见 §4 九分支 | 只改 V3 解析与判定 | 不碰 MAA |
+| **G 独占句柄 + Restart Manager + 结构化回调** | 仅“采样时未见他者”（§9 证伪更强表述） | 中（任务链无异常跑完） | 见 §4 九分支、§9.3 矩阵 | 只改 V3 解析与判定 | 不碰 MAA |
 | H 官方 C API 自建 Assistant（`AsstCreateEx` 回调） | 是（自己创建的实例） | 强（每 taskid 回调） | 需自建夹具 | 需资源、账号、模拟器、真实运行 | 越“不改 MAA 配置、不启动真实 MAA”，须另行授权 |
 
 方案 G 的信任边界：deny-write 保证运行期间只有一个写者；RM 给出持有者 PID；根进程身份由 V3 自己的 `OwnedProcess`（句柄 + 创建时间）给出。缺口：MAA 关闭句柄到进程退出之间的窗口、日志滚动、RM 采样间隔；这些都必须判暂停而不是猜。方案 G **不能**抵御同机注入或篡改根进程本身，也不能证明子步骤业务成功。
@@ -270,6 +270,7 @@
 
 1. **现在**：保留 v1.20.2 暂停；把“MAA 日志位置固定、现有中文解析对 `asst.log` 无效、不要在外部更新器运行时启用 MAA 自动接续”写进人工验收。
 2. **产品改动（需用户认可，未实施）**：方案 G，五步——只读打开并记录文件身份；RM 校验持有者含根进程且创建时间一致，并确认自己写打开被拒（deny-write 生效）；只解析结构化回调；按 §4 九条规则判定；根进程退出后不再采信任何新字节，任一异常即暂停。
+   - 2026-11-23 续查二修正：第 2 步只能作为“采样时未见他者”的辅助证据，不能升级为写入者认证；按 §9.4 的结论，G 单独不足以自动判成功，若要放行必须追加目标侧回执（方案 C）或自建宿主（方案 H）。
 3. **验收条件**：新夹具覆盖 §4 全部反例并通过；验收方在授权隔离环境只读采集一次真实 `asst.log`，确认格式、滚动与写失败行为，再决定是否放行。
 4. **若要抗同机恶意进程或证明每一步业务成功**：只能走 C、H 或系统级追踪，均需另外授权，本轮不做。
 
@@ -302,3 +303,93 @@
 
 - 完整回归本轮**未通过**：唯一失败项与上一轮同一处（受控窗口在整包连续运行时被本机桌面焦点影响），单独运行该专项 17 PASS；不能宣称完整回归通过，也不能据此改产品迁就测试。
 - `probe-regression-local` 与无参数完整回归不是同一入口：前者会跳过需要本地管道/Dispatcher 的案例（本轮 1 SKIP），数字不能互相替代。
+
+## 2026-11-23 续查二：纠正“读错文件”与“RM 能证明写入者”，补 Holder 矩阵反例（研究轮，`src/` 零改动）
+
+本节纠正上一节 §0 的两处过强表述，并补上方案 G 的反例矩阵。产品判定未改，v1.20.2 的“来源无法确认即暂停”继续生效。结论按来源分层标注：源码事实 / 官方文档 / 受控测试 / 真实运行 `[待核实]`。
+
+### 9.1 纠正一：产品读的是任务配置的 `LogPath`，不是固定的 `asst.log`（源码事实）
+
+- `src/Runner/RunnerEngine.cs:208`：`bool maaMode = task.Completion == "MAA日志";`；`:225`：`if (maaMode && (string.IsNullOrWhiteSpace(task.LogPath) || !File.Exists(task.LogPath))) return "结果不明：MAA 日志文件不存在，请先检查路径";`；`:239`：`file = new FileStream(task.LogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);`。→ 日志路径完全来自任务配置，产品没有硬编码 `asst.log`。
+- `src/Runner/MainWindow.xaml:38` 提示原文：「日志文件路径（MAA日志请选择 gui.log）」；`:30`：「仅支持 MAA 6.21.4 / 6.22.0 中文日志格式。日志来源无法确认，当前不会自动判成功，请人工核实。」→ 设计意图是读 GUI 的中文日志。
+- `src/Runner/MaaLogEvidence.cs` 的匹配词是 GUI 本地化文案；`asst.log` 只有英文回调（`Assistant::append_callback | <Event> {json}`，源码见 §2、§3）。
+- 因此准确表述是：**中文 GUI 日志解析与 `asst.log` 结构化英文回调是两种格式；任务若指向 `asst.log`，当前解析器不支持**（`probe-maa-event-model`：`callback-lines started=False succeeded=False failed=False stopped=False`）。上一节 §0 第 2 条的“现有解析器读 `asst.log`，所以读错文件”作废。
+- 不受影响的部分：无论读哪个文件，“文字匹配”都只是内容识别，**不是来源认证**；v1.20.2 的暂停理由仍然成立。
+
+### 9.2 纠正二：Restart Manager 只给“采样时刻的持有者集合”（官方文档 + 受控测试）
+
+官方文档语义（`RmGetList`，learn.microsoft.com，页面更新 2024-11-18）："Gets a list of all applications and services that are **currently using** resources that have been registered with the Restart Manager session."；失败码只有 `ERROR_MORE_DATA`/`ERROR_CANCELLED`/`ERROR_SEM_TIMEOUT`/`ERROR_BAD_ARGUMENTS`/`ERROR_WRITE_FAULT`/`ERROR_OUTOFMEMORY`/`ERROR_INVALID_HANDLE`/`ERROR_ACCESS_DENIED`（路径是目录）。`RM_PROCESS_INFO` 字段：`Process`（PID + 进程启动时间 FILETIME）、`strAppName`、`strServiceShortName`、`ApplicationType`、`AppStatus`、`TSSessionId`、`bRestartable`——**没有读/写区分，没有逐次写入或时间区间信息**。
+
+受控测试（`probe-maa-holder-matrix`，13 PASS，矩阵见 §9.3）实测到的边界：
+
+- 只读打开者与写者被同样列出（S1、S2），RM 无法区分谁在写；
+- 写者可在两次采样之间完成“打开→追加→关闭”，两次采样都只看到根进程（S3）——采样间隙不可消除；
+- 写者退出后，外部进程可继续追加完成文字；此时 RM 只看到只读的根进程，候选规则仍判“成功”（S4）；
+- 根进程退出后追加的文字不再关联任何持有者，但内容照样被解析成完成（S6）；
+- 不存在的路径 RM 返回成功且空列表（S7），“RM 没报错”不能推出“没人写”。
+
+结论：RM 最多支撑“**采样时刻**未观察到根进程以外的持有者”。上一节 §0 第 3 段的“能在根进程存活期间证明这些字节来自本轮根进程”作废，改为：**采样间隙内的写入者无法排除；只有目标侧主动回执才能把写入者绑定到本轮实例**。
+
+### 9.3 Holder 矩阵实测（受控测试：临时目录、夹具进程、命名事件同步，未碰真实 MAA）
+
+夹具 `fixture-holder <path> <read|write|rw> <gatePrefix> <payload>`：`read` = `FileShare.ReadWrite|Delete` 只读；`write` = `FileMode.Append + FileShare.Read`（复刻 MAA Logger 的 deny-write）；打开后打印 `OPEN`，等父进程 `-step` 事件后追加 payload、打印 `STEPPED`，等 `-done` 后关闭并打印 `CLOSED`。父进程每个观察点都由事件/输出行确定，不靠随机等待。
+
+| 场景 | 谁持有什么 | 观察 | 候选规则 |
+| --- | --- | --- | --- |
+| S1 只读根 + 外部写者 | 根：只读；外部：deny-write | `rmRootOnly=[根]`，写者打开后 `rmBoth=[根,写者]`；写者关闭后 `rmNow=[根]` 而文件已追加 | 采样时“根在列表里”完全不代表根在写 |
+| S2 写持有者 + 只读读者 | 根：deny-write；测试进程：只读 | `rm=[读者,根]`，两者都在 | 成员资格无法区分读写 |
+| S3 采样间隙 | 根：只读；写者短暂开关 | 前后两次采样集合相同（仅根），期间写者完成追加 | 规则若只看采样会漏掉整个写窗口 |
+| S4 写者退出后外部追加 | 根：只读；MAA 式写者已退出；外部再写 | RM 仅根；文本 `开始任务: A` + `任务已全部完成！`；`started=True succeeded=True`；规则判“**成功**” | **反例**：G 的候选规则可被完全绕过 |
+| S5 滚动 / 截断 / 打开失败 | 根：只读句柄 | 滚动后 `LogFileIdentity.IsSame=False`；截断后 `length=0 < position=8`；只读属性下写打开 `UnauthorizedAccessException` | 前两者可检测；打开失败只剩沉默，只能暂停 |
+| S6 根退出后追加 | 根已退出 | `rmAfterExit=[]`，文本仍解析成完成，规则判“暂停（未见根持有）” | 这一条 G 能挡住；但它挡不住 S4 |
+| S7 RM 失败 / 死 PID / 时间漂移 | — | 不存在的路径 `ok=True[]`；已退出 PID 查询抛 `ArgumentException`；启动时间加 5 秒即判定不一致 | RM 不提供失败信号；身份只剩 PID+启动时间这一道校验 |
+| S8 错误后完成 | 文本路径 | `failed=True succeeded=True`；规则因错误标志判暂停 | 必须把错误标志当作否决项，不能只看完成文字 |
+
+补充：S4 的规则函数是本轮测试内的候选原型（`JudgeHolder`），不是产品代码；它刻意实现“采样仅见根 + 身份稳定 + 事件完整 + 退出正常 → 成功”，用来证明该规则在真实反例下会误放行。
+
+### 9.4 候选方案比较（本轮更新；每格都是“能否证明”，不是“技术名称”）
+
+| 方案 | 本轮实例认证 | 业务成功 | 更新/重启 | 短命进程身份 | 依赖与成本 | 红线/边界 |
+| --- | --- | --- | --- | --- | --- | --- |
+| A 日志行内 `Px` 匹配 | 否（可任意伪造，已实测） | 否 | 无 | 无 | 无 | 不触碰 |
+| B 受管 stdout | 仅对写 stdout 的程序 | 部分 | 弱（重启后管道断） | 无 | 无 | MAA 写文件，无效 |
+| C 目标主动回执（命名管道等） | **是**：客户端 PID + 创建时间可绑定本轮根实例（夹具已验证外部连接被拒） | 取决于回执内容：必须带 taskid、错误/停止标志；回执完整才可判“链完成”，仍不等于每步业务成功 | 需目标在重启后重连并携带同一会话 nonce | 无（目标须存活） | 需改 MAA 或受信中间层/插件 | 不碰第三方配置；改 MAA 需单独授权 |
+| D Job + 句柄 | 只能证明“同 Job” | 否 | 弱 | 部分（句柄 + 创建时间） | 现有能力 | 不触碰 |
+| G 只读 + 文件身份 + RM + 结构化回调 | **否**（§9.3 S4/S3 证伪“写入者认证”） | 中（任务链无异常跑完） | 可检测滚动/替换，不可证更新后身份 | 不覆盖 | 只改 V3 | 可作为“辅助证据 + 暂停理由”，不能单独放行 |
+| H 官方 C API 自建宿主（`AsstCreateEx`） | **是**（自己创建的 Assistant 实例，回调在自进程内） | 强于日志（每 taskid 的 Completed/Error/Stopped），仍不等于每步业务成功 | 需自己处理实例重建 | 强（实例句柄） | 需资源目录、账号/连接配置、真实运行 | 改变用户操作与授权边界，须另行授权 |
+
+- C 的信任边界：回执必须由 V3 启动的那个根进程（或它授权的子进程）发出，V3 用命名管道客户端 PID + 创建时间校验；内容需含 taskid 集合、每个 task 的结束状态、停止/错误标志与会话 nonce。**仅“连上了管道”不等于业务成功**，`probe-maa-holder-matrix` S9 已把“根绑定但缺 taskid / 带停止”列为暂停。
+- H 的信任边界：V3（或其 sidecar）通过官方 C API 自己 `AsstCreateEx` 并 `AsstAppendTask`，回调直接在进程内；不再依赖日志。代价是要自己管理资源、账号/模拟器连接与更新，等于把“用户现有 GUI 配置”换成一套并行配置——这会改变用户体验，且本轮红线禁止真实运行。
+- G 的正确定位：在不改 MAA、不引入中间层的前提下，它能做到的极限是“结构化解析 + 采样时未见他人 + 文件身份稳定 → 仍暂停，但暂停理由更准确、证据更完整”。把它当自动放行依据不成立。
+
+### 9.5 推荐的最快安全路径
+
+1. **保持 v1.20.2 暂停**（现状），不恢复任何基于日志文字的自动关闭/自动成功。
+2. **可在 V3 内单独实施的安全改进（不自动放行，需用户认可）**：把 `MAA日志` 模式的中文匹配换成/并列 `asst.log` 结构化回调解析——识别 `TaskChainStart/TaskChainCompleted/TaskChainError/TaskChainStopped/AllTasksCompleted`、区分错误与停止、展示 taskid 与 `finished_tasks` 差异；判定结果**仍然只输出“结果不明，请人工核实”**，但给出可核对的证据清单（哪些 taskid 完成、是否出现错误/停止、是否滚动）。收益是人工核验更快、误判更少；成本是解析 JSON 行 + 处理滚动/截断，不改变信任边界。
+3. **要真正自动接续**，只有两条路，均需另行授权：
+   - **C**：MAA 侧（或受信中间层）提供回执通道，回执绑定本轮实例并携带 taskid/错误/停止；V3 只在回执完整且无错误时放行“任务链完成”。这需要改 MAA 或加插件/中间层，属第三方改动。
+   - **H**：V3 用官方 C API 自建宿主，自己持有实例与回调；需要资源、账号/模拟器配置与真实运行授权，且会改变用户现有 GUI 操作方式。
+4. **不建议**把“RM 采样 + 日志文字”包装成自动成功：§9.3 S4 已给出可复现的误放行反例，属于放宽安全暂停。
+
+### 9.6 本轮证据缺口（未执行即标 `[待核实]`）
+
+- 真实 MAA 的 `asst.log` 实际内容、是否偶含中文、滚动/写失败的真实行为：未采集。
+- GUI 与 MaaCore 是否同进程、Serilog 是否写 `debug/gui.log`：未在真实进程上核实。
+- RM 在真实 MAA 上是否稳定列出持有者、采样开销与权限：未测。
+- 6.23.1 是否与 6.22.0 同构（版本门限未动）：未核实。
+- 更新/重启、多日无人值守、休眠恢复、真实游戏与真实账号：全部未执行。
+- S3/S4 的“采样间隙”结论是逻辑与夹具事实；真实 MAA 场景下攻击者是否具备同等写入权限，取决于同机权限模型，本轮未做权限对抗。
+
+### 9.7 本轮实跑（2026-11-23，Windows 本机；`src/` 零改动）
+
+| 项目 | 命令 | 结果 | 日志/证据 |
+| --- | --- | --- | --- |
+| 构建 | `dotnet build tests/Runner.Checks/Runner.Checks.csproj -c Debug` | 0 警告 0 错误，退出码 0 | 控制台 |
+| Holder 矩阵 | `Runner.Checks.exe probe-maa-holder-matrix` | 13 PASS / 0 FAIL，退出码 0 | `.build\checks-*\evidence-maa-holder-matrix.txt` |
+| 受影响专项（14 条） | 见下 | 全部退出码 0、0 FAIL、0 SKIP | `.build\probes-20261123-2035.log` |
+| 无参数完整回归 | `Runner.Checks.exe`（无参数） | **500 PASS / 0 FAIL / 0 SKIP，退出码 0** | `.build\full-regression-20261123-2045.log` |
+| `probe-regression-local`（会跳过案例） | `Runner.Checks.exe probe-regression-local` | 485 PASS / 0 FAIL / 1 SKIP，退出码 0（SKIP：`controlled resume: run probe-controlled-resume separately with local pipe access`） | `.build\regression-local-20261123-2056.log` |
+
+受影响专项逐项（均 `Failures: 0`）：`probe-maa-session-rule` 9、`probe-maa-event-model` 5、`probe-maa-log-exclusive` 3、`probe-maa-writer-identity` 3、`probe-maa-instance-evidence` 15、`probe-maa-external-writer` 13、`probe-maa-evidence-counterexamples` 4、`probe-maa-channel-boundary` 5、`probe-job-events` 8、`probe-short-lived-processes` 8、`probe-maa-start` 17、`probe-maa-resume` 140、`probe-restart-candidates` 20、`probe-controlled-success` 1。
+
+说明：本轮首次运行探针时 S1 曾因并发读同一 `StreamReader` 崩溃（`InvalidOperationException: The stream is currently in use by a previous operation on the stream.`），改为单线程 `LinePump` 后通过；另修正两处夹具缺陷（截断打在滚动后旧句柄、S6 漏发 step 信号）后才得到上表结果。失败与修正过程保留在此，未删除断言迁就结果。

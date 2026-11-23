@@ -335,3 +335,14 @@
 - 方案 G（只读打开 + 文件身份 + RM 绑定根进程 + 只解析结构化回调 + 九条暂停规则 + 根进程退出后不再采信）写入 `MAA自动接续证据核查.md` §5/§6，只是提案，未实施；它只能证明“任务链无异常跑完”，不能证明链内每步业务成功，也不能抗同机注入。
 - 验证：构建 0 警告 0 错误；四条新探针 3/3/5/9 PASS；`probe-maa-instance-evidence` 15、`probe-maa-resume` 127、组外 13、短命 8、Job 8、通道 5，全部退出码 0；**无参数完整回归 486 PASS / 1 FAIL / 0 SKIP（退出码 1）**，失败项 `MAA controlled start refuses another process window`，该专项单独跑 17 PASS，属本机桌面焦点既有偶发；`probe-regression-local` 472 PASS / 0 FAIL / 1 SKIP（退出码 0）。
 - 历史位置仍含参考样本派生内容：`对话记录/04-问题、风险与恢复.md:1227`、Git 旧提交（`8800fbb` 及更早）、旧备份目录；本轮未改写、未清理，需用户决定。真实 MAA、游戏、真实更新、多日、休眠与 6.23.1 均未执行，仍 [待核实]。
+
+## v1.20.4 研究轮：持有者矩阵反例与两处结论纠正（2026-11-23）
+
+- 当前任务见 `TASK.md`；本轮只改测试与文档，`src/` 零改动，`VERSION.md` 未改，开发版本不推进，v1.20.2 暂停保留。
+- 纠正一（源码事实）：产品日志路径来自任务配置 `task.LogPath`（`src/Runner/RunnerEngine.cs:225`、`:239`），界面提示选 `gui.log`（`src/Runner/MainWindow.xaml:38`）。上一轮“产品固定读 `asst.log` 所以读错文件”作废；正确表述是“中文 GUI 日志解析与 `asst.log` 结构化英文回调是两种格式，任务指向后者时当前解析器不支持”。这不改变“文字匹配不是来源认证”。
+- 纠正二（官方文档 + 实测）：`RmGetList` 只列**当前**使用已登记资源的应用；`RM_PROCESS_INFO` 无读写区分与时间区间。上一轮“RM 能在根进程存活期间证明字节来源”作废，收紧为“采样时未观察到其他持有者”。
+- 新增 `probe-maa-holder-matrix` 13 PASS（S1–S9，夹具 `fixture-holder` + 命名事件同步 + 单线程 `LinePump`）：S4 是核心反例——MAA 式 deny-write 写者关闭后外部追加「开始任务/任务已全部完成」，RM 仅列只读的根进程，候选规则 `JudgeHolder` 仍判“成功”；S3 显示采样间隙可漏掉整个写窗口；S2 显示只读打开者也被列出；S6 根退出后追加仍被解析但规则暂停；S7 不存在路径 RM 返回 `ok=True[]`；S9 回执带停止/缺 taskid 均暂停。
+- 报告 `MAA自动接续证据核查.md` 新增 §9（9.1–9.7：源码纠正、官方语义、八场景矩阵、A/B/C/D/G/H 比较、推荐路径、缺口、实跑表）；`人工验收流程.md` 追加 v1.20.4 五小节。
+- 验证：构建 0/0；`probe-maa-holder-matrix` 13、`probe-maa-session-rule` 9、`probe-maa-event-model` 5、`probe-maa-log-exclusive` 3、`probe-maa-writer-identity` 3、`probe-maa-instance-evidence` 15、`probe-maa-external-writer` 13、`probe-maa-evidence-counterexamples` 4、`probe-maa-channel-boundary` 5、`probe-job-events` 8、`probe-short-lived-processes` 8、`probe-maa-start` 17、`probe-maa-resume` 140、`probe-restart-candidates` 20、`probe-controlled-success` 1，全部退出码 0；**无参数完整回归 500 PASS / 0 FAIL / 0 SKIP（退出码 0）**；`probe-regression-local` 485 PASS / 0 FAIL / 1 SKIP（`controlled resume` 需单独跑）。日志在 `.build\full-regression-20261123-2045.log`、`.build\regression-local-20261123-2056.log`、`.build\probes-20261123-2035.log`。
+- 结论：方案 G 只能做“辅助证据 + 暂停理由”，不能自动放行；要真正自动接续只剩两条需授权的路——C（MAA 侧或受信中间层提供回执，回执绑定本轮实例与 taskid）或 H（V3 用官方 C API `AsstCreateEx` 自建宿主）。
+- 历史位置仍含参考样本派生内容：`对话记录/04-问题、风险与恢复.md:1227`、Git 旧提交（`8800fbb` 及更早）、旧备份目录；未清理。真实 MAA、游戏、真实更新、多日、休眠、6.23.1 均未执行，仍 [待核实]。
