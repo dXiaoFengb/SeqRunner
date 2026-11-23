@@ -644,6 +644,7 @@ class Program
         await MaaExternalWriterChain();
         await ShortLivedProcessObservation();
         await MaaInstanceEvidence();
+        await MaaChannelBoundaryTests();
         var parser=new MaaLogEvidence();parser.Feed("开始任");parser.Feed("务: A\n任务已全部");parser.Feed("完成！\n");Check(parser.Started && parser.Succeeded && !parser.Failed,"MAA evidence recognizes split start and success");parser.ResetForRestart();Check(!parser.Started && !parser.Succeeded,"MAA restart clears old completion evidence");parser.Feed("开始任务: A\n任务出错: A\n任务已全部完成！\n");Check(parser.Failed,"MAA error remains evidence despite completion text");
         var later=new MaaLogEvidence();later.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n");Check(later.Started && !later.Succeeded,"MAA later task start invalidates earlier completion");
         var observed=new List<string>();var liveEvidence=new MaaLogEvidence(observed.Add);liveEvidence.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n任务出错: B\n已停止\n");Check(observed.Count(x=>x.Contains("任务开始"))==2 && observed.Any(x=>x.Contains("完成文字")) && observed.Any(x=>x.Contains("任务错误")) && observed.Any(x=>x.Contains("任务停止")) && !liveEvidence.Succeeded,"MAA live evidence reports transitions and invalidates old completion");
@@ -972,8 +973,13 @@ class Program
         await File.WriteAllLinesAsync(Path.Combine(root, "evidence-short-lived.txt"), evidence);
     }
     // Work 3: the same completion text, a restart child, a rotated/truncated log and a missing
-    // job notification must all end in "unknown".  The callback sample is synthesized from the
-    // referenced 6.22.0 log shape; no real MAA log is read or fed into the product.
+    // job notification must all end in "unknown".  The callback sample below is entirely
+    // fictional: timestamps, PIDs, thread ids, task ids and the uuid are invented for this
+    // fixture and only mirror the documented append_callback line shape.  It keeps the four
+    // relations under test: an error can be followed by a completion callback, a completion
+    // can be followed by a stop, one identifier can span several PIDs and runs, and neither
+    // PID nor task id alone can authenticate the current instance.  No real MAA log is read
+    // or fed into the product.
     static async Task MaaInstanceEvidence()
     {
         var evidence = new List<string>();
@@ -981,12 +987,12 @@ class Program
 
         string[] callbacks =
         {
-            "[2026-09-28 12:27:47.000][INF][Px21788][Tx14905] Assistant::append_callback | TaskChainStart {\"taskchain\":\"Mall\",\"taskid\":16,\"uuid\":\"bd203674fb05e1de\"}",
-            "[2026-09-28 12:27:47.961][INF][Px21788][Tx14905] Assistant::append_callback | SubTaskError {\"class\":\"asst::ProcessTask\",\"details\":{},\"first\":[\"CreditShop-NoMoney\"],\"pre_task\":\"\",\"subtask\":\"ProcessTask\",\"taskchain\":\"Mall\",\"taskid\":16,\"uuid\":\"bd203674fb05e1de\"}",
-            "[2026-09-28 12:28:10.000][INF][Px21788][Tx14905] Assistant::append_callback | TaskChainCompleted {\"taskchain\":\"Mall\",\"taskid\":16,\"uuid\":\"bd203674fb05e1de\"}",
-            "[2026-09-28 12:28:10.084][INF][Px21788][Tx14905] Assistant::append_callback | AllTasksCompleted {\"finished_tasks\":[1,16],\"taskchain\":\"Mall\",\"taskid\":16,\"uuid\":\"bd203674fb05e1de\"}",
-            "[2026-09-28 12:30:46.726][INF][Px13872][Tx23371] Assistant::append_callback | AllTasksCompleted {\"finished_tasks\":[1,2,3],\"taskchain\":\"Award\",\"taskid\":1,\"uuid\":\"bd203674fb05e1de\"}",
-            "[2026-09-28 12:30:46.810][INF][Px13872][Tx23371] Assistant::append_callback | TaskChainStopped {\"taskchain\":\"Award\",\"taskid\":1,\"uuid\":\"bd203674fb05e1de\"}"
+            "[2031-01-01 00:00:01.000][INF][Px41001][Tx7001] Assistant::append_callback | TaskChainStart {\"taskchain\":\"Fixture-Alpha\",\"taskid\":7,\"uuid\":\"synthetic-fixture-0001\"}",
+            "[2031-01-01 00:00:01.500][INF][Px41001][Tx7001] Assistant::append_callback | SubTaskError {\"class\":\"asst::FixtureTask\",\"details\":{},\"first\":[\"SyntheticStep\"],\"pre_task\":\"\",\"subtask\":\"FixtureTask\",\"taskchain\":\"Fixture-Alpha\",\"taskid\":7,\"uuid\":\"synthetic-fixture-0001\"}",
+            "[2031-01-01 00:00:05.000][INF][Px41001][Tx7001] Assistant::append_callback | TaskChainCompleted {\"taskchain\":\"Fixture-Alpha\",\"taskid\":7,\"uuid\":\"synthetic-fixture-0001\"}",
+            "[2031-01-01 00:00:05.250][INF][Px41001][Tx7001] Assistant::append_callback | AllTasksCompleted {\"finished_tasks\":[3,7],\"taskchain\":\"Fixture-Alpha\",\"taskid\":7,\"uuid\":\"synthetic-fixture-0001\"}",
+            "[2031-01-01 00:00:09.000][INF][Px41002][Tx7002] Assistant::append_callback | AllTasksCompleted {\"finished_tasks\":[3,4,5],\"taskchain\":\"Fixture-Beta\",\"taskid\":11,\"uuid\":\"synthetic-fixture-0001\"}",
+            "[2031-01-01 00:00:09.250][INF][Px41002][Tx7002] Assistant::append_callback | TaskChainStopped {\"taskchain\":\"Fixture-Beta\",\"taskid\":11,\"uuid\":\"synthetic-fixture-0001\"}"
         };
 
         static (string Event, int Pid, int TaskId, string Chain, string Uuid, int[] Finished, string[] First)? ParseCallback(string line)
@@ -1020,7 +1026,7 @@ class Program
             var events = parsed.Select(x => x!.Value).ToArray();
             int errorAt = Array.FindIndex(events, x => x.Event == "SubTaskError");
             int completedAfterError = Array.FindIndex(events, errorAt + 1, x => x.Event == "AllTasksCompleted");
-            Check(errorAt >= 0 && completedAfterError > errorAt && events[completedAfterError].Finished.Contains(16) && events[errorAt].First.Contains("CreditShop-NoMoney"), "MAA callback sample: SubTaskError can precede AllTasksCompleted and the failed task remains listed");
+            Check(errorAt >= 0 && completedAfterError > errorAt && events[completedAfterError].Finished.Contains(7) && events[errorAt].First.Contains("SyntheticStep"), "MAA callback sample: SubTaskError can precede AllTasksCompleted and the failed task remains listed (fictional data)");
             int allAt = Array.FindLastIndex(events, x => x.Event == "AllTasksCompleted");
             int stoppedAfterAll = Array.FindIndex(events, allAt + 1, x => x.Event == "TaskChainStopped");
             Check(allAt >= 0 && stoppedAfterAll > allAt && events[allAt].TaskId == events[stoppedAfterAll].TaskId, "MAA callback sample: TaskChainStopped can follow AllTasksCompleted for the same task");
@@ -1063,6 +1069,139 @@ class Program
             Check(paused && sourceBlocked, "MAA instance evidence " + mode + " stays paused without claiming success");
         }
         await File.WriteAllLinesAsync(Path.Combine(root, "evidence-maa-instance.txt"), evidence);
+    }
+    // Candidate channel evidence. Every callback line below is synthetic and entirely fictional
+    // (2031 timestamps, Px41xxx, uuid synthetic-fixture-0001); no real MAA log is read, copied or quoted.
+    static string SyntheticStart(int pid, int tx) => "[2031-01-01 00:00:01.000][INF][Px" + pid + "][Tx" + tx + "] Assistant::append_callback | TaskChainStart {\"taskchain\":\"Fixture-Alpha\",\"taskid\":7,\"uuid\":\"synthetic-fixture-0001\"}";
+    static string SyntheticDone(int pid, int tx) => "[2031-01-01 00:00:09.250][INF][Px" + pid + "][Tx" + tx + "] Assistant::append_callback | AllTasksCompleted {\"finished_tasks\":[3,7],\"taskchain\":\"Fixture-Alpha\",\"taskid\":7,\"uuid\":\"synthetic-fixture-0001\"}";
+    // The matcher a "all evidence lines carry the root PID" rule would use. It reads text only.
+    static (bool Started, bool Completed, bool AllFromPid) MatchPidBound(string text, int pid)
+    {
+        bool started = false, completed = false, allFromPid = true;
+        foreach (string line in text.Split('\n'))
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(line, @"\[Px(?<pid>\d+)\]\[[^\]]*\].*?\|\s*(?<ev>TaskChainStart|AllTasksCompleted)\b");
+            if (!match.Success) continue;
+            if (int.Parse(match.Groups["pid"].Value) != pid) allFromPid = false;
+            if (match.Groups["ev"].Value == "TaskChainStart") started = true; else completed = true;
+        }
+        return (started, completed, allFromPid);
+    }
+    static Process StartQuiet(string arguments) => Process.Start(new ProcessStartInfo(Environment.ProcessPath!, arguments) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true })!;
+    static bool SameStartTime(int pid, Process expected)
+    {
+        try { using var other = Process.GetProcessById(pid); return other.StartTime == expected.StartTime; }
+        catch (Exception) { return false; }
+    }
+    // Four channel hypotheses, each run against fixtures this probe creates and holds itself:
+    // 1) a PID-prefixed line from an outside writer, 2) an owned stdout pipe that only the root can write,
+    // 3) the same pipe when the target writes completion to a file instead (MAA behaviour),
+    // 4) a named-pipe receipt whose client identity can be checked against the owned handle.
+    static async Task MaaChannelBoundaryTests()
+    {
+        Directory.CreateDirectory(root);
+        string evidence = Path.Combine(root, "evidence-maa-channel-boundary.txt");
+        var lines = new List<string>();
+        void Record(string text) { lines.Add(text); Console.WriteLine("EVIDENCE " + text); }
+
+        try
+        {
+            string dir1 = Path.Combine(root, "channel-pid-forged");
+            Directory.CreateDirectory(dir1);
+            string log1 = Path.Combine(dir1, "asst.log");
+            await File.WriteAllTextAsync(log1, "");
+            string prefix1 = "dsh-channel-" + Guid.NewGuid().ToString("N");
+            using var ready1 = new EventWaitHandle(false, EventResetMode.ManualReset, prefix1 + "-ready");
+            using var release1 = new EventWaitHandle(false, EventResetMode.ManualReset, prefix1 + "-release");
+            using var root1 = StartQuiet("fixture-channel-root idle \"" + prefix1 + "\"");
+            bool rootReady = ready1.WaitOne(TimeSpan.FromSeconds(20));
+            using var outsider1 = StartQuiet("fixture-channel-outsider pid \"" + log1 + "\" " + root1.Id + " \"" + prefix1 + "\"");
+            bool outsiderExited = outsider1.WaitForExit(20_000);
+            bool rootAlive = !root1.HasExited;
+            release1.Set();
+            root1.WaitForExit(20_000);
+            string forged = await File.ReadAllTextAsync(log1);
+            var boundForged = MatchPidBound(forged, root1.Id);
+            bool acceptedForged = boundForged.Started && boundForged.Completed && boundForged.AllFromPid;
+            Record($"pid-forged ready={rootReady} outsiderExited={outsiderExited} rootAliveDuringWrite={rootAlive} started={boundForged.Started} completed={boundForged.Completed} allFromPid={boundForged.AllFromPid} pidBoundAccepted={acceptedForged}");
+            Check(acceptedForged, "channel: a PID-bound matcher accepts completion lines written by a process outside the job");
+        }
+        catch (Exception ex) { failures++; Console.WriteLine("channel pid-forged error: " + ex); }
+
+        try
+        {
+            string dir2 = Path.Combine(root, "channel-stdout-owned");
+            Directory.CreateDirectory(dir2);
+            string log2 = Path.Combine(dir2, "asst.log");
+            await File.WriteAllTextAsync(log2, "old\n");
+            using var root2 = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "fixture-channel-root stdout") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true })!;
+            string captured = await root2.StandardOutput.ReadToEndAsync();
+            root2.WaitForExit(20_000);
+            var boundOwned = MatchPidBound(captured, root2.Id);
+            AppendLog(log2, SyntheticStart(root2.Id, 7001) + "\n" + SyntheticDone(root2.Id, 7001) + "\nOUTSIDE-WRITER\n");
+            string logText = await File.ReadAllTextAsync(log2);
+            bool pipeClean = !captured.Contains("OUTSIDE-WRITER") && !captured.Contains("old");
+            Record($"stdout-owned exit={(root2.HasExited ? root2.ExitCode : -1)} started={boundOwned.Started} completed={boundOwned.Completed} logHasOutsideMarker={logText.Contains("OUTSIDE-WRITER")} pipeCarriedOutsideMarker={captured.Contains("OUTSIDE-WRITER")}");
+            Check(boundOwned.Started && boundOwned.Completed && pipeClean, "channel: an owned stdout pipe carries only what the root process itself writes");
+        }
+        catch (Exception ex) { failures++; Console.WriteLine("channel stdout-owned error: " + ex); }
+
+        try
+        {
+            string dir3 = Path.Combine(root, "channel-stdout-file-sided");
+            Directory.CreateDirectory(dir3);
+            string log3 = Path.Combine(dir3, "asst.log");
+            await File.WriteAllTextAsync(log3, "");
+            using var root3 = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "fixture-channel-root log \"" + log3 + "\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true })!;
+            string captured = await root3.StandardOutput.ReadToEndAsync();
+            root3.WaitForExit(20_000);
+            var boundFile = MatchPidBound(captured, root3.Id);
+            string logText = await File.ReadAllTextAsync(log3);
+            Record($"stdout-file-sided exit={(root3.HasExited ? root3.ExitCode : -1)} pipeStarted={boundFile.Started} pipeCompleted={boundFile.Completed} fileHasCompletion={logText.Contains("AllTasksCompleted")}");
+            Check(!boundFile.Completed && logText.Contains("AllTasksCompleted"), "channel: a stdout pipe sees nothing when the target writes completion to a file, as MAA does");
+        }
+        catch (Exception ex) { failures++; Console.WriteLine("channel stdout-file-sided error: " + ex); }
+
+        try
+        {
+            string prefix4 = "dsh-channel-" + Guid.NewGuid().ToString("N");
+            using var release4 = new EventWaitHandle(false, EventResetMode.ManualReset, prefix4 + "-release");
+            string pipeName = "dsh-receipt-" + Guid.NewGuid().ToString("N");
+            using var server = new NamedPipeServerStream(pipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+            using var root4 = StartQuiet("fixture-channel-root pipe \"" + pipeName + "\" \"" + prefix4 + "\"");
+            var accept = server.WaitForConnectionAsync();
+            bool connected = await Task.WhenAny(accept, Task.Delay(15_000)) == accept;
+            uint clientPid = 0;
+            bool identityOk = false;
+            string receipt = "";
+            if (connected)
+            {
+                receipt = (await new StreamReader(server).ReadToEndAsync()).Trim();
+                GetNamedPipeClientProcessId(server.SafePipeHandle.DangerousGetHandle(), out clientPid);
+                identityOk = clientPid == (uint)root4.Id && SameStartTime((int)clientPid, root4);
+            }
+            string pipeName2 = "dsh-receipt-" + Guid.NewGuid().ToString("N");
+            using var server2 = new NamedPipeServerStream(pipeName2, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+            using var outsider4 = StartQuiet("fixture-channel-outsider pipe \"" + pipeName2 + "\"");
+            var accept2 = server2.WaitForConnectionAsync();
+            bool connected2 = await Task.WhenAny(accept2, Task.Delay(15_000)) == accept2;
+            uint outsiderCallsign = 0;
+            bool outsiderClaimedRoot = true;
+            if (connected2)
+            {
+                await new StreamReader(server2).ReadToEndAsync();
+                GetNamedPipeClientProcessId(server2.SafePipeHandle.DangerousGetHandle(), out outsiderCallsign);
+                outsiderClaimedRoot = outsiderCallsign == (uint)root4.Id;
+            }
+            release4.Set();
+            root4.WaitForExit(20_000);
+            Record($"receipt-pipe connected={connected} clientPidIsRoot={identityOk} receiptText={receipt} outsiderConnected={connected2} outsiderPidIsRoot={outsiderClaimedRoot}");
+            Check(connected && identityOk, "channel: a named-pipe client can be bound to the owned root PID and creation time");
+            Check(connected2 && !outsiderClaimedRoot, "channel: a named-pipe client from another process fails the same identity check");
+        }
+        catch (Exception ex) { failures++; Console.WriteLine("channel receipt-pipe error: " + ex); }
+
+        await File.WriteAllLinesAsync(evidence, lines);
     }
     static async Task MaaControlledStartTests()
     {
@@ -1418,6 +1557,7 @@ class Program
         if (args.Length > 0 && args[0] == "probe-maa-evidence-counterexamples") { try { MaaEvidenceCounterexamples().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-external-writer") { try { MaaExternalWriterChain().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-instance-evidence") { try { MaaInstanceEvidence().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-maa-channel-boundary") { try { MaaChannelBoundaryTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-short-lived-processes") { try { ShortLivedProcessObservation().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         // One managed root: writes nothing, waits on the release event, exits 0.
         if (args.Length == 4 && args[0] == "fixture-maa-chain-root")
@@ -1571,6 +1711,20 @@ class Program
         if (args.Length > 1 && args[0] == "fixture-append") { byte[] b=Encoding.UTF8.GetBytes("完成"); using var f=new FileStream(args[1],FileMode.Append,FileAccess.Write,FileShare.ReadWrite); f.Write(b,0,2); f.Flush(); Thread.Sleep(500); f.Write(b,2,b.Length-2); f.Flush(); Thread.Sleep(500); return 0; }
         if (args.Length > 1 && args[0] == "fixture-rotate-wait") { Thread.Sleep(400); File.Move(args[1],args[1]+".previous"); File.WriteAllText(args[1],"READY\n"); Thread.Sleep(12000); return 0; }
         if (args.Length > 1 && args[0] == "fixture-rotate") { Thread.Sleep(400); File.Move(args[1],args[1]+".previous"); File.WriteAllText(args[1],"READY\n"); Thread.Sleep(600); return 0; }
+        if (args.Length > 1 && args[0] == "fixture-channel-root")
+        {
+            if (args[1] == "idle" && args.Length > 2) { using var ready = new EventWaitHandle(false, EventResetMode.ManualReset, args[2] + "-ready"); using var release = new EventWaitHandle(false, EventResetMode.ManualReset, args[2] + "-release"); ready.Set(); release.WaitOne(TimeSpan.FromSeconds(30)); return 0; }
+            if (args[1] == "stdout") { Console.WriteLine(SyntheticStart(41001, 7001)); Console.WriteLine(SyntheticDone(41001, 7001)); Console.Out.Flush(); Thread.Sleep(300); return 0; }
+            if (args[1] == "log" && args.Length > 2) { AppendLog(args[2], SyntheticStart(41001, 7001) + "\n" + SyntheticDone(41001, 7001) + "\n"); Thread.Sleep(600); return 0; }
+            if (args[1] == "pipe" && args.Length > 3) { using (var client = new NamedPipeClientStream(".", args[2], PipeDirection.Out)) { client.Connect(10000); using var writer = new StreamWriter(client, new UTF8Encoding(false)) { AutoFlush = true }; writer.WriteLine("RECEIPT root-instance"); } using var release = new EventWaitHandle(false, EventResetMode.ManualReset, args[3] + "-release"); release.WaitOne(TimeSpan.FromSeconds(30)); return 0; }
+            return 2;
+        }
+        if (args.Length > 2 && args[0] == "fixture-channel-outsider")
+        {
+            if (args[1] == "pid" && args.Length > 4) { using var ready = new EventWaitHandle(false, EventResetMode.ManualReset, args[4] + "-ready"); ready.WaitOne(TimeSpan.FromSeconds(30)); int claimed = int.Parse(args[3]); Thread.Sleep(200); AppendLog(args[2], SyntheticStart(claimed, 7001) + "\n" + SyntheticDone(claimed, 7001) + "\nOUTSIDE-WRITER\n"); return 0; }
+            if (args[1] == "pipe") { using var client = new NamedPipeClientStream(".", args[2], PipeDirection.Out); client.Connect(10000); using var writer = new StreamWriter(client, new UTF8Encoding(false)) { AutoFlush = true }; writer.WriteLine("RECEIPT outsider-claim"); return 0; }
+            return 2;
+        }
         SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext());
         Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await Tests(); } catch(Exception e) { failures++; Console.WriteLine(e); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } });
         Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1;
@@ -1579,4 +1733,5 @@ class Program
     sealed class FakeClock : TimeProvider { public long Seconds; public override long TimestampFrequency => 1; public override long GetTimestamp() => Seconds; }
     [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int nStdHandle);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint clientProcessId);
 }

@@ -4,7 +4,7 @@
 
 - 用户认可在 v1.20.2 上做隔离研究，只改测试/夹具、证据报告、人工验收和项目记录，不改产品判定。计划：`对话记录/计划书/v3-maa-continuation-evidence-实例证据研究计划.md`；基线：`对话记录/Git提交备份/v3-maa-instance-evidence-20261123-1823/baseline.json`。
 - 新增 `probe-maa-instance-evidence`：6 条合成 `append_callback` 断言 + 9 案矩阵（success/short-child/update/error/stop/roll/replace/truncate/job-missing）。专项 15 PASS、`probe-maa-resume` 102 PASS；9 案全部 `paused=True/waiting=True/advanced=False/closeCalls=0`，阻断原因分别为“来源无法确认”“存在未确认的受管子进程”“Job/身份不完整”“任务错误”“任务停止”“日志文件已替换”“日志内容变化”。
-- 证据结论：`asst.log` 的 `Px` 是写日志进程 PID，同一文件跨 18 个 PID；`uuid` 固定、`taskid` 会复位；错误后仍可有 `AllTasksCompleted`，完成 84ms 后仍可有 `TaskChainStopped`，`finished_tasks` 含失败任务；当前解析器不识别英文回调、也不绑定 PID。200ms 节奏下短命进程仅 1~2 个可核实、5~6 个 `process-open-failed`。因此仍不足以恢复自动接续，保留 v1.20.2 暂停。
+- 证据结论：`asst.log` 的 `Px` 只是写日志进程的 PID，不能认证本轮实例（同一文件跨多次进程运行追加）；日志格式允许“错误后仍出现完成、完成后仍出现停止、`finished_tasks` 含失败任务”，这三点改由合成夹具独立验证；涉及只读样本的统计值已从交接移除并标 [待核实]，只保留路径引用。当前解析器不识别英文回调、也不绑定 PID。短命进程按产品 200ms 节奏多数无法在查询前核实身份。因此仍不足以恢复自动接续，保留 v1.20.2 暂停。
 - 验证：构建 0 警告 0 错误；专项均退出码 0、`Failures: 0`。完整回归三次均未全过：第一次在本机既有 race `Program.cs:103` 文件移动处异常，第二、三次均为 446 PASS / 1 FAIL / 1 SKIP，失败项 `MAA controlled start refuses another process window`；该窗口项单独运行 17 PASS，判断为桌面焦点/窗口识别环境问题。不能宣称完整回归通过。证据日志在 `对话记录/证据/v3-maa-instance-evidence-20261123/`。真实 MAA、游戏、更新及 6.23.1 未执行，均 [待核实]。
 - 下一步：等待用户决定是否按方案 A 做一次经授权的隔离真实 MAA 只读日志采集，或接受当前“仅暂停、不自动接续”的结论；不得直接把进程路径、PID、计数或回调文字当业务成功依据。
 

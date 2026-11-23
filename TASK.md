@@ -34,7 +34,8 @@
 - 2026-11-23 验证：`dotnet build tests\Runner.Checks\Runner.Checks.csproj -c Debug` 0 警告 0 错误；`probe-maa-external-writer`、`probe-short-lived-processes`、`probe-maa-evidence-counterexamples`、`probe-job-events`、`probe-maa-resume` 均退出码 0、0 失败；完整回归 `probe-regression-local` 第三次 431 PASS / 0 FAIL（退出码 0）。前两次失败（视觉夹具 2 项、读日志文件被占用 1 项）均为本机桌面焦点与既有竞态所致，与本轮新增代码无关，重跑通过。
 - 2026-11-23 源码预览：`验证审查器.cmd` 实际启动，窗口标题“顺序化软件执行工具 V3”出现后由我关闭；页面操作、隔离数据检查与人工验收未执行，不能记为功能通过。
 - 2026-11-23 实例证据研究：`probe-maa-instance-evidence` 15 PASS（6 条回调断言 + 9 案矩阵），9 案均 `paused=True/advanced=False/closeCalls=0`；`probe-maa-resume` 102 PASS、`probe-maa-external-writer` 13 PASS、`probe-short-lived-processes` 8 PASS、`probe-maa-evidence-counterexamples` 4 PASS、`probe-maa622-clues` 13 PASS、`probe-job-events` 8 PASS，均退出码 0、`Failures: 0`。完整回归三次均未全过：第一次在本机既有 race 文件移动处异常，第二、三次均为 446 PASS / 1 FAIL / 1 SKIP，失败项为受控窗口识别；窗口项单独运行 17 PASS，不能宣称完整回归通过。
-- 2026-11-23 结论：`asst.log` 的 `Px` 是写日志进程 PID，同一文件跨 18 个 PID，`uuid` 固定、`taskid` 会复位；错误后仍可出现 `AllTasksCompleted`，完成 84ms 后仍可出现 `TaskChainStopped`，`finished_tasks` 含失败任务；当前解析器不识别英文回调且忽略 PID 前缀。短命进程在 200ms 节奏下仅 1~2 个可核实、5~6 个 `process-open-failed`。证据不足以恢复自动接续，未改产品判定。
+- 2026-11-23 结论：`asst.log` 的 `Px` 只是写日志进程的 PID，不能认证本轮实例；日志格式允许“错误后仍出现完成、完成后仍出现停止、`finished_tasks` 含失败任务”，这三点改由合成夹具独立验证；涉及只读样本的统计值已从本卡移除并标 [待核实]，只保留路径引用。当前解析器不识别英文回调且忽略 PID 前缀。短命进程按产品 200ms 节奏多数无法在查询前核实身份。证据不足以恢复自动接续，未改产品判定。
+- 2026-11-23 参考样本边界与通道证据：测试与可编辑报告中的只读样本原值已替换或移除；历史记录 `对话记录/04-问题、风险与恢复.md:1227`、Git 历史 `8800fbb` 及更早、旧备份仍含相关内容，未改写，待用户决定。新增 `probe-maa-channel-boundary` 实测：按 PID 绑定证据行可被组外进程伪造、受管 stdout 对写文件的 MAA 无证据、命名管道回执可绑定根 PID 与创建时间（需目标程序配合）。构建 0 警告 0 错误，通道专项 5 PASS，完整回归 467 PASS / 0 FAIL。方案 E（独占工作目录 + 结构化回调解析 + `finished_tasks`/错误交叉 + Job 核对）已写入 `MAA自动接续证据核查.md`，未实施，等用户认可；产品零改动，自动接续仍暂停。
 
 ## 需求变更
 
