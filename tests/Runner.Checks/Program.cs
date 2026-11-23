@@ -645,6 +645,10 @@ class Program
         await ShortLivedProcessObservation();
         await MaaInstanceEvidence();
         await MaaChannelBoundaryTests();
+        await MaaLogExclusiveTests();
+        await MaaWriterIdentityTests();
+        await MaaEventModelTests();
+        await MaaSessionRuleTests();
         var parser=new MaaLogEvidence();parser.Feed("开始任");parser.Feed("务: A\n任务已全部");parser.Feed("完成！\n");Check(parser.Started && parser.Succeeded && !parser.Failed,"MAA evidence recognizes split start and success");parser.ResetForRestart();Check(!parser.Started && !parser.Succeeded,"MAA restart clears old completion evidence");parser.Feed("开始任务: A\n任务出错: A\n任务已全部完成！\n");Check(parser.Failed,"MAA error remains evidence despite completion text");
         var later=new MaaLogEvidence();later.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n");Check(later.Started && !later.Succeeded,"MAA later task start invalidates earlier completion");
         var observed=new List<string>();var liveEvidence=new MaaLogEvidence(observed.Add);liveEvidence.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n任务出错: B\n已停止\n");Check(observed.Count(x=>x.Contains("任务开始"))==2 && observed.Any(x=>x.Contains("完成文字")) && observed.Any(x=>x.Contains("任务错误")) && observed.Any(x=>x.Contains("任务停止")) && !liveEvidence.Succeeded,"MAA live evidence reports transitions and invalidates old completion");
@@ -1203,6 +1207,208 @@ class Program
 
         await File.WriteAllLinesAsync(evidence, lines);
     }
+    static async Task MaaLogExclusiveTests()
+    {
+        Directory.CreateDirectory(root);
+        string evidence = Path.Combine(root, "evidence-maa-log-exclusive.txt");
+        var lines = new List<string>();
+        void Record(string text) { lines.Add(text); Console.WriteLine("EVIDENCE " + text); }
+        bool ExclusiveNow(string path) { try { using var probe = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read); return true; } catch (IOException) { return false; } }
+        string ReadShared(string path) { using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete); using var reader = new StreamReader(stream, new UTF8Encoding(false)); return reader.ReadToEnd(); }
+        try
+        {
+            string dir1 = Path.Combine(root, "log-exclusive");
+            Directory.CreateDirectory(dir1);
+            string path1 = Path.Combine(dir1, "asst.log");
+            await File.WriteAllTextAsync(path1, "old\n");
+            using var holder1 = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "fixture-log-holder \"" + path1 + "\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true })!;
+            bool held1 = false;
+            for (int i = 0; i < 300 && !held1; i++) { try { held1 = ReadShared(path1).Contains("HELD"); } catch (IOException) { } if (!held1) await Task.Delay(20); }
+            bool appendDenied = false; string appendError = "";
+            try { using var writer = new FileStream(path1, FileMode.Append, FileAccess.Write, FileShare.Read); writer.WriteByte(65); } catch (IOException ex) { appendDenied = true; appendError = ex.GetType().Name + ":" + ex.HResult; }
+            bool readAllowed = ReadShared(path1).Contains("HELD");
+            bool truncateDenied = false; try { using var trunc = new FileStream(path1, FileMode.Truncate, FileAccess.Write, FileShare.Read); } catch (IOException) { truncateDenied = true; }
+            bool moveDenied = false; try { File.Move(path1, path1 + ".moved"); } catch (IOException) { moveDenied = true; }
+            bool deleteDenied = false; try { File.Delete(path1); } catch (IOException) { deleteDenied = true; }
+            bool heldExclusive = !ExclusiveNow(path1);
+            Record($"exclusive held={held1} appendDenied={appendDenied} appendError={appendError} readAllowed={readAllowed} truncateDenied={truncateDenied} moveDenied={moveDenied} deleteDenied={deleteDenied} writerProbeDenied={heldExclusive}");
+            Check(held1 && appendDenied && readAllowed && truncateDenied && moveDenied && deleteDenied && heldExclusive, "log: a deny-write holder blocks other writers, truncation, rename and delete while readers still read");
+
+            using var anchorFile = new FileStream(path1, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            anchorFile.Seek(0, SeekOrigin.End);
+            var anchor = new MaaLogAnchor(anchorFile);
+            anchor.Capture();
+            string beforeRelease = ReadShared(path1);
+            await holder1.StandardInput.WriteLineAsync("release");
+            holder1.StandardInput.Close();
+            holder1.WaitForExit(20_000);
+            bool writableAfterExit = ExclusiveNow(path1);
+            AppendLog(path1, "开始任务: B\n任务已全部完成！\n");
+            bool anchorUnchanged = anchor.IsUnchanged();
+            string forgedText = ReadShared(path1);
+            var forged = new MaaLogEvidence();
+            forged.Feed(beforeRelease);
+            forged.Feed(forgedText[beforeRelease.Length..]);
+            Record($"post-exit holderExited={holder1.HasExited} fileWritableAfterExit={writableAfterExit} anchorUnchangedAfterAppend={anchorUnchanged} forgedStarted={forged.Started} forgedSucceeded={forged.Succeeded}");
+            Check(writableAfterExit && anchorUnchanged && forged.Started && forged.Succeeded, "log: text appended after the target exits is invisible to the tail anchor and reads as target evidence");
+
+            string dir2 = Path.Combine(root, "log-exclusive-preempted");
+            Directory.CreateDirectory(dir2);
+            string path2 = Path.Combine(dir2, "asst.log");
+            await File.WriteAllTextAsync(path2, "old\n");
+            using var squatter = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "fixture-log-holder \"" + path2 + "\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true })!;
+            bool held2 = false;
+            for (int i = 0; i < 300 && !held2; i++) { try { held2 = ReadShared(path2).Contains("HELD"); } catch (IOException) { } if (!held2) await Task.Delay(20); }
+            bool targetSideOpenFailed = false; string targetError = "";
+            try { using var target = new FileStream(path2, FileMode.Append, FileAccess.Write, FileShare.Read); } catch (IOException ex) { targetSideOpenFailed = true; targetError = ex.GetType().Name; }
+            Record($"preempted held={held2} targetSideOpenFailed={targetSideOpenFailed} error={targetError}");
+            Check(held2 && targetSideOpenFailed, "log: a foreign process holding the log first starves the presumed target logger, so exclusivity never proves the holder is MAA");
+            await squatter.StandardInput.WriteLineAsync("release");
+            squatter.StandardInput.Close();
+            squatter.WaitForExit(20_000);
+        }
+        catch (Exception ex) { failures++; Console.WriteLine("log exclusive error: " + ex); }
+        await File.WriteAllLinesAsync(evidence, lines);
+    }
+    static (bool Ok, List<(int Pid, DateTime Started)> Users) RestartManagerUsers(string path)
+    {
+        var users = new List<(int, DateTime)>();
+        string key = Guid.NewGuid().ToString("N");
+        uint session = 0;
+        try
+        {
+            if (RmStartSession(out session, 0, key) != 0) return (false, users);
+            try
+            {
+                if (RmRegisterResources(session, 1, new[] { path }, 0, Array.Empty<RM_UNIQUE_PROCESS>(), 0, Array.Empty<string>()) != 0) return (false, users);
+                uint needed = 0, count = 0, reasons = 0;
+                int rc = RmGetList(session, out needed, ref count, null, ref reasons);
+                if (rc == 234 && needed > 0)
+                {
+                    var buffer = new RM_PROCESS_INFO[needed];
+                    count = needed;
+                    rc = RmGetList(session, out needed, ref count, buffer, ref reasons);
+                    if (rc != 0) return (false, users);
+                    for (int i = 0; i < count; i++) users.Add((buffer[i].Process.dwProcessId, DateTime.FromFileTimeUtc(((long)buffer[i].Process.ProcessStartTime.dwHighDateTime << 32) | (uint)buffer[i].Process.ProcessStartTime.dwLowDateTime)));
+                }
+                else if (rc != 0) return (false, users);
+                return (true, users);
+            }
+            finally { RmEndSession(session); }
+        }
+        catch (Exception ex) { Console.WriteLine("restart manager error: " + ex.Message); return (false, users); }
+    }
+    static async Task MaaWriterIdentityTests()
+    {
+        Directory.CreateDirectory(root);
+        string evidence = Path.Combine(root, "evidence-maa-writer-identity.txt");
+        var lines = new List<string>();
+        void Record(string text) { lines.Add(text); Console.WriteLine("EVIDENCE " + text); }
+        string ReadShared(string path) { using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete); using var reader = new StreamReader(stream, new UTF8Encoding(false)); return reader.ReadToEnd(); }
+        try
+        {
+            string dir = Path.Combine(root, "writer-identity");
+            Directory.CreateDirectory(dir);
+            string path = Path.Combine(dir, "asst.log");
+            await File.WriteAllTextAsync(path, "old\n");
+            using var holder = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "fixture-log-holder \"" + path + "\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true })!;
+            bool held = false;
+            for (int i = 0; i < 300 && !held; i++) { try { held = ReadShared(path).Contains("HELD"); } catch (IOException) { } if (!held) await Task.Delay(20); }
+            var holderOnly = RestartManagerUsers(path);
+            var holderMatch = holderOnly.Users.FirstOrDefault(u => u.Pid == holder.Id);
+            bool holderFound = holderOnly.Ok && holderMatch.Pid == holder.Id && Math.Abs((holderMatch.Started - holder.StartTime.ToUniversalTime()).TotalSeconds) < 2;
+            Record($"rm available={holderOnly.Ok} held={held} holderPid={holder.Id} holderFound={holderFound} holderOnlyCount={holderOnly.Users.Count}");
+            Check(holderFound, "writer identity: restart manager reports the deny-write holder PID with its creation time");
+            using (var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            {
+                var withReader = RestartManagerUsers(path);
+                bool readerListed = withReader.Users.Any(u => u.Pid == Environment.ProcessId);
+                Record($"rm-with-reader count={withReader.Users.Count} readerListed={readerListed} pids={string.Join(",", withReader.Users.Select(u => u.Pid))}");
+                Check(withReader.Ok && readerListed && withReader.Users.Count >= 2, "writer identity: restart manager also lists read-only openers, so it cannot separate writer from reader");
+            }
+            await holder.StandardInput.WriteLineAsync("release");
+            holder.StandardInput.Close();
+            holder.WaitForExit(20_000);
+            var afterClose = RestartManagerUsers(path);
+            Record($"rm-after-close ok={afterClose.Ok} count={afterClose.Users.Count}");
+            Check(afterClose.Ok && afterClose.Users.Count == 0, "writer identity: restart manager reports no users once every handle is closed");
+        }
+        catch (Exception ex) { failures++; Console.WriteLine("writer identity error: " + ex); }
+        await File.WriteAllLinesAsync(evidence, lines);
+    }
+    static async Task MaaEventModelTests()
+    {
+        Directory.CreateDirectory(root);
+        string evidence = Path.Combine(root, "evidence-maa-event-model.txt");
+        var lines = new List<string>();
+        void Record(string text) { lines.Add(text); Console.WriteLine("EVIDENCE " + text); }
+        var callbacks = new MaaLogEvidence();
+        callbacks.Feed(SyntheticStart(41001, 7001) + "\n" + SyntheticDone(41001, 7001) + "\n");
+        Record($"callback-lines started={callbacks.Started} succeeded={callbacks.Succeeded} failed={callbacks.Failed} stopped={callbacks.Stopped} uncertain={callbacks.Uncertain}");
+        Check(!callbacks.Started && !callbacks.Succeeded, "event model: official append_callback lines are invisible to the Chinese-text parser");
+        var errorKeyword = new MaaLogEvidence();
+        errorKeyword.Feed("开始任务: A\nTaskChainError {\"details\":{\"error\":\"OpenCVException\"}}\n任务已全部完成！\n");
+        Record($"taskchain-error failed={errorKeyword.Failed} succeeded={errorKeyword.Succeeded} stopped={errorKeyword.Stopped}");
+        Check(errorKeyword.Succeeded && !errorKeyword.Failed, "event model: a TaskChainError callback line without Chinese text is read as success");
+        var emptyStop = new MaaLogEvidence();
+        emptyStop.Feed("TaskChainStopped {}\n");
+        Record($"empty-stop stopped={emptyStop.Stopped}");
+        Check(!emptyStop.Stopped, "event model: a stop callback with empty details is not recognized as a stop");
+        var finished = new MaaLogEvidence();
+        finished.Feed("开始任务: A\n任务已全部完成！\n");
+        Record($"finished-tasks inspected=False started={finished.Started} succeeded={finished.Succeeded}");
+        Check(finished.Succeeded, "event model: finished_tasks content is never inspected, so a failed id inside it still reads as success");
+        var control = new MaaLogEvidence();
+        control.Feed("开始任务: A\n任务出错: A\n任务已全部完成！\n");
+        Check(control.Failed && control.Succeeded, "event model: Chinese text still records failure alongside completion");
+        await File.WriteAllLinesAsync(evidence, lines);
+    }
+    record MaaSessionEvent(bool BeforeExit, string Kind, int TaskId, int[] Finished);
+    static string JudgeMaaSession(IReadOnlyList<MaaSessionEvent> raw, bool holderIsRoot, bool identityStable, bool exitedCleanly)
+    {
+        var events = raw.Where(e => e.BeforeExit).ToList();
+        if (!holderIsRoot) return "暂停：日志持有者不是本轮根进程";
+        if (!identityStable) return "暂停：日志文件身份变化（滚动或替换）";
+        var started = events.Where(e => e.Kind == "TaskChainStart").Select(e => e.TaskId).Distinct().ToList();
+        var completed = events.Where(e => e.Kind == "TaskChainCompleted").Select(e => e.TaskId).Distinct().ToList();
+        var errors = events.Where(e => e.Kind == "TaskChainError").Select(e => e.TaskId).Distinct().ToList();
+        var done = events.LastOrDefault(e => e.Kind == "AllTasksCompleted");
+        if (started.Count == 0) return "暂停：未观察到任务开始";
+        if (errors.Count > 0) return "暂停：出现任务链错误 " + string.Join(",", errors);
+        if (events.Any(e => e.Kind == "TaskChainStopped")) return "暂停：出现停止回调";
+        if (done == null) return "暂停：未观察到全部完成回调";
+        var missing = started.Where(id => !completed.Contains(id)).ToList();
+        if (missing.Count > 0) return "暂停：任务未确认完成 " + string.Join(",", missing);
+        if (done.Finished.Length == 0) return "暂停：完成回调未包含已完成任务";
+        var unknown = done.Finished.Where(id => !started.Contains(id)).ToList();
+        if (unknown.Count > 0) return "暂停：完成回调包含未开始的任务 " + string.Join(",", unknown);
+        return exitedCleanly ? "成功：无错误、全部完成且持有者为本轮根进程" : "暂停：进程退出码非零或退出方式不明";
+    }
+    static async Task MaaSessionRuleTests()
+    {
+        Directory.CreateDirectory(root);
+        string evidence = Path.Combine(root, "evidence-maa-session-rule.txt");
+        var lines = new List<string>();
+        void Record(string text) { lines.Add(text); Console.WriteLine("EVIDENCE " + text); }
+        MaaSessionEvent E(string kind, int id, bool before = true, int[]? finished = null) => new(before, kind, id, finished ?? Array.Empty<int>());
+        var normal = new List<MaaSessionEvent> { E("TaskChainStart", 1), E("TaskChainStart", 2), E("TaskChainCompleted", 1), E("TaskChainCompleted", 2), E("AllTasksCompleted", 0, finished: [1, 2]) };
+        void Case(string name, List<MaaSessionEvent> events, bool root, bool stable, bool clean, string expected)
+        {
+            string verdict = JudgeMaaSession(events, root, stable, clean);
+            Record($"{name} verdict={verdict}");
+            Check(verdict == expected, "session rule: " + name);
+        }
+        Case("normal", normal, true, true, true, "成功：无错误、全部完成且持有者为本轮根进程");
+        Case("error-then-complete", [E("TaskChainStart", 1), E("TaskChainError", 1), E("TaskChainCompleted", 1), E("AllTasksCompleted", 0, finished: [1])], true, true, true, "暂停：出现任务链错误 1");
+        Case("stop-after-complete", [.. normal, E("TaskChainStopped", 0)], true, true, true, "暂停：出现停止回调");
+        Case("forged-after-exit", [.. normal, E("TaskChainStart", 9, before: false), E("AllTasksCompleted", 0, before: false, finished: [9])], true, true, true, "成功：无错误、全部完成且持有者为本轮根进程");
+        Case("holder-not-root", normal, false, true, true, "暂停：日志持有者不是本轮根进程");
+        Case("identity-changed", normal, true, false, true, "暂停：日志文件身份变化（滚动或替换）");
+        Case("incomplete", [E("TaskChainStart", 1), E("TaskChainStart", 2), E("TaskChainCompleted", 1), E("AllTasksCompleted", 0, finished: [1, 2])], true, true, true, "暂停：任务未确认完成 2");
+        Case("empty-finished", [E("TaskChainStart", 1), E("TaskChainCompleted", 1), E("AllTasksCompleted", 0, finished: [])], true, true, true, "暂停：完成回调未包含已完成任务");
+        Case("exit-nonzero", normal, true, true, false, "暂停：进程退出码非零或退出方式不明");
+        await File.WriteAllLinesAsync(evidence, lines);
+    }
     static async Task MaaControlledStartTests()
     {
         Check(!new TaskSpec().MaaStartByRunner, "MAA controlled start defaults off");
@@ -1557,6 +1763,10 @@ class Program
         if (args.Length > 0 && args[0] == "probe-maa-evidence-counterexamples") { try { MaaEvidenceCounterexamples().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-external-writer") { try { MaaExternalWriterChain().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-instance-evidence") { try { MaaInstanceEvidence().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-maa-log-exclusive") { try { MaaLogExclusiveTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-maa-writer-identity") { try { MaaWriterIdentityTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-maa-session-rule") { try { MaaSessionRuleTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+    if (args.Length > 0 && args[0] == "probe-maa-event-model") { try { MaaEventModelTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-channel-boundary") { try { MaaChannelBoundaryTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-short-lived-processes") { try { ShortLivedProcessObservation().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         // One managed root: writes nothing, waits on the release event, exits 0.
@@ -1711,6 +1921,18 @@ class Program
         if (args.Length > 1 && args[0] == "fixture-append") { byte[] b=Encoding.UTF8.GetBytes("完成"); using var f=new FileStream(args[1],FileMode.Append,FileAccess.Write,FileShare.ReadWrite); f.Write(b,0,2); f.Flush(); Thread.Sleep(500); f.Write(b,2,b.Length-2); f.Flush(); Thread.Sleep(500); return 0; }
         if (args.Length > 1 && args[0] == "fixture-rotate-wait") { Thread.Sleep(400); File.Move(args[1],args[1]+".previous"); File.WriteAllText(args[1],"READY\n"); Thread.Sleep(12000); return 0; }
         if (args.Length > 1 && args[0] == "fixture-rotate") { Thread.Sleep(400); File.Move(args[1],args[1]+".previous"); File.WriteAllText(args[1],"READY\n"); Thread.Sleep(600); return 0; }
+        if (args.Length > 1 && args[0] == "fixture-log-holder")
+        {
+            using var stream = new FileStream(args[1], FileMode.Append, FileAccess.Write, FileShare.Read);
+            using var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true };
+            writer.WriteLine("HELD");
+            Console.WriteLine("HELD");
+            Console.Out.Flush();
+            Console.ReadLine();
+            writer.WriteLine("开始任务: A");
+            writer.WriteLine("任务已全部完成！");
+            return 0;
+        }
         if (args.Length > 1 && args[0] == "fixture-channel-root")
         {
             if (args[1] == "idle" && args.Length > 2) { using var ready = new EventWaitHandle(false, EventResetMode.ManualReset, args[2] + "-ready"); using var release = new EventWaitHandle(false, EventResetMode.ManualReset, args[2] + "-release"); ready.Set(); release.WaitOne(TimeSpan.FromSeconds(30)); return 0; }
@@ -1733,5 +1955,11 @@ class Program
     sealed class FakeClock : TimeProvider { public long Seconds; public override long TimestampFrequency => 1; public override long GetTimestamp() => Seconds; }
     [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int nStdHandle);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)] static extern int RmStartSession(out uint sessionHandle, int flags, string sessionKey);
+    [DllImport("rstrtmgr.dll")] static extern int RmEndSession(uint sessionHandle);
+    [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)] static extern int RmRegisterResources(uint sessionHandle, uint fileCount, string[] files, uint applicationCount, RM_UNIQUE_PROCESS[] applications, uint serviceCount, string[] services);
+    [DllImport("rstrtmgr.dll")] static extern int RmGetList(uint sessionHandle, out uint needed, ref uint count, [Out] RM_PROCESS_INFO[]? info, ref uint rebootReasons);
+    [StructLayout(LayoutKind.Sequential)] struct RM_UNIQUE_PROCESS { public int dwProcessId; public System.Runtime.InteropServices.ComTypes.FILETIME ProcessStartTime; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct RM_PROCESS_INFO { public RM_UNIQUE_PROCESS Process; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string strAppName; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string strServiceShortName; public int ApplicationType; public uint AppStatus; public uint TSSessionId; [MarshalAs(UnmanagedType.Bool)] public bool bRestartable; }
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint clientProcessId);
 }

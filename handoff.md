@@ -320,3 +320,18 @@
 - 验证：构建 0 警告 0 错误；`probe-maa-channel-boundary` 5 PASS、`probe-maa-instance-evidence` 15 PASS、`probe-maa-resume` 107 PASS、组外 13 PASS、短命 8 PASS、Job 8 PASS、反例 4 PASS、6.22 线索 13 PASS；无参数完整回归 467 PASS / 0 FAIL / 0 SKIP（退出码 0）。证据在 `对话记录/证据/v3-reference-samples-20261123/`。真实 MAA、游戏、真实更新、多日、休眠与 6.23.1 均未执行，仍 [待核实]。
 - 历史位置仍含参考样本派生内容：`对话记录/04-问题、风险与恢复.md:1227`、Git 旧提交（`8800fbb` 及更早）、旧备份目录；本轮未改写，需用户决定。备份只覆盖 5 个可编辑文件，不含 `参考/`、`对话记录/` 与 Git 对象。
 - 本地提交 `fe03e08`（检查点:v1.20.2 参考样本虚构化与证据通道实测），未推送。
+
+## v1.20.3 研究轮：方案 E 前提核对、事件模型与四条新夹具（2026-11-23）
+
+- 当前任务见 `TASK.md`；本轮只改测试与文档，`src/` 产品代码零改动，`VERSION.md` 未改，开发版本不推进，v1.20.2 暂停保留。
+- 源码核对（`v6.22.0`，经 `api.github.com/.../contents/...?ref=v6.22.0` 取原文，sha 已记录在报告中）：
+  - `Bootstrapper.OnStart()` 先记 `launchDir` 再 `Directory.SetCurrentDirectory(AppContext.BaseDirectory)`，`launchDir` 只用于解释启动时相对路径参数；CWD 在任何 MaaCore 加载前已被改掉。
+  - `Logger` 的目录来自 `UserDir`，路径固定为 `UserDir/debug/asst.log`（备份 `asst.bak.log`，`MaxLogSize = 64 MiB`，超限 rename 后重开）；`Logger::set_directory` 整段被注释，6.22.0 没有任何改日志目录的 API 或配置。
+  - `AsstSetUserDir`/`AsstLoadResource` 只是替代入口，且会改资源与用户目录，不能拿来做“只换日志目录”。
+  - 因此“V3 设独立启动目录就能隔离 `asst.log`”这个前提**被源码否定**；改 CWD 对资源、配置、更新、单实例没有隔离收益。
+- 更基础的错误：`MaaLogEvidence` 读 `asst.log` 却匹配 GUI 本地化中文（`开始任务:`/`任务出错:`/`任务已全部完成！`/`已停止`）。`Assistant::append_callback` 写进 `asst.log` 的是英文 `Assistant::append_callback | <Event> {json}`；中文由 `AsstProxy.cs` 的 `LocalizationHelper.GetString("Assst.TaskQueue.*")` 生成，进界面日志与 Serilog（`gui.log`），旧 `AsstLog` P/Invoke 已被注释。
+- 事件模型：`TaskChainError`（`details.error` ∈ OpenCVException/OutOfMemory/GpuDeviceRemoved/UnhandledException/UnknownException，非致命后仍继续跑后续任务）、`TaskChainStopped`（用户 stop 时**不发** `AllTasksCompleted`；`task_delay` 期间 stop 可在完成回调后再发；顶层 catch 的 details 为空）、`AllTasksCompleted` 的 `finished_tasks` **含失败任务 id**，只表示队列跑完。`uuid` 是实例级、`taskid` 每实例自增、`Px` 可伪造，三者都不能单独认证“本轮会话”。
+- 新增四条探针：`probe-maa-log-exclusive` 3 PASS、`probe-maa-writer-identity` 3 PASS、`probe-maa-event-model` 5 PASS、`probe-maa-session-rule` 9 PASS；新夹具 `fixture-log-holder`（`FileShare.Read` deny-write，等价 `_SH_DENYWR`）与 Restart Manager P/Invoke。实测：独占期间不可写/截断/改名/删除但可读；持有者退出后追加内容对 `MaaLogAnchor` 不可见、会被当目标证据；先被组外进程占位时目标侧打不开；RM 可绑定持有者 PID+创建时间，但只读打开者也会被列出。
+- 方案 G（只读打开 + 文件身份 + RM 绑定根进程 + 只解析结构化回调 + 九条暂停规则 + 根进程退出后不再采信）写入 `MAA自动接续证据核查.md` §5/§6，只是提案，未实施；它只能证明“任务链无异常跑完”，不能证明链内每步业务成功，也不能抗同机注入。
+- 验证：构建 0 警告 0 错误；四条新探针 3/3/5/9 PASS；`probe-maa-instance-evidence` 15、`probe-maa-resume` 127、组外 13、短命 8、Job 8、通道 5，全部退出码 0；**无参数完整回归 486 PASS / 1 FAIL / 0 SKIP（退出码 1）**，失败项 `MAA controlled start refuses another process window`，该专项单独跑 17 PASS，属本机桌面焦点既有偶发；`probe-regression-local` 472 PASS / 0 FAIL / 1 SKIP（退出码 0）。
+- 历史位置仍含参考样本派生内容：`对话记录/04-问题、风险与恢复.md:1227`、Git 旧提交（`8800fbb` 及更早）、旧备份目录；本轮未改写、未清理，需用户决定。真实 MAA、游戏、真实更新、多日、休眠与 6.23.1 均未执行，仍 [待核实]。

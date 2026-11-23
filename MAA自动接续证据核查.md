@@ -167,10 +167,12 @@
 | B. 受管 stdout/stderr 捕获完成文字 | 是（仅对写 stdout 的程序） | 部分 | 通过 | 无 | MAA 写文件，故无效 |
 | C. 目标主动连命名管道写会话回执 | 是（PID+创建时间） | 需回执含业务结果 | 通过 | 需修改 MAA 或加受信中间层；跨版本、跨更新升级未知 [待核实] | 不碰第三方配置、不改 MAA |
 | D. Job 事件 + 保留句柄 + 创建时间 | 只能证明“仍在同一 Job 内” | 否 | 部分通过 | 现有能力；短命进程 200ms 采样仍不完整 | 不触碰 |
-| E. 独占工作目录 + 解析 `asst.log` 结构化回调 + `finished_tasks`/错误交叉 + Job 核对 | 中（见下） | 中（见下） | 需新增夹具 | 只改 V3 启动参数与解析；需核实 MAA 是否按工作目录写 `debug/asst.log` [待核实] | 不改 MAA 配置；需用户认可后才动产品 |
+| E. 独占工作目录 + 解析 `asst.log` 结构化回调 + `finished_tasks`/错误交叉 + Job 核对 | 否（前提被源码否定，见 2026-11-23 续查 §1） | 中（见下） | 需新增夹具 | 只改 V3 启动参数与解析；**MAA 日志位置与工作目录无关**，无法靠启动目录隔离 | 不改 MAA 配置；需用户认可后才动产品 |
 | F. ETW / Sysmon / 4688 / WMI 进程创建事件 | 补“进程创建事实” | 否 | 未测 | 需管理员权限或改系统配置；本轮明确不安装 | 触碰红线，不做 |
 
 方案 E 的判定草案（仅提案，未实施）：
+
+> 2026-11-23 源码核对后的修订说明，原草案保留作历史对照：第 1 条前提不成立（MAA 启动即把 CWD 改为 exe 目录，日志固定在 `UserDir/debug/asst.log`，无配置入口）；第 2 条事件名有误（6.22.0 无 `SubTaskError`，实际为 `TaskChainError`；`AllTasksCompleted` 只表示队列跑完，不代表每个任务成功）；第 4 条“`Px` 属于根进程”已被实测证明可伪造。修订后的可行部分见下文 2026-11-23 续查 §5 方案 G。
 
 1. V3 启动 MAA 时把工作目录设为本轮独占的受控目录，使 `debug/asst.log` 路径本轮唯一；不修改 MAA 配置文件。
 2. 只解析结构化回调：`TaskChainStart`、`AllTasksCompleted`、`SubTaskError`、`TaskChainStopped`；不看中文 GUI 文本。
@@ -183,11 +185,118 @@
 ### 4. 推荐的最快安全路径
 
 1. **立即（不需要产品改动）**：保留 v1.20.2 暂停；把本节限制写进人工验收（已加 2026-11-23 节），并在界面/文档提示“存在外部更新器或组外写入者时不要启用 `MAA日志` 自动接续”。
-2. **下一步产品改动（需用户认可）**：实施方案 E 的 P1–P4，只改 V3 的启动工作目录、日志解析和判定，不改 MAA、不改配置格式；新增夹具覆盖：独占目录内根进程写入、组外进程写同一路径、更新/重启后新进程写、日志滚动/截断、错误后完成、完成后停止、`finished_tasks` 含失败任务。
+2. **下一步产品改动（需用户认可）**：实施方案 G（见 2026-11-23 续查 §5、§6），只改 V3 的日志采信与判定：读取 `UserDir/debug/asst.log` 的结构化回调、用独占句柄 + Restart Manager 把写入者绑定到本轮根进程、只在根进程存活期间采信；不改 MAA、不改配置格式、不依赖启动工作目录；新增夹具覆盖：组外进程抢先占位、退出后追加、滚动/替换、错误后完成、完成后停止、`finished_tasks` 与开始集合不一致。
 3. **若要求抵御同机任意进程伪造**：必须走方案 C，需要 MAA 侧或受信中间层配合；本轮不具备该条件，也不应假装已解决。
 
 ### 5. 本轮无法取得的证据
 
 - 真实 MAA 的 `asst.log` 是否按上述格式完整落盘、滚动与写失败行为、6.23.1 是否一致：均需验收方在授权隔离环境只读采集，本轮 [待核实]。
-- MAA 是否按工作目录写 `debug/asst.log`（方案 E 的前提）：源码指向相对路径，但未实测，[待核实]。
+- MAA 是否按工作目录写 `debug/asst.log`（方案 E 的前提）：**源码已否定**（`Bootstrapper.OnStart` 强制 `Directory.SetCurrentDirectory(AppContext.BaseDirectory)`，`Logger` 用 `UserDir/debug/asst.log`，`set_directory` 被注释）；真实运行仍 [待核实]。
 - 多日无人值守、休眠恢复、真实更新后接续：未执行，[待核实]。
+
+## 2026-11-23 续查：方案 E 前提的源码核对、事件模型补全与三条新夹具（研究轮，`src/` 零改动）
+
+本节只写研究结论与隔离夹具结果；产品判定未改，v1.20.2 的“来源无法确认即暂停”继续生效。
+
+### 0. 结论先行
+
+方案 E 的两个前提都不成立：
+
+1. **改启动工作目录不能改变 MAA 日志位置。** `Bootstrapper.OnStart` 在任何 MaaCore 代码加载前执行 `Directory.SetCurrentDirectory(AppContext.BaseDirectory)`，`Logger` 的目录来自 `UserDir`，而 `Logger::set_directory` 在 6.22.0 已被整段注释，没有任何 API 或配置能改。
+2. **现有解析器读错了文件格式。** 它读 `asst.log`，却匹配 GUI 本地化中文（`开始任务:`、`任务出错:`、`任务已全部完成！`）；真实 `asst.log` 里是英文 `Assistant::append_callback | <Event> {json}`，这些中文来自 GUI 日志。夹具之所以能“成功”，是因为夹具按解析器的口味写中文，而不是按 MAA 的实际格式写。
+
+替代路径（方案 G）在“写入者身份”这一环有可测证据：MAA 以 deny-write 独占 `asst.log`，运行期间只有持有句柄的进程能写，Restart Manager 能把持有者绑定到 PID + 创建时间。它能在根进程存活期间证明“这些字节来自本轮根进程”，但只能证明“任务链无异常跑完”，**不能证明链内每一步业务成功**。
+
+### 1. 方案 E 的四问核对（源码事实，tag `v6.22.0`）
+
+1. **启动时工作目录怎么变**：`OnStart()` 先 `string launchDir = Environment.CurrentDirectory;`，紧接着 `Directory.SetCurrentDirectory(AppContext.BaseDirectory);`，然后建 `debug` 目录、读命令行、初始化日志、加载配置；`launchDir` 只用于解释“启动时工作目录”的相对路径参数（`ParseEarlyLaunchArgs(args, launchDir)`）。→ V3 设的启动目录对日志位置没有任何作用。
+2. **日志目录如何确定**：`Logger() : m_directory(UserDir.get())`；`m_log_path = m_directory / "debug" / "asst.log"`；`m_log_bak_path = … "asst.bak.log"`；`MaxLogSize = 64 MiB`。`UserDir` 无默认值，只能由宿主调 `AsstLoadResource(path)`（为空时设为该绝对路径）或 `AsstSetUserDir(path)` 设置。`set_directory` 在 `Logger.hpp` 599–607 行整段被注释。→ **6.22.0 没有改日志目录的入口**；GUI 侧 `CoreLogFile = PathsHelper.DebugDir / "asst.log"` 只是同一个位置的显示常量。
+3. **改工作目录的连带影响**：资源（`AsstLoadResource` 收绝对路径）、配置（`PathsHelper` 基于 exe 目录）、更新安装（`VerifyInstallLocation` / `TryApplyPendingUpdatePackage`）、单实例（Mutex + `MAA_KEEPAWAKEDATA_` 事件）都不依赖 CWD。也就是说改 CWD 换不来任何隔离收益，只会改变命令行里相对路径的解释。MAA 内是否有别处依赖 CWD 未逐行确认，[待核实]。
+4. **真实运行验证**：未执行。真实 MAA 是否与源码一致、GUI 是否与 MaaCore 同进程、日志是否按该格式落盘，全部 [待核实]；需要验收方另行授权只读采集。
+
+### 2. 更基础的错误：解析器匹配的中文不在 `asst.log` 里（源码事实）
+
+- MaaCore 侧：`Assistant::append_callback` 用 `Log.info("Assistant::append_callback |", msg, more_detail.to_string())` 写 `asst.log`，内容是英文事件名 + JSON（`taskchain` / `taskid` / `uuid` / `finished_tasks` / `details.error`），没有中文业务文案。
+- GUI 侧（`AsstProxy.cs`）：`TaskChainStart` → `AddLogSection(GetString("Assst.TaskQueue.StartTask") + taskName)` 并 `_logger.Information("Start Task Chain: …")`；`TaskChainError` → `GetString("Assst.TaskQueue.TaskError") + chain` 后 `DisplayLog(..., UiLogColor.Error)`；`TaskChainCompleted` → `GetString("Assst.TaskQueue.CompleteTask")`；`AllTasksCompleted` → `GetStringFormat("Assst.TaskQueue.AllTasksComplete", 用时)`，有错时换 `CompletedWithErrors`。这些进界面日志和 Serilog（`gui.log`），旧的 `AsstLog` P/Invoke 整段被注释，注释原文：「现在拆分成了 core 和 UI 的日志，所以这个函数暂时弃用」。
+- 推论：v1.20.2 的 `MaaLogEvidence` 在真实 `asst.log` 上很可能一条都匹配不到，因此“解析成功→放行”这条路在现状下本来就走不通；先把 `src/` 改回“更宽松的中文匹配”只会更危险。
+
+### 3. 业务结果事件模型（源码事实 + 缺口）
+
+| 事件 | 触发点 | 关键字段 | 顺序/次数 | 能否当“业务成功” |
+| --- | --- | --- | --- | --- |
+| `TaskChainStart` | 每个任务 `run()` 前 | `taskchain`、`taskid`、`uuid` | 每任务一次 | 否，只表示开始 |
+| `TaskChainCompleted` | `run()` 返回 true 且未置 idle | 同上 | 失败任务不会发 | 单任务级“无异常结束” |
+| `TaskChainError` | `run()` 抛异常或返回 false | 额外 `details.error`：`OpenCVException`/`OutOfMemory`/`GpuDeviceRemoved`/`UnhandledException`/`UnknownException` | 非致命异常**继续跑后续任务** | 否，且同一 taskid 不再发 Completed |
+| `TaskChainStopped` | 用户 stop 后任务返回；`task_delay` 等待期间被 stop；顶层 `catch(...)` | 前两种带 `taskchain`/`taskid`；顶层 catch 的 `details` 为空 | 停止时**不发** `AllTasksCompleted` | 否 |
+| `AllTasksCompleted` | 队列清空 | `finished_tasks`（**含失败任务 id**）、`taskchain`、`taskid` | 一次；之后仍可能来 `TaskChainStopped` | 否，只表示队列跑完 |
+
+- 完成回调**之后**仍可能出现停止回调（`task_delay` 期间 stop）；错误之后仍可能继续并最终收到 `AllTasksCompleted`。这两条由合成夹具独立验证，不依赖真实日志。
+- 进程崩溃/被杀：`working_proc` 顶层 `catch` 只覆盖该函数内异常，进程级崩溃没有任何收尾事件；V3 只能看到日志停在半途。
+- 日志滚动：`rotate()` 在超过 64 MiB 时 `rename(asst.log, asst.bak.log)` 后重开；`try/catch(...) {}` 吞掉失败。写入失败时 `m_ofs` 无效，写会被丢弃且不报错（细节 [待核实]）。
+- `uuid` 是 MAA 实例级，`taskid` 是每实例自增，PID 可被任意进程在日志行里伪造（已实测）。三者都不能单独当“本轮会话”认证。
+- **语义上限**：`TaskChainCompleted` 只代表任务链 `run()` 返回 true，不代表链内每个子步骤业务成功（战斗失败重试、理智不足提前收工等仍可能返回 true）。要判断“每一步都真的赢了”没有官方回调支持，[待核实]。
+
+### 4. 本轮新增隔离夹具与实测（受控测试，未碰真实 MAA）
+
+| 探针 | 断言 | 关键证据 |
+| --- | --- | --- |
+| `probe-maa-log-exclusive` | 3 PASS | `held=True appendDenied=True readAllowed=True truncateDenied=True moveDenied=True deleteDenied=True`；持有者退出后 `fileWritableAfterExit=True anchorUnchangedAfterAppend=True forgedStarted=True forgedSucceeded=True`；抢先占位时 `targetSideOpenFailed=True` |
+| `probe-maa-writer-identity` | 3 PASS | Restart Manager `holderFound=True holderOnlyCount=1`，PID 与创建时间匹配；只读打开者也会被列出（`count=2`）；关闭后 `count=0` |
+| `probe-maa-event-model` | 5 PASS | 官方回调行对中文解析器 `started=False succeeded=False`；`TaskChainError` 单独出现被判 `succeeded=True`；`TaskChainStopped {}` 不被识别；`finished_tasks` 从不检查 |
+| `probe-maa-session-rule` | 9 PASS | 通过/暂停 9 个判定分支，见下 |
+
+`probe-maa-session-rule` 的 9 个分支（测试内纯函数，不进产品）：正常成功；错误后完成→暂停；完成后停止→暂停；**退出后追加的伪造行被忽略**；持有者非根→暂停；文件身份变化→暂停；有任务未完成→暂停；`finished_tasks` 为空→暂停；退出码非零→暂停。
+
+实测补充两条事实：`File.ReadAllText` 默认 `FileShare.Read`，读 MAA 式 deny-write 日志会抛 `IOException`（共享冲突），必须 `FileShare.ReadWrite|Delete`；目标退出后文件立刻可写，追加内容对 `MaaLogAnchor` 不可见（锚点只校验旧区域），会被当作目标证据读入。因此“退出后继续读日志”必须禁止。
+
+### 5. 候选方案比较（本轮更新）
+
+| 方案 | 绑定本轮实例 | 业务成功 | 反例覆盖 | 依赖/成本 | 红线 |
+| --- | --- | --- | --- | --- | --- |
+| A 按 `Px` 匹配 PID | 否（实测可伪造） | 否 | 通过（证伪） | 无 | 不触碰 |
+| B 受管 stdout | 仅对写 stdout 的程序 | 部分 | 通过 | 无 | MAA 写文件，无效 |
+| C 目标主动连命名管道回执 | 是（PID+创建时间） | 取决于回执内容 | 通过 | 需改 MAA 或受信中间层 | 不碰第三方配置 |
+| D Job + 句柄 | 只能证明同 Job | 否 | 部分 | 现有能力 | 不触碰 |
+| E 工作目录 + `asst.log` | **否（前提否定）** | 中 | 需新增 | 只改 V3，但换不来隔离 | 不成方案 |
+| F ETW/Sysmon/4688 | 补进程创建事实 | 否 | 未测 | 需管理员/系统配置 | 红线，不做 |
+| **G 独占句柄 + Restart Manager + 结构化回调** | **是（根进程存活期间）** | 中（任务链无异常跑完） | 见 §4 九分支 | 只改 V3 解析与判定 | 不碰 MAA |
+| H 官方 C API 自建 Assistant（`AsstCreateEx` 回调） | 是（自己创建的实例） | 强（每 taskid 回调） | 需自建夹具 | 需资源、账号、模拟器、真实运行 | 越“不改 MAA 配置、不启动真实 MAA”，须另行授权 |
+
+方案 G 的信任边界：deny-write 保证运行期间只有一个写者；RM 给出持有者 PID；根进程身份由 V3 自己的 `OwnedProcess`（句柄 + 创建时间）给出。缺口：MAA 关闭句柄到进程退出之间的窗口、日志滚动、RM 采样间隔；这些都必须判暂停而不是猜。方案 G **不能**抵御同机注入或篡改根进程本身，也不能证明子步骤业务成功。
+
+### 6. 推荐的最快安全路径
+
+1. **现在**：保留 v1.20.2 暂停；把“MAA 日志位置固定、现有中文解析对 `asst.log` 无效、不要在外部更新器运行时启用 MAA 自动接续”写进人工验收。
+2. **产品改动（需用户认可，未实施）**：方案 G，五步——只读打开并记录文件身份；RM 校验持有者含根进程且创建时间一致，并确认自己写打开被拒（deny-write 生效）；只解析结构化回调；按 §4 九条规则判定；根进程退出后不再采信任何新字节，任一异常即暂停。
+3. **验收条件**：新夹具覆盖 §4 全部反例并通过；验收方在授权隔离环境只读采集一次真实 `asst.log`，确认格式、滚动与写失败行为，再决定是否放行。
+4. **若要抗同机恶意进程或证明每一步业务成功**：只能走 C、H 或系统级追踪，均需另外授权，本轮不做。
+
+### 7. 本轮证据缺口
+
+- 真实 `asst.log` 的实际内容、是否偶含中文、滚动/写失败行为：未采集，[待核实]。
+- GUI 与 MaaCore 是否同进程（`AsstProxy` 直接 P/Invoke `MaaCore.dll` 指向同进程，但未在真实进程上核实）、Serilog 是否就写 `debug/gui.log`：均 [待核实]。
+- Restart Manager 在真实 MAA 上是否稳定列出持有者、是否有性能或权限问题：未测，[待核实]。
+- 6.23.1 是否同构（版本门限未动）：[待核实]。
+- 更新/重启、多日无人值守、休眠恢复：未执行。
+
+### 8. 本轮实跑记录（2026-11-23 20:03–20:20）
+
+| 命令 | 退出码 | 结果 | 日志 |
+| --- | --- | --- | --- |
+| `dotnet build tests\Runner.Checks\Runner.Checks.csproj -c Debug` | 0 | 0 警告 0 错误 | 控制台 |
+| `Runner.Checks.exe probe-maa-log-exclusive` | 0 | 3 PASS / 0 FAIL | 控制台 |
+| `Runner.Checks.exe probe-maa-writer-identity` | 0 | 3 PASS / 0 FAIL | 控制台 |
+| `Runner.Checks.exe probe-maa-event-model` | 0 | 5 PASS / 0 FAIL | 控制台 |
+| `Runner.Checks.exe probe-maa-session-rule` | 0 | 9 PASS / 0 FAIL | 控制台 |
+| `Runner.Checks.exe probe-maa-instance-evidence` | 0 | 15 PASS / 0 FAIL | `.build/probe-maa-instance-evidence-20261123-2055.log` |
+| `Runner.Checks.exe probe-maa-resume` | 0 | 127 PASS / 0 FAIL | `.build/probe-maa-resume-20261123-2055.log` |
+| `Runner.Checks.exe probe-maa-external-writer` | 0 | 13 PASS / 0 FAIL | `.build/probe-maa-external-writer-20261123-2055.log` |
+| `Runner.Checks.exe probe-short-lived-processes` | 0 | 8 PASS / 0 FAIL | `.build/probe-short-lived-processes-20261123-2055.log` |
+| `Runner.Checks.exe probe-job-events` | 0 | 8 PASS / 0 FAIL | `.build/probe-job-events-20261123-2055.log` |
+| `Runner.Checks.exe probe-maa-channel-boundary` | 0 | 5 PASS / 0 FAIL | `.build/probe-maa-channel-boundary-20261123-2055.log` |
+| `Runner.Checks.exe probe-maa-start`（受控窗口专项单独跑） | 0 | 17 PASS / 0 FAIL | `.build/maa-start-standalone-20261123-2050.log` |
+| 无参数完整回归 | **1** | **486 PASS / 1 FAIL / 0 SKIP**，失败项 `MAA controlled start refuses another process window` | `.build/full-regression-20261123-2032.log` |
+| `Runner.Checks.exe probe-regression-local`（会跳过部分案例） | 0 | 472 PASS / 0 FAIL / 1 SKIP（`SKIP controlled resume: run probe-controlled-resume separately with local pipe access`） | `.build/probe-regression-local-20261123-2100.log` |
+
+- 完整回归本轮**未通过**：唯一失败项与上一轮同一处（受控窗口在整包连续运行时被本机桌面焦点影响），单独运行该专项 17 PASS；不能宣称完整回归通过，也不能据此改产品迁就测试。
+- `probe-regression-local` 与无参数完整回归不是同一入口：前者会跳过需要本地管道/Dispatcher 的案例（本轮 1 SKIP），数字不能互相替代。
