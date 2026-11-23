@@ -286,3 +286,14 @@
 - 自动检查、独立预览及人工步骤见本轮记录和 `人工验收流程.md` v1.13.0；VM 和真实 MAA 由验收方负责，开发方未运行真实游戏。
 - 构建 0 警告 0 错误；MAA 专项 25 PASS，完整回归 213 PASS，均 Failures: 0；结果在 `.build/verify-v130-final-bba1dcb752e14ba0a6dd0b5b85d604f6/`。
 - 首次说明弹窗使预览自动化无法读取控件；随后使用项目现有 `RUNNER_V3_SMOKE=1` 跳过首次说明，独立预览 `.build/preview-20004-19557` 检查 MAA日志选项及独占/自动默认关闭，保存后界面退出。人工观感及真实 MAA 业务待验收。
+
+## v1.20.1 MAA 受控证据：组外写入与短命进程观察
+
+- 当前任务见 `TASK.md`；本轮计划见 `对话记录/计划书/v3-maa-continuation-evidence-实施计划.md` 的 2026-11-23 段。只改 `tests/Runner.Checks/Program.cs` 的隔离夹具和探针，未改 `src/` 任何产品判定；版本保持 v1.20.1。
+- 新增 `probe-maa-external-writer`：受管组只有根夹具一个进程，根进程不写日志并以退出码 0 退出；由测试独立启动、可核实不在受管 Job 内的组外夹具，等命名事件后向同一临时日志追加“开始任务/任务已全部完成”，写回执后正常退出。另有根进程自己写日志的对照案。
+- 实测结论：组外写入案 `advanced=True`、`state=已结束`、`successLine=True`、`groupPause=False`，事件为累计进程 1、加入/退出通知各 1、`MAA 日志观察到任务开始与全部完成`、`maa 成功`、`已启动 after-outside-writer`。即单根受管组下 V3 不暂停，把组外文字判为成功并接续；此前“外部写入一定暂停”的 [待核实] 项按受控证据改为“会误判”。既有真实运行中的暂停来自累计多进程或身份不明，不能视为日志来源已被认证。
+- 新增 `probe-short-lived-processes`：6 个受控短命子进程，对比 20ms 与产品 200ms 两种采样节奏。20ms 下累计、加入、退出均为 7，句柄与创建时间、组归属基本可取得，路径 5~7 波动；200ms 下只有 1 个可核实，6 个为 `process-open-failed`。三案 summary 均含“不能仅凭 PID 证明通知与当前句柄属于同一身份”，用途已知数为 0。注入案覆盖查询失败、重复 PID、缺少加入的退出与数量不一致。
+- 构建 0 警告 0 错误；`probe-maa-external-writer`、`probe-short-lived-processes`、`probe-maa-evidence-counterexamples`、`probe-job-events`、`probe-maa-resume` 均退出码 0、`Failures: 0`。一次 mid-run 失败由我自己的夹具争用临时日志（默认共享模式冲突）造成，已改为读写两侧显式 `FileShare.ReadWrite|FileShare.Delete`，未改产品。
+- 完整回归 `probe-regression-local` 共三次：第一次 429 PASS / 2 FAIL（均为 `visual start simulated *`，DETAIL `通用启动未确认`），第二次 431 PASS / 1 FAIL（`TaskTrialTests` 读 `trial-manual-close-window\fixture.log` 时该文件被占用，既有竞态），第三次 431 PASS / 0 FAIL、退出码 0（`.build/evidence/probe-regression-local-rerun2.log`）。视觉夹具要求受管窗口当时是前台窗口（`src/Runner/VisualStartController.cs:169`），同步跑探针时 DeepSeek Harness 窗口会抢回前台；改为后台任务、桌面空闲时 `probe-visual-single` 与第三次回归都通过。两次失败都与本轮新增代码无关，重跑通过，但完整回归在本机存在桌面焦点与文件占用两类不稳定。
+- 用户报告：v1.20.1 受控专项、完整回归和源码预览通过；真实 6.23.1 在“MAA日志”模式下被版本门限在启动前阻止；测试用 6.21.4 副本已由 MAA 自身更新到 6.23.1；真实 6.22.0 更新时是否识别新增更新线索 [待核实]。本轮未运行真实 MAA、游戏或真实更新。源码预览入口本轮回实际启动过一次：窗口标题“顺序化软件执行工具 V3”出现，随后由我关闭（`CloseMainWindow` 3 秒未退出后 Kill）；页面操作与人工验收未执行，也不代表任何功能通过。
+- 修复方向 A（要求证据与本轮根进程实例关联，需先核实真实日志是否有可核对标识）、B（把仅有日志文字判为不明，属产品判定修改）、C（仅文档与验收提示）已写入 `MAA自动接续证据核查.md`，均未实施，等用户认可后再动产品。

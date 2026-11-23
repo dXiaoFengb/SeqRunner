@@ -639,6 +639,8 @@ class Program
     {
         await Maa622ClueTests();
         await MaaEvidenceCounterexamples();
+        await MaaExternalWriterChain();
+        await ShortLivedProcessObservation();
         var parser=new MaaLogEvidence();parser.Feed("开始任");parser.Feed("务: A\n任务已全部");parser.Feed("完成！\n");Check(parser.Started && parser.Succeeded && !parser.Failed,"MAA evidence recognizes split start and success");parser.ResetForRestart();Check(!parser.Started && !parser.Succeeded,"MAA restart clears old completion evidence");parser.Feed("开始任务: A\n任务出错: A\n任务已全部完成！\n");Check(parser.Failed,"MAA error remains evidence despite completion text");
         var later=new MaaLogEvidence();later.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n");Check(later.Started && !later.Succeeded,"MAA later task start invalidates earlier completion");
         var observed=new List<string>();var liveEvidence=new MaaLogEvidence(observed.Add);liveEvidence.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n任务出错: B\n已停止\n");Check(observed.Count(x=>x.Contains("任务开始"))==2 && observed.Any(x=>x.Contains("完成文字")) && observed.Any(x=>x.Contains("任务错误")) && observed.Any(x=>x.Contains("任务停止")) && !liveEvidence.Succeeded,"MAA live evidence reports transitions and invalidates old completion");
@@ -761,6 +763,209 @@ class Program
         File.SetLastWriteTimeUtc(restored, originalTime);
         string restoredHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(restored)));
         Check(originalHash == restoredHash && File.GetLastWriteTimeUtc(restored) == originalTime, "unchanged sampled fingerprint cannot prove no intermediate modification");
+    }
+    static async Task<bool> WaitForLog(string path, string text, int milliseconds)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(milliseconds);
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream, new UTF8Encoding(false));
+                if ((await reader.ReadToEndAsync()).Contains(text)) return true;
+            }
+            catch (IOException) { }
+            await Task.Delay(30);
+        }
+        return false;
+    }
+    // The runner keeps the log open for reading, so fixtures append through an explicitly shared handle like the MAA fixtures do.
+    static void AppendLog(string path, string text)
+    {
+        using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+        using var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true };
+        writer.Write(text);
+    }
+    // Work 1: one managed root that writes nothing, plus a separate process outside the job that appends the MAA text.
+    // This probe records what the product actually does; it deliberately carries no pass/fail verdict about the outcome.
+    static async Task MaaExternalWriterChain()
+    {
+        Directory.CreateDirectory(root);
+        string evidence = Path.Combine(root, "evidence-maa-external-writer.txt");
+        var lines = new List<string>();
+        void Record(string text) { lines.Add(text); Console.WriteLine("EVIDENCE " + text); }
+        foreach (bool selfWrite in new[] { false, true })
+        {
+            string mode = selfWrite ? "root-writes-log" : "outside-writer";
+            string dir = Path.Combine(root, "maa-external-chain-" + mode);
+            Directory.CreateDirectory(dir);
+            string log = Path.Combine(dir, "gui.log");
+            await File.WriteAllTextAsync(log, "old\n");
+            string prefix = "dsh-maa-chain-" + Guid.NewGuid().ToString("N");
+            string noteFile = Path.Combine(dir, "outside.txt");
+            string afterName = "after-" + mode;
+            using var ready = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + "-ready");
+            using var written = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + "-written");
+            using var release = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + "-release");
+            var store = new Store(dir);
+            store.Tasks.Add(new TaskSpec { Name = "maa", Program = Environment.ProcessPath!, Arguments = $"fixture-maa-chain-root \"{log}\" {prefix} {(selfWrite ? 1 : 0)}", WorkingDirectory = AppContext.BaseDirectory, Completion = "MAA日志", LogPath = log, MaaExclusiveLog = true, TrustCompletion = true, ContinueOnFailure = true });
+            store.Tasks.Add(Spec(afterName, "echo next"));
+            var engine = new RunnerEngine(store, () => { }) { MaaVersionSupported = _ => true };
+            var run = engine.Start();
+            bool rootReady = ready.WaitOne(TimeSpan.FromSeconds(20));
+            Check(rootReady, "external chain root signals ready: " + mode);
+            Process? outsider = null;
+            string note = "";
+            bool outsiderExited = false;
+            try
+            {
+                if (!selfWrite)
+                {
+                    var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+                    start.ArgumentList.Add("fixture-maa-chain-outsider"); start.ArgumentList.Add(log); start.ArgumentList.Add(prefix); start.ArgumentList.Add(noteFile);
+                    outsider = Process.Start(start)!;
+                    outsiderExited = outsider.WaitForExit(20000);
+                    note = File.Exists(noteFile) ? (await File.ReadAllTextAsync(noteFile)).Trim() : "missing";
+                }
+                bool textSeen = selfWrite ? await WaitForLog(log, "任务已全部完成！", 20000) : written.WaitOne(TimeSpan.FromSeconds(20));
+                release.Set();
+                for (int i = 0; i < 700 && !run.IsCompleted && !engine.Waiting; i++) await Task.Delay(30);
+                var record = store.History[0];
+                var events = record.Events;
+                bool advanced = events.Any(x => x.Contains("已启动 " + afterName));
+                bool success = events.Any(x => x.Contains("MAA 日志观察到任务开始与全部完成"));
+                string logText = await File.ReadAllTextAsync(log);
+                bool onlyDeclaredWriter = selfWrite ? textSeen : logText == "old\n开始任务: A\n任务已全部完成！\n";
+                bool outsiderOutside = outsider == null || !events.Any(x => x.Contains("Job 进程加入通知：PID " + outsider.Id));
+                string firstBlock = events.FirstOrDefault(x => x.Contains("结果不明") || x.Contains("证据冲突") || x.Contains("暂停依据")) ?? "无";
+                if (!selfWrite && outsider != null)
+                {
+                    Check(outsiderExited && outsider.ExitCode == 0 && note.Contains("WRITTEN=1") && note.Contains("PID=" + outsider.Id), "outside fixture appends the log and exits normally");
+                    if (!note.Contains("INJOB=0")) Console.WriteLine("NOTE outside fixture inherits a host job; group separation is still proven by the absence of a job join notification");
+                }
+                Check(onlyDeclaredWriter, "only the declared writer changed the log: " + mode);
+                Check(outsiderOutside, "outside fixture never appears as a managed job member: " + mode);
+                if (selfWrite) Check(advanced && success, "control: a single root writing its own log advances the queue");
+                Record($"mode={mode} advanced={advanced} state={record.State} waiting={engine.Waiting} successLine={success} closeRequested=false closeConfigured=false groupPause={events.Any(x => x.Contains("累计进程数"))} block={firstBlock} records={store.History.Count} logBytes={logText.Length} outside={note}");
+                foreach (var e in events) Record($"mode={mode} event={e}");
+            }
+            finally
+            {
+                release.Set();
+                if (!run.IsCompleted) engine.Stop();
+                await run.WaitAsync(TimeSpan.FromSeconds(20));
+                if (outsider != null) { if (!outsider.HasExited) outsider.Kill(); outsider.Dispose(); }
+            }
+        }
+        string aloneDir = Path.Combine(root, "maa-external-chain-root-exit");
+        Directory.CreateDirectory(aloneDir);
+        string aloneLog = Path.Combine(aloneDir, "gui.log");
+        await File.WriteAllTextAsync(aloneLog, "old\n");
+        string alonePrefix = "dsh-maa-chain-" + Guid.NewGuid().ToString("N");
+        using (var aloneReady = new EventWaitHandle(false, EventResetMode.ManualReset, alonePrefix + "-ready"))
+        using (var aloneRelease = new EventWaitHandle(false, EventResetMode.ManualReset, alonePrefix + "-release"))
+        {
+            var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+            start.ArgumentList.Add("fixture-maa-chain-root"); start.ArgumentList.Add(aloneLog); start.ArgumentList.Add(alonePrefix); start.ArgumentList.Add("0");
+            using var alone = Process.Start(start)!;
+            bool started = aloneReady.WaitOne(TimeSpan.FromSeconds(20));
+            aloneRelease.Set();
+            bool ended = alone.WaitForExit(20000);
+            Check(started && ended && alone.ExitCode == 0 && (await File.ReadAllTextAsync(aloneLog)) == "old\n", "chain root fixture exits 0 without writing the log");
+        }
+        await File.WriteAllLinesAsync(evidence, lines);
+        Console.WriteLine("EVIDENCE file: " + evidence);
+    }
+    static uint ParsePid(string line)
+    {
+        int index = line.IndexOf("PID ", StringComparison.Ordinal);
+        if (index < 0) return 0;
+        var digits = new string(line[(index + 4)..].TakeWhile(char.IsDigit).ToArray());
+        return uint.TryParse(digits, out var value) ? value : 0;
+    }
+    // What a caller can still learn about one short-lived process at notification time.
+    static (bool handle, bool path, bool member, string reason) SampleIdentity(OwnedProcess owner, uint pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById((int)pid);
+            if (process.HasExited) return (false, false, false, "exited-before-sample");
+            DateTime created;
+            try { created = process.StartTime; } catch { return (false, false, false, "start-time-unavailable"); }
+            string? path = null;
+            string reason = "";
+            try { path = process.MainModule?.FileName; } catch { reason = "path-unavailable"; }
+            bool member = false;
+            try { member = owner.ContainsProcess(process.SafeHandle); } catch { reason = reason.Length == 0 ? "membership-unavailable" : reason + "+membership-unavailable"; }
+            return (created != default, path != null, member, reason);
+        }
+        catch { return (false, false, false, "process-open-failed"); }
+    }
+    // Work 2: event counts, verified identities and verified purpose are three different things.
+    static async Task ShortLivedProcessObservation()
+    {
+        var evidence = new List<string>();
+        // The last case mirrors the product loop (200 ms poll): the same fast-exiting children are then observed only after they are gone.
+        foreach (var (mode, delay, pollMs) in new[] { ("normal-wait", 120, 20), ("quick-exit", 0, 20), ("quick-exit-production-poll", 0, 200) })
+        {
+            string dir = Path.Combine(root, "short-lived-" + mode);
+            Directory.CreateDirectory(dir);
+            var spec = new TaskSpec { Name = "parent", Program = Environment.ProcessPath!, Arguments = $"fixture-short-parent 6 {delay}", WorkingDirectory = AppContext.BaseDirectory, Completion = "MAA日志", TrustCompletion = true };
+            using var owned = OwnedProcess.Start(spec);
+            var observer = owned.JobEvents;
+            var joins = new List<string>();
+            var exits = new List<string>();
+            var samples = new Dictionary<uint, (bool handle, bool path, bool member, string reason)>();
+            void Collect(string line, OwnedProcess owner, List<string> join, List<string> exit, Dictionary<uint, (bool handle, bool path, bool member, string reason)> sampled)
+            {
+                if (line.Contains("加入通知"))
+                {
+                    join.Add(line);
+                    uint pid = ParsePid(line);
+                    if (pid != 0 && !sampled.ContainsKey(pid)) sampled[pid] = SampleIdentity(owner, pid);
+                }
+                else if (line.Contains("退出通知")) exit.Add(line);
+            }
+            uint total = 0;
+            var deadline = DateTime.UtcNow.AddSeconds(30);
+            while (DateTime.UtcNow < deadline)
+            {
+                observer?.Poll(owned, line => Collect(line, owned, joins, exits, samples));
+                var accounting = owned.Accounting();
+                total = Math.Max(total, accounting.Total);
+                if (owned.Root.HasExited && accounting.Active == 0) break;
+                await Task.Delay(pollMs);
+            }
+            observer?.Poll(owned, line => Collect(line, owned, joins, exits, samples));
+            total = Math.Max(total, owned.Accounting().Total);
+            string summary = observer == null ? "no observer" : observer.Summary(total);
+            int handle = samples.Values.Count(x => x.handle), path = samples.Values.Count(x => x.path), member = samples.Values.Count(x => x.member);
+            int unverified = joins.Count(x => x.Contains("身份未确认"));
+            string reasons = string.Join(";", samples.Values.Where(x => x.reason.Length > 0).GroupBy(x => x.reason).Select(g => g.Key + "×" + g.Count()));
+            string lineText = $"short-lived mode={mode} pollMs={pollMs} expected=7 total={total} joinNotices={observer?.NewCount} exitNotices={observer?.ExitCount} joinLines={joins.Count} exitLines={exits.Count} pids={samples.Count} handleAndStartTime={handle} path={path} groupMember={member} unverified={unverified} sampleReasons=[{reasons}] purposeKnown=0 backlog={observer?.Backlog} summary={summary}";
+            Console.WriteLine("EVIDENCE " + lineText);
+            evidence.Add(lineText);
+            Check(observer != null && total == 7, "short-lived " + mode + ": job accounting sees the parent and 6 children (total=" + total + ")");
+            Check(samples.Count == 0 || handle > 0 || unverified > 0, "short-lived " + mode + ": every join notice is either resolved or reported unverified");
+        }
+        using var probe = OwnedProcess.Start(new TaskSpec { Name = "probe", Program = Environment.ProcessPath!, Arguments = "fixture-short-child 40", WorkingDirectory = AppContext.BaseDirectory, Completion = "MAA日志", TrustCompletion = true });
+        var probeEvents = probe.JobEvents;
+        if (probeEvents == null) Check(false, "short-lived: job event channel unavailable for the injection cases");
+        else
+        {
+            var injected = new List<string>();
+            probeEvents.Record(6, 999999u, _ => null, injected.Add);
+            probeEvents.Record(6, 999999u, _ => null, injected.Add);
+            probeEvents.Record(7, 888888u, _ => null, injected.Add);
+            string mismatch = probeEvents.Summary((uint)(probeEvents.NewCount + 2));
+            string injectedReasons = probeEvents.Reason;
+            Console.WriteLine("EVIDENCE short-lived injected=" + string.Join(" | ", injected) + " | reasons=" + injectedReasons + " | summary=" + mismatch);
+            evidence.Add("injected=" + string.Join(" | ", injected) + " | reasons=" + injectedReasons + " | summary=" + mismatch);
+            Check(injected[0].Contains("身份未确认") && injected.Any(x => x.Contains("退出通知：PID 888888")) && injectedReasons.Contains("句柄或归属无法核实") && injectedReasons.Contains("重复或 PID 复用") && injectedReasons.Contains("退出事件缺少加入事件"), "short-lived: injected query failure, duplicate pid and exit without join stay reported");
+            Check(mismatch.Contains("数量与累计进程数不一致"), "short-lived: injected missing notifications are reported as a count mismatch");
+        }
+        await File.WriteAllLinesAsync(Path.Combine(root, "evidence-short-lived.txt"), evidence);
     }
     static async Task MaaControlledStartTests()
     {
@@ -1079,6 +1284,8 @@ class Program
     [System.Runtime.InteropServices.DllImport("user32.dll", CharSet=System.Runtime.InteropServices.CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int length);
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
     [System.Runtime.InteropServices.DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] static extern bool IsProcessInJob(IntPtr process, IntPtr job, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)] out bool result);
     static void AnswerOwnSaveDialog(int answer)
     {
         uint thread=GetCurrentThreadId();var timer=new DispatcherTimer { Interval=TimeSpan.FromMilliseconds(50) };
@@ -1112,6 +1319,41 @@ class Program
             Thread.Sleep(2200); return 0;
         }
         if (args.Length > 0 && args[0] == "probe-maa-evidence-counterexamples") { try { MaaEvidenceCounterexamples().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-maa-external-writer") { try { MaaExternalWriterChain().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-short-lived-processes") { try { ShortLivedProcessObservation().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        // One managed root: writes nothing, waits on the release event, exits 0.
+        if (args.Length == 4 && args[0] == "fixture-maa-chain-root")
+        {
+            string log = args[1], prefix = args[2];
+            bool selfWrite = args[3] == "1";
+            using var ready = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + "-ready");
+            using var release = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + "-release");
+            ready.Set();
+            if (selfWrite) AppendLog(log, "开始任务: A\n任务已全部完成！\n");
+            bool released = release.WaitOne(TimeSpan.FromSeconds(30));
+            return released ? 0 : 4;
+        }
+        // Started by the test itself, not by the runner: appends the MAA text to the same log, then exits normally.
+        if (args.Length == 4 && args[0] == "fixture-maa-chain-outsider")
+        {
+            string log = args[1], prefix = args[2], noteFile = args[3];
+            using var ready = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + "-ready");
+            using var written = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + "-written");
+            bool sawReady = ready.WaitOne(TimeSpan.FromSeconds(30));
+            IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out bool anyJob);
+            string note = $"PID={Environment.ProcessId};READY={(sawReady ? 1 : 0)};INJOB={(anyJob ? 1 : 0)};";
+            if (sawReady) { AppendLog(log, "开始任务: A\n任务已全部完成！\n"); note += "WRITTEN=1;"; written.Set(); }
+            File.WriteAllText(noteFile, note);
+            return sawReady ? 0 : 3;
+        }
+        if (args.Length == 3 && args[0] == "fixture-short-parent")
+        {
+            int count = int.Parse(args[1]), delay = int.Parse(args[2]);
+            var children = Enumerable.Range(0, count).Select(_ => Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "fixture-short-child " + delay) { UseShellExecute = false })!).ToArray();
+            foreach (var child in children) { child.WaitForExit(); child.Dispose(); }
+            return 0;
+        }
+        if (args.Length == 2 && args[0] == "fixture-short-child") { Thread.Sleep(int.Parse(args[1])); return 0; }
         if (args.Length == 2 && args[0] == "fixture-evidence-append") { File.AppendAllText(args[1], "开始任务: A\n任务已全部完成！\n", new UTF8Encoding(false)); return 0; }
         if (args.Length == 3 && args[0] == "fixture-evidence-child") { if (args[1] == "silent-change") File.WriteAllText(args[2], "changed"); Thread.Sleep(500); return 0; }
         if (args.Length == 4 && args[0] == "fixture-evidence-parent")
