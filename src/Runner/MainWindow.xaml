@@ -27,10 +27,10 @@
        <TextBlock Text="程序完整路径"/><DockPanel Margin="0,2,0,8"><Button DockPanel.Dock="Right" Content="浏览…" Click="BrowseProgram" Margin="8,0,0,0"/><TextBox x:Name="ProgramInput" Text="{Binding Program, UpdateSourceTrigger=PropertyChanged}"/></DockPanel>
        <TextBlock Text="2. 设置完成方式" Style="{StaticResource Section}"/><TextBlock Text="进程退出：程序结束后判断退出码；日志信号：查找本次新增的成功文字；人工确认：由你检查后确认。" Style="{StaticResource Hint}"/>
        <ComboBox SelectedValue="{Binding Completion}" SelectedValuePath="Content" Margin="0,2,0,8"><ComboBoxItem Content="进程退出"/><ComboBoxItem Content="日志信号"/><ComboBoxItem Content="人工确认"/><ComboBoxItem Content="MAA日志"/></ComboBox>
-       <TextBlock Text="MAA日志：填写下方日志文件路径，确认不共享后才能自动判定；仅支持 MAA 6.21.4 / 6.22.0 中文日志格式，真实业务仍待验证。日志无法证明每行来源，首次请人工观察。" Style="{StaticResource Hint}"/>
+       <TextBlock Text="MAA日志：填写下方日志文件路径并确认不共享；仅支持 MAA 6.21.4 / 6.22.0 中文日志格式。日志来源无法确认，当前不会自动判成功，请人工核实。" Style="{StaticResource Hint}"/>
        <CheckBox x:Name="MaaExclusiveLogInput" Content="我确认该日志不被其他 MAA 实例共享" IsChecked="{Binding MaaExclusiveLog}" Margin="0,0,0,6"/>
        <CheckBox x:Name="MaaStartByRunnerInput" Content="由 V3 启动 MAA 任务（试验）" IsChecked="{Binding MaaStartByRunner}" Margin="0,0,0,4"/><TextBlock Text="仅适用于 MAA日志和 6.21.4 / 6.22.0。启用时，本次启动跳过 MAA 自动启动任务、模拟器、PC 客户端和自动连接；请先准备连接目标。窗口或按钮无法确认时会暂停。" Style="{StaticResource Hint}"/>
-       <CheckBox x:Name="MaaCloseOnCompletionInput" Content="MAA 日志完成后请求正常关闭 MAA" IsChecked="{Binding MaaCloseOnCompletion}" Margin="0,0,0,4"/><TextBlock Text="仅适用于 MAA日志；关闭需窗口身份可核实。请求可能被拒绝或转入托盘，不会强制结束。" Style="{StaticResource Hint}"/>
+       <CheckBox x:Name="MaaCloseOnCompletionInput" Content="MAA 日志完成后请求正常关闭 MAA" IsChecked="{Binding MaaCloseOnCompletion}" Margin="0,0,0,4"/><TextBlock Text="设置会保留；由于日志来源无法确认，当前不会自动请求关闭，请人工核实并处理程序退出。" Style="{StaticResource Hint}"/>
        <CheckBox x:Name="CloseAfterManualConfirmationInput" Content="人工确认后请求正常关闭程序" IsChecked="{Binding CloseAfterManualConfirmation}" Margin="0,0,0,4"/><TextBlock Text="仅适用于人工确认。只向本轮受管主窗口请求关闭；仍需等待程序和受管子进程退出。" Style="{StaticResource Hint}"/>
        <CheckBox x:Name="CloseAfterLogSignalInput" Content="日志成功后请求正常关闭程序" IsChecked="{Binding CloseAfterLogSignal}" Margin="0,0,0,4"/><TextBlock Text="仅适用于独占的日志文件和已开启自动下一项的任务。请先确认成功文字确实代表业务结束；仍需等待受管进程退出。" Style="{StaticResource Hint}"/>
        <CheckBox x:Name="CloseLogExclusiveConfirmedInput" Content="我确认此日志文件不被其他实例共享" IsChecked="{Binding CloseLogExclusiveConfirmed}" Margin="0,0,0,4"/>
