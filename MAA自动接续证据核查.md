@@ -2,7 +2,7 @@
 
 核查日期：2026-11-22。基线：v1.20.0、提交 `92ed250f12b785b0b409d0e8b5e02b69ff030e23`。这是阶段研究，不代表真实 MAA 自动接续通过。
 
-> 阅读提示：本文件按时间追加，前面章节反映当时认知。2026-11-23 的「续查：方案 E 前提的源码核对…」一节已用 `v6.22.0` 源码推翻两处旧说法——MAA 日志并不跟随启动工作目录，`asst.log` 行头带 `[Px…]` 且内容是英文结构化回调；判断是否可恢复自动接续，以最新一节为准，旧章节保留作历史对照。
+> 阅读提示：本文件按时间追加，前面章节反映当时认知。2026-11-23 的「续查：方案 E 前提的源码核对…」一节已用 `v6.22.0` 源码推翻两处旧说法——MAA 日志并不跟随启动工作目录，`asst.log` 行头带 `[Px…]` 且内容是英文结构化回调；「续查三」把完整方案 G 做成测试专用原型并用 12 类反例实测，结论是 G 只能当辅助证据、不能单独放行。判断是否可恢复自动接续，以最新一节为准，旧章节保留作历史对照。
 
 ## 结论
 
@@ -393,3 +393,103 @@
 受影响专项逐项（均 `Failures: 0`）：`probe-maa-session-rule` 9、`probe-maa-event-model` 5、`probe-maa-log-exclusive` 3、`probe-maa-writer-identity` 3、`probe-maa-instance-evidence` 15、`probe-maa-external-writer` 13、`probe-maa-evidence-counterexamples` 4、`probe-maa-channel-boundary` 5、`probe-job-events` 8、`probe-short-lived-processes` 8、`probe-maa-start` 17、`probe-maa-resume` 140、`probe-restart-candidates` 20、`probe-controlled-success` 1。
 
 说明：本轮首次运行探针时 S1 曾因并发读同一 `StreamReader` 崩溃（`InvalidOperationException: The stream is currently in use by a previous operation on the stream.`），改为单线程 `LinePump` 后通过；另修正两处夹具缺陷（截断打在滚动后旧句柄、S6 漏发 step 信号）后才得到上表结果。失败与修正过程保留在此，未删除断言迁就结果。
+
+## 2026-11-23 续查三：完整方案 G 原型（测试专用）与 12 类反例
+
+本节回答上一轮遗留的问题：S4 证伪的是简化版 `JudgeHolder`（只认中文文字、没有写探测、没有 deny-write 条件、没有退出封存），不能直接宣布“完整 G 已被端到端击穿”。本轮在 `tests/Runner.Checks/Program.cs` 里建立**测试专用**的 `GPrototype`（不入产品、不接判定），把 G 草案的每个条件显式建模，然后让同一套规则接受正例和 12 类反例。
+
+### 10.1 与简化 `JudgeHolder` 的区别
+
+| 条件 | 上一轮 `JudgeHolder` | 本轮 `GPrototype` |
+| --- | --- | --- |
+| 日志文件身份 | 无 | 每次采样 `LogFileIdentity.IsSame`（卷号+文件索引），变化即暂停 |
+| 打开前区域锚点 | 无 | 打开时记录末尾 256 字节，之后每次采样比对，被改写即暂停 |
+| 长度收缩 | 无 | `Length < position` 判截断并暂停 |
+| Restart Manager 使用者列表 | 无 | 每次采样查询；排除读取者自身（V3 的只读句柄是预期的），出现其他 PID 即暂停；查询失败/结果不完整即暂停 |
+| 根进程身份 | 无 | `PID + 创建时间（UTC）`双重核对，漂移即暂停；采样中从未出现根即暂停 |
+| deny-write 写探测 | 无 | 每次采样用 `Append + FileShare.Read` 试开：被拒记“拒绝”，成功即判“deny-write 未生效”并暂停，其他异常记“无法核实”并暂停 |
+| 结构化回调 | 只认中文文字 | 解析 `Assistant::append_callback` 行后的事件名与 JSON：`TaskChainStart/TaskChainCompleted/TaskChainError/TaskChainStopped/AllTasksCompleted`，取 `taskid`、`finished_tasks` |
+| 错误/停止 | 只看文字标志 | 错误回调、停止回调（含空 details 的停止）各自是否决项 |
+| 任务完整性 | 无 | 开始集合 ⊆ 完成集合、`AllTasksCompleted` 存在、`finished_tasks` 与开始集合双向一致 |
+| 退出码 | 无 | 根退出码非零或无法取得即暂停 |
+| 退出后字节 | 无 | 退出后封存长度，之后变长判“退出边缘未采信字节”；新增字节若在根已退出后才读到则暂停 |
+| 更新/受管子进程 | 无 | 更新线索、未确认受管子进程各是否决项（本轮以参数模拟，标“模拟输入”） |
+| 证据缺失 | 无 | 未打开、探测次数为 0、采样次数 < 2 一律暂停 |
+
+条件顺序（`Evaluate`）：未打开 → 身份变化 → 截断 → 锚点失效 → 缺少写探测 → 读取新增字节时根已退出 → 探测无法核实 → RM 查询失败 → 探测未被拒绝 → 采样不足 → 创建时间不一致 → 未见根持有 → 发现其他持有者 → 未封存 → 退出边缘字节 → 任务链错误 → 停止回调 → 未观察开始 → 未观察全部完成 → 完成不完整 → `finished_tasks` 不一致 → 未核实退出码 → 退出码非零 → 更新线索 → 未确认受管子进程 → 成功。顺序本身就是“最保守的原因优先”，保证暂停理由可解释。
+
+### 10.2 正例与反例实测（受控夹具、命名事件同步、临时目录；未碰真实 MAA）
+
+| 用例 | 谁持有什么、做了什么 | 观察 | 同一规则的判定 |
+| --- | --- | --- | --- |
+| g1 正例 | 根夹具：deny-write 打开；写 `TaskChainStart` + `TaskChainCompleted` + `AllTasksCompleted`，退出码 0 | `samples=3 probes=3 denied=3` | **成功**：运行期仅见根进程持有 deny-write 句柄、事件完整且退出码为零 |
+| g1 + 更新线索 | 同上，`Evaluate(true,false)` | — | 暂停：检测到更新或重启线索 |
+| g1 + 未确认子进程 | 同上，`Evaluate(false,true)` | — | 暂停：存在未确认的受管子进程 |
+| g2 只读根 + 外部伪造 | 根夹具只读打开；测试进程写入伪造的 `Px<根PID>` 三行 | 伪造内容**被解析为成功**（`SawAllCompleted=True`）；`probes=2 denied=0` | 暂停：写探测未被拒绝（deny-write 未生效或根进程不持有写句柄）——靠探测而不是靠内容挡住 |
+| g3 外部先占位 | 写夹具先以 deny-write 打开；根夹具只读打开 | `denied=2`，RM 同时列出两个 PID | 暂停：采样时发现其他持有者（探测被拒本身不能证明持有者是根） |
+| g5 句柄间隙 | 写夹具关闭句柄 → 同一文件被外部写入伪造三行 → 同一身份重新打开 | `samples=3 denied=3`，RM 每次只看到根 | **成功——误放行**（见 10.3） |
+| g7 滚动/替换 | 写者退出后把日志改名、新文件顶上 | `identityKept=False` | 暂停：日志文件身份变化 |
+| g7 截断 | 原地 `FileMode.Truncate` | `shortened=True` | 暂停：日志文件被截断 |
+| g7 打不开 | 路径是目录 | `UnauthorizedAccessException` | 暂停：无法打开日志 |
+| g7 只读属性 | 写探测被属性拒绝，但根未持有 | `denied=2` | 暂停：采样时未见根进程持有日志 |
+| g9 任务链错误 | 回调含 `TaskChainError` | — | 暂停：出现任务链错误 |
+| g9 完成后停止 / 空详情停止 | 完成回调后再来 `TaskChainStopped` | — | 暂停：出现停止回调 |
+| g9 缺完成 | 只有开始 + `AllTasksCompleted` | — | 暂停：任务完成回调不完整 |
+| g9 finished 不一致 | `finished_tasks` 与开始集合不同 | — | 暂停：finished_tasks 与回调不一致 |
+| g9 缺开始 | 只有完成回调 | — | 暂停：未观察到任务开始 |
+| g10 RM 失败 | 注入查询失败 | — | 暂停：Restart Manager 查询失败或结果不完整 |
+| g10 创建时间漂移 | 传入 +5 秒的创建时间 | — | 暂停：根进程创建时间不一致（PID 复用或查询失败） |
+| g10 根缺席 | 活着的写者不是预设根 | — | 暂停：采样时未见根进程持有日志 |
+| g11 异常退出 | 回调完整但退出码 3 | — | 暂停：根进程退出码非零 |
+| g12 写完即退出 | 根写完回调后立即退出，下一次轮询才读到字节 | 读到字节时根已不在 | 暂停：读取新增字节时根进程已退出或身份不明 |
+| g8 退出边缘追加 | 根退出后、封存前追加完成文字 | 长度超过封存值 | 暂停：根进程退出边缘出现未采信字节 |
+
+### 10.3 是否误放行：g5 与 g12 两个缺口
+
+1. **g5 句柄间隙（真误放行）**：持写句柄的夹具把句柄关掉、外部把伪造的三行写进同一文件（文件身份不变）、再由同一夹具重新打开。三次采样都只看到根持有、三次探测都被拒绝、事件完整、退出码 0，规则判“成功”。根因不是实现错误，而是 G 的证据全部是**采样时刻**的快照：两次采样之间谁写过，RM、deny-write 探测、锚点都看不到。夹具里那个“外部”是测试进程自己（V3 读取者的替身），说明这不是靠“攻击者不同进程”就能排除的。
+   - 对真实 MAA 的意义：MAA Logger 用 `_SH_DENYWR` 且只在 `rotate()`（64 MiB）时关闭再重开，而 rotate 会 `rename` 成 `asst.bak.log`，文件身份变化会被“身份变化”条件挡住。所以**按 6.22.0 源码，g5 的窗口在真实 MAA 上只能由 rotate 触发，而 rotate 已被另一条条件覆盖**。但这依赖“MAA 不会以其他方式关闭/重开同一文件”这一未经真实运行验证的前提，标 `[待核实]`；只要出现一次同身份关闭-重开，规则就会漏。
+2. **g12 退出竞态（保守暂停，不是误放行）**：根把三行写完就退出，读取者在退出后才读到。规则选择暂停，因为“退出后读到的字节”无法与“退出后有人追加”区分。反过来若信任退出后字节，g8 那类“退出后追加”就会漏。这是 G 的固有取舍：**要么漏退出后伪造，要么在“写完即退出”时保守暂停**；本轮选择后者，代价是真实场景里的假暂停，需在验收里说明。
+3. **RM 自身限制（官方文档 + 实测）**：`RmGetList` 只列“当前正在使用已登记资源”的应用，`RM_PROCESS_INFO` 只有 PID、启动时间、应用名等，**没有读写区分、没有逐次写入、没有时间区间**；实测还把只读读者列进来（S2），对不存在的路径返回 `Ok=True, users=[]`（S7）。因此 RM 只能回答“采样这一刻谁打开着这个文件”，不能回答“这段时间谁写过”。
+
+### 10.4 结论：完整 G 不足以支撑自动接续
+
+- G 能做到的：把“日志内容像成功”升级为“运行期采样只见根持有 deny-write + 结构化事件自洽 + 退出码 0 + 身份稳定”，能挡住伪造 `Px`（g2）、先占位（g3）、退出后追加（g8）、滚动/截断（g7）、错误/停止（g9）、RM 失败与身份漂移（g10）、异常退出（g11）。
+- G 不能做到的：写句柄短暂关闭的同身份窗口（g5 实测误放行）；采样间隙内的任意写入（S3，逻辑必然）；真实 MAA 是否只会在 rotate 时关句柄 `[待核实]`；RM 的采样语义无法扩展成区间证明。
+- 因此本轮不把 G 作为产品放行条件。若产品化，只能定位为“证据收集 + 更准确的暂停理由”，判定结果仍是“结果不明，请人工核实”。
+
+### 10.5 候选方案比较（本轮增量）
+
+| 方案 | 本轮实例认证 | 业务成功 | 更新/重启 | 短命进程身份 | 依赖与成本 | 红线 |
+| --- | --- | --- | --- | --- | --- | --- |
+| G（完整原型） | 仅“采样时刻”认证：g5 已误放行，S3 采样间隙不可消除 | 中：事件自洽可作强线索，仍不等于业务成功 | 滚动可检测，重启需重新拿根实例 | 不覆盖 | 只改 V3；RM + 探测 + 结构化解析 | 可作辅助证据，不可单独放行 |
+| C 目标主动回执 | 强：命名管道客户端 PID + 创建时间可绑定本轮根（此前夹具已验证外部连接被拒） | 取决于回执内容：taskid 集合、错误/停止标志、会话 nonce；只解决“链完成”，不解决“每步业务成功” | 需目标重启后重连并带同一 nonce | 不覆盖（要求目标存活） | 需改 MAA 或受信中间层/插件，属第三方改动 | 需单独授权 |
+| H 官方 C API 自建宿主 | 强：实例在自己进程内，回调与 `taskid` 直接可得 | 强于日志：每 taskid 的 Completed/Error/Stopped；仍不等于“游戏内每一步真成功” | 需自行处理实例重建与资源/更新 | 强（实例句柄 + 子进程可入 Job） | 需资源目录、账号/连接配置、真实运行；改变用户现有 GUI 操作 | 需另行授权，本轮不执行 |
+| 日志 + Job 组合 | 弱：Job 只能证明同组，Px 可伪造 | 弱 | Job 通知可能丢失（官方文档），重启后需重建 | 部分：句柄 + 创建时间，短命进程仍可能查不到 | 现有能力 | 只能作为否决项，不能放行 |
+
+- C 的关键未验证点：MAA 6.22.0 没有本地回执接口（`RemoteControlService` 是出站轮询客户端，需要外部服务器并联通账号/任务配置），要实现 C 必须改 MAA、写插件或加受信中间层——都超出本轮红线。
+- H 的关键未验证点：`AsstCreateEx` 的回调确实给出结构化事件（源码事实），但“用用户现有 GUI 配置”不成立：自建宿主需要自己指定资源目录、账号与模拟器连接；这等于另起一套配置，用户操作与授权边界都变。
+
+### 10.6 推荐路径（本轮更新）
+
+1. 保留 v1.20.2 暂停；不把 G 的任何组合当自动放行依据。
+2. 可单独实施的产品增量（需用户认可、不自动放行）：MAA 模式改读结构化回调行（`Assistant::append_callback`），仍输出“结果不明”，但给出证据清单（taskid 完成情况、错误/停止、是否滚动、采样时是否只见根持有）。收益是人工核验更快、误判更少。
+3. 真自动接续只有 C 或 H 两条路，都需要用户另行授权与真实运行验收；本轮不实施。
+
+### 10.7 本轮实跑（2026-11-23，Windows 本机；`src/` 零改动）
+
+| 项目 | 命令 | 结果 | 日志/证据 |
+| --- | --- | --- | --- |
+| 构建 | `dotnet build tests/Runner.Checks/Runner.Checks.csproj -c Debug` | 0 警告 0 错误，退出码 0 | 控制台 |
+| G 原型 | `Runner.Checks.exe probe-maa-g-prototype` | 25 PASS / 0 FAIL，`Failures: 0`，退出码 0 | 控制台；场景证据 `evidence-maa-g-prototype.txt` |
+| 受影响专项（16 条） | 见下 | 全部退出码 0、0 FAIL、0 SKIP | `.build\probes-20261123-2120.log` |
+| 无参数完整回归 | `Runner.Checks.exe`（无参数） | **524 PASS / 1 FAIL / 0 SKIP，退出码 1** | `.build\full-regression-20261123-2129.log` |
+| `probe-regression-local`（第 1 次） | `Runner.Checks.exe probe-regression-local` | 120 PASS 后异常，退出码 1（`IOException`：读 `trial-manual-close-window\fixture.log` 时文件被另一进程占用，`Program.cs:141`） | `.build\regression-local-20261123-2141.log` |
+| `probe-regression-local`（第 2 次） | 同上 | **510 PASS / 0 FAIL / 1 SKIP，退出码 0**（SKIP：`controlled resume: run probe-controlled-resume separately with local pipe access`） | `.build\regression-local-20261123-2143.log` |
+| 失败项单跑 | `Runner.Checks.exe probe-maa-start` | 17 PASS / 0 FAIL，退出码 0 | `.build\maa-start-20261123-2140.log` |
+
+受影响专项逐项（均 `Failures: 0`、退出码 0）：`probe-maa-g-prototype` 25、`probe-maa-holder-matrix` 13、`probe-maa-session-rule` 9、`probe-maa-event-model` 5、`probe-maa-log-exclusive` 3、`probe-maa-writer-identity` 3、`probe-maa-instance-evidence` 15、`probe-maa-external-writer` 13、`probe-maa-evidence-counterexamples` 4、`probe-maa-channel-boundary` 5、`probe-job-events` 8、`probe-short-lived-processes` 8、`probe-maa-start` 17、`probe-maa-resume` 165、`probe-restart-candidates` 20、`probe-controlled-success` 1。
+
+如实记录，不做遮掩：
+
+- 完整回归的 1 个 FAIL 是既有偶发项 `MAA controlled start refuses another process window`（桌面焦点/窗口归属问题）。同一构建下 `probe-maa-start` 单跑 17 PASS；上一轮完整回归该项曾 0 FAIL。本轮未改该测试与产品，保留原文。
+- `probe-regression-local` 第 1 次不是断言失败，而是测试自身用 `File.ReadAllText`（默认 `FileShare.Read`）读一个仍被 deny-write 夹具占用的日志，抛 `IOException` 后整轮中断；第 2 次即通过。这与 §8.2 记录的“读 MAA 日志必须放宽共享”是同一类问题，属测试侧既有写法，本轮未改（改动会扩大范围）。需要修的话是独立的小改：把该处读法换成 `FileShare.ReadWrite|Delete`。

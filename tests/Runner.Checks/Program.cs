@@ -650,6 +650,7 @@ class Program
         await MaaEventModelTests();
         await MaaSessionRuleTests();
         await MaaHolderMatrixTests();
+        await MaaGPrototypeTests();
         var parser=new MaaLogEvidence();parser.Feed("开始任");parser.Feed("务: A\n任务已全部");parser.Feed("完成！\n");Check(parser.Started && parser.Succeeded && !parser.Failed,"MAA evidence recognizes split start and success");parser.ResetForRestart();Check(!parser.Started && !parser.Succeeded,"MAA restart clears old completion evidence");parser.Feed("开始任务: A\n任务出错: A\n任务已全部完成！\n");Check(parser.Failed,"MAA error remains evidence despite completion text");
         var later=new MaaLogEvidence();later.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n");Check(later.Started && !later.Succeeded,"MAA later task start invalidates earlier completion");
         var observed=new List<string>();var liveEvidence=new MaaLogEvidence(observed.Add);liveEvidence.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n任务出错: B\n已停止\n");Check(observed.Count(x=>x.Contains("任务开始"))==2 && observed.Any(x=>x.Contains("完成文字")) && observed.Any(x=>x.Contains("任务错误")) && observed.Any(x=>x.Contains("任务停止")) && !liveEvidence.Succeeded,"MAA live evidence reports transitions and invalidates old completion");
@@ -1422,7 +1423,7 @@ class Program
         }
     }
     record HolderRun(Process Proc, EventWaitHandle Step, EventWaitHandle Done, string Prefix, LinePump Pump);
-    static HolderRun StartHolder(string path, string mode, string payload)
+    static HolderRun StartHolder(string path, string mode, string payload, int exitCode = 0)
     {
         string prefix = "sh-" + Guid.NewGuid().ToString("N");
         Directory.CreateDirectory(root);
@@ -1430,7 +1431,7 @@ class Program
         File.WriteAllText(payloadPath, payload);
         var step = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + "-step");
         var done = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + "-done");
-        var proc = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "fixture-holder \"" + path + "\" " + mode + " " + prefix + " \"" + payloadPath + "\"")
+        var proc = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "fixture-holder \"" + path + "\" " + mode + " " + prefix + " \"" + payloadPath + "\" " + exitCode)
         { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true })!;
         return new HolderRun(proc, step, done, prefix, new LinePump(proc.StandardOutput));
     }
@@ -1463,6 +1464,495 @@ class Program
         if (stopped) return "暂停：回执包含停止";
         if (!hasTaskId) return "暂停：回执缺少任务标识";
         return "成功：回执来自本轮根进程且内容完整";
+    }
+    // Full plan-G prototype, test-only. Models every condition of the draft and
+    // returns the pause reason in the order the product would have to check it.
+    sealed class GPrototype
+    {
+        readonly string path;
+        readonly int rootPid;
+        readonly DateTime rootStartedUtc;
+        readonly Func<string, (bool Ok, List<(int Pid, DateTime Started)> Users)> lookup;
+        readonly List<byte> pending = new();
+        readonly List<int> startedIds = new();
+        readonly List<int> completedIds = new();
+        readonly List<int> errorIds = new();
+        FileStream? stream;
+        long position, anchorOffset;
+        byte[] anchor = Array.Empty<byte>();
+        int samples, probes, probeDenied, probeSucceeded, probeUnknown, rmFailures, rootMissing, othersSeen, idMismatch;
+        bool identityChanged, truncated, anchorBroken, sealedOk, postSealGrowth, stopSeen, sawAllCompleted, hasStart, readRacedExit;
+        int exitCode = int.MinValue;
+        int[]? finishedIds;
+
+        public GPrototype(string path, int rootPid, DateTime rootStartedUtc,
+            Func<string, (bool Ok, List<(int Pid, DateTime Started)> Users)>? lookup = null)
+        {
+            this.path = path;
+            this.rootPid = rootPid;
+            this.rootStartedUtc = rootStartedUtc.Kind == DateTimeKind.Utc ? rootStartedUtc : rootStartedUtc.ToUniversalTime();
+            this.lookup = lookup ?? RestartManagerUsers;
+        }
+        public bool SawStart => hasStart;
+        public bool SawAllCompleted => sawAllCompleted;
+        public int Samples => samples;
+        public int Probes => probes;
+        public int ProbeDenied => probeDenied;
+        public int ProbeSucceeded => probeSucceeded;
+
+        static byte[] ReadAt(Microsoft.Win32.SafeHandles.SafeFileHandle handle, long offset, int count)
+        {
+            if (count <= 0) return Array.Empty<byte>();
+            var buffer = new byte[count];
+            int read = 0;
+            while (read < count)
+            {
+                int got = RandomAccess.Read(handle, buffer.AsSpan(read, count - read), offset + read);
+                if (got <= 0) break;
+                read += got;
+            }
+            return read == count ? buffer : buffer[..read];
+        }
+
+        public string? Open()
+        {
+            try
+            {
+                stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                position = stream.Seek(0, SeekOrigin.End);
+                anchorOffset = Math.Max(0, position - 256);
+                anchor = ReadAt(stream.SafeFileHandle, anchorOffset, (int)(position - anchorOffset));
+                stream.Position = position;
+            }
+            catch (Exception ex) { return "暂停：无法打开日志（" + ex.GetType().Name + "）"; }
+            Poll();
+            return null;
+        }
+
+        public void Poll()
+        {
+            if (stream == null) return;
+            samples++;
+            if (!identityChanged)
+            {
+                try { if (!LogFileIdentity.IsSame(stream, path)) identityChanged = true; }
+                catch (Exception) { identityChanged = true; }
+            }
+            if (!identityChanged)
+            {
+                long length;
+                try { length = stream.Length; } catch (IOException) { length = position; }
+                if (length < position) truncated = true;
+                else
+                {
+                    if (!ReadAt(stream.SafeFileHandle, anchorOffset, anchor.Length).AsSpan().SequenceEqual(anchor)) anchorBroken = true;
+                    try
+                    {
+                        stream.Position = position;
+                        var buffer = new byte[8192];
+                        int n;
+                        bool readAny = false;
+                        while ((n = stream.Read(buffer, 0, buffer.Length)) > 0)
+                        {
+                            Feed(buffer.AsSpan(0, n).ToArray());
+                            position += n;
+                            readAny = true;
+                        }
+                        if (readAny && !RootAlive()) readRacedExit = true;
+                    }
+                    catch (IOException) { identityChanged = true; }
+                }
+            }
+            SampleRunning();
+            Probe();
+        }
+
+        bool RootAlive()
+        {
+            try
+            {
+                using var p = Process.GetProcessById(rootPid);
+                return !p.HasExited && p.StartTime.ToUniversalTime() == rootStartedUtc;
+            }
+            catch (Exception) { return false; }
+        }
+
+        void Feed(byte[] bytes)
+        {
+            pending.AddRange(bytes);
+            int start = 0;
+            for (int i = 0; i < pending.Count; i++)
+            {
+                if (pending[i] != (byte)'\n') continue;
+                ParseLine(Encoding.UTF8.GetString(pending.GetRange(start, i - start).ToArray()).TrimEnd('\r'));
+                start = i + 1;
+            }
+            if (start > 0) pending.RemoveRange(0, start);
+        }
+
+        void ParseLine(string line)
+        {
+            var match = Regex.Match(line, @"\[Px(?<pid>\d+)\]\[[^\]]*\]\s*Assistant::append_callback\s*\|\s*(?<ev>TaskChainStart|TaskChainCompleted|TaskChainError|TaskChainStopped|AllTasksCompleted)\s*(?<json>\{.*\})?\s*$");
+            if (!match.Success) return;
+            string kind = match.Groups["ev"].Value;
+            string json = match.Groups["json"].Value;
+            int taskId = 0;
+            var idMatch = Regex.Match(json, "\"taskid\"\\s*:\\s*(?<id>\\d+)");
+            if (idMatch.Success) taskId = int.Parse(idMatch.Groups["id"].Value);
+            switch (kind)
+            {
+                case "TaskChainStart": hasStart = true; startedIds.Add(taskId); break;
+                case "TaskChainCompleted": completedIds.Add(taskId); break;
+                case "TaskChainError": errorIds.Add(taskId); break;
+                case "TaskChainStopped": stopSeen = true; break;
+                case "AllTasksCompleted":
+                    sawAllCompleted = true;
+                    var finished = Regex.Match(json, "\"finished_tasks\"\\s*:\\s*\\[(?<ids>[^\\]]*)\\]");
+                    finishedIds = finished.Success
+                        ? finished.Groups["ids"].Value.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(x => int.Parse(x.Trim())).ToArray()
+                        : Array.Empty<int>();
+                    break;
+            }
+        }
+
+        void SampleRunning()
+        {
+            var rm = lookup(path);
+            if (!rm.Ok) { rmFailures++; return; }
+            bool rootFound = false;
+            foreach (var user in rm.Users)
+            {
+                if (user.Pid == Environment.ProcessId) continue; // the reader itself is expected in the list
+                if (user.Pid != rootPid) { othersSeen++; continue; }
+                if (Math.Abs((user.Started - rootStartedUtc).TotalSeconds) <= 2) rootFound = true;
+                else idMismatch++;
+            }
+            if (!rootFound) rootMissing++;
+        }
+
+        void Probe()
+        {
+            probes++;
+            try
+            {
+                using var writer = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+                probeSucceeded++;
+            }
+            catch (IOException) { probeDenied++; }
+            catch (UnauthorizedAccessException) { probeDenied++; }
+            catch (Exception) { probeUnknown++; }
+        }
+
+        public void Finish(int observedExitCode)
+        {
+            exitCode = observedExitCode;
+            long length;
+            try { length = new FileInfo(path).Length; } catch (Exception) { length = -1; }
+            sealedOk = true;
+            if (length > position) postSealGrowth = true;
+            var rm = lookup(path);
+            if (!rm.Ok) rmFailures++;
+            else if (rm.Users.Any(u => u.Pid != rootPid && u.Pid != Environment.ProcessId)) othersSeen++;
+        }
+
+        public string Evaluate(bool updateSignal, bool unconfirmedManaged)
+        {
+            if (stream == null) return "暂停：日志未能打开";
+            if (identityChanged) return "暂停：日志文件身份变化（滚动或替换）";
+            if (truncated) return "暂停：日志文件被截断";
+            if (anchorBroken) return "暂停：打开前已写入的区域发生变化（锚点失效）";
+            if (probes == 0) return "暂停：缺少写探测证据";
+            if (readRacedExit) return "暂停：读取新增字节时根进程已退出或身份不明";
+            if (probeUnknown > 0) return "暂停：写探测结果无法核实";
+            if (rmFailures > 0) return "暂停：Restart Manager 查询失败或结果不完整";
+            if (probeSucceeded > 0) return "暂停：写探测未被拒绝（deny-write 未生效或根进程不持有写句柄）";
+            if (samples < 2) return "暂停：采样次数不足，无法覆盖运行区间";
+            if (idMismatch > 0) return "暂停：根进程创建时间不一致（PID 复用或查询失败）";
+            if (rootMissing > 0) return "暂停：采样时未见根进程持有日志";
+            if (othersSeen > 0) return "暂停：采样时发现其他持有者";
+            if (!sealedOk) return "暂停：未在根进程退出后封存证据";
+            if (postSealGrowth) return "暂停：根进程退出边缘出现未采信字节";
+            if (errorIds.Count > 0) return "暂停：出现任务链错误";
+            if (stopSeen) return "暂停：出现停止回调";
+            if (!hasStart) return "暂停：未观察到任务开始";
+            if (!sawAllCompleted) return "暂停：未观察到全部完成回调";
+            if (startedIds.Any(id => !completedIds.Contains(id))) return "暂停：任务完成回调不完整";
+            if (finishedIds == null || finishedIds.Length == 0) return "暂停：完成回调未包含已完成任务";
+            if (startedIds.Any(id => !finishedIds.Contains(id)) || finishedIds.Any(id => !startedIds.Contains(id))) return "暂停：finished_tasks 与回调不一致";
+            if (exitCode == int.MinValue) return "暂停：未核实根进程退出码";
+            if (exitCode != 0) return "暂停：根进程退出码非零";
+            if (updateSignal) return "暂停：检测到更新或重启线索";
+            if (unconfirmedManaged) return "暂停：存在未确认的受管子进程";
+            return "成功：运行期仅见根进程持有 deny-write 句柄、事件完整且退出码为零";
+        }
+    }
+
+    static async Task Release(HolderRun run)
+    {
+        if (run.Proc.HasExited) return;
+        run.Step.Set();
+        await HolderLine(run);
+        run.Done.Set();
+        await HolderLine(run);
+        run.Proc.WaitForExit(10_000);
+    }
+
+    static void SetHolderPayload(HolderRun run, string payload) =>
+        File.WriteAllText(Path.Combine(root, "payload-" + run.Prefix + ".txt"), payload);
+
+    static string GLine(int pid, int tx, string kind, string json) =>
+        "[2031-01-01 00:00:0" + (tx % 10) + ".000][INF][Px" + pid + "][Tx" + tx + "] Assistant::append_callback | " + kind + " " + json + "\n";
+
+    static async Task MaaGPrototypeTests()
+    {
+        Directory.CreateDirectory(root);
+        string evidence = Path.Combine(root, "evidence-maa-g-prototype.txt");
+        var notes = new List<string>();
+        void Note(string text) { notes.Add(text); Console.WriteLine(text); }
+        string Id(int taskId) => "\"taskchain\":\"Fight\",\"taskid\":" + taskId + ",\"uuid\":\"proto-g-0001\"";
+        string Start(int pid, int taskId = 1) => GLine(pid, 7001, "TaskChainStart", "{" + Id(taskId) + "}");
+        string Error(int pid, int taskId = 1) => GLine(pid, 7002, "TaskChainError", "{" + Id(taskId) + ",\"details\":{\"error\":\"OpenCVException\"}}");
+        string Completed(int pid, int taskId = 1) => GLine(pid, 7003, "TaskChainCompleted", "{" + Id(taskId) + "}");
+        string Stop(int pid, bool empty = false, int taskId = 1) => GLine(pid, 7004, "TaskChainStopped", empty ? "{}" : "{" + Id(taskId) + "}");
+        string All(int pid, int[] finished, int taskId = 1) => GLine(pid, 7005, "AllTasksCompleted", "{\"finished_tasks\":[" + string.Join(",", finished) + "]," + Id(taskId) + "}");
+        string NewLog(string dir)
+        {
+            string full = Path.Combine(root, dir);
+            Directory.CreateDirectory(full);
+            string log = Path.Combine(full, "asst.log");
+            File.WriteAllText(log, "old-before-open\n");
+            return log;
+        }
+
+        async Task<GPrototype> Cycle(string name, Func<int, string> build, int exitCode = 0,
+            Action<GPrototype, string, int>? afterOpen = null,
+            Action<GPrototype, string, int>? afterWrite = null,
+            Action<GPrototype, string, int>? afterClose = null)
+        {
+            string log = NewLog(name);
+            var run = StartHolder(log, "write", "placeholder", exitCode);
+            string open = await HolderLine(run);
+            if (!open.StartsWith("OPEN "))
+            {
+                failures++;
+                Console.WriteLine("FAIL " + name + " fixture open: " + open);
+                return new GPrototype(log, 0, DateTime.UtcNow);
+            }
+            int pid = run.Proc.Id;
+            SetHolderPayload(run, build(pid));
+            var g = new GPrototype(log, pid, run.Proc.StartTime.ToUniversalTime());
+            g.Open();
+            afterOpen?.Invoke(g, log, pid);
+            g.Poll();
+            run.Step.Set();
+            await HolderLine(run);
+            g.Poll();
+            afterWrite?.Invoke(g, log, pid);
+            run.Done.Set();
+            await HolderLine(run);
+            run.Proc.WaitForExit(10_000);
+            afterClose?.Invoke(g, log, pid);
+            g.Finish(run.Proc.ExitCode);
+            return g;
+        }
+
+        try
+        {
+            var positive = await Cycle("g1-positive", pid => Start(pid) + Completed(pid) + All(pid, new[] { 1 }));
+            string positiveVerdict = positive.Evaluate(false, false);
+            Note("g1-positive verdict=" + positiveVerdict + " samples=" + positive.Samples + " probes=" + positive.Probes + " denied=" + positive.ProbeDenied);
+            Check(positiveVerdict.StartsWith("成功"), "G positive: deny-write holder with complete callbacks and exit 0 is allowed: " + positiveVerdict);
+            Check(positive.SawStart && positive.SawAllCompleted && positive.Samples >= 2 && positive.Probes >= 2 && positive.ProbeDenied >= 1, "G positive: callbacks parsed, sampled twice and the probe was denied while the holder lived");
+            Check(positive.Evaluate(true, false).Contains("更新"), "G positive: an update signal still pauses after complete callbacks");
+            Check(positive.Evaluate(false, true).Contains("未确认的受管子进程"), "G positive: an unconfirmed managed child still pauses");
+
+            // 2 + 6: the root only reads; a foreign process writes callbacks that claim the root PID.
+            string g2log = NewLog("g2-reader-root");
+            var readerRoot = StartHolder(g2log, "read", "");
+            string g2open = await HolderLine(readerRoot);
+            var g2 = new GPrototype(g2log, readerRoot.Proc.Id, readerRoot.Proc.StartTime.ToUniversalTime());
+            g2.Open();
+            File.AppendAllText(g2log, Start(readerRoot.Proc.Id) + Completed(readerRoot.Proc.Id) + All(readerRoot.Proc.Id, new[] { 1 }));
+            g2.Poll();
+            string g2v = g2.Evaluate(false, false);
+            Note("g2-reader-root open=" + g2open + " probes=" + g2.Probes + " denied=" + g2.ProbeDenied + " verdict=" + g2v);
+            Check(g2.Probes > 0 && g2.ProbeDenied == 0 && g2.ProbeSucceeded > 0, "G reader root: the write probe is not denied, so a read-only holder cannot claim MAA-style exclusivity");
+            Check(g2.SawAllCompleted && g2v.Contains("写探测未被拒绝"), "G reader root: forged Px lines parse as success but the deny-write condition blocks the verdict: " + g2v);
+            await Release(readerRoot);
+
+            // 3: a foreign process holds the deny-write handle first; the presumed root only reads.
+            string g3log = NewLog("g3-preempted");
+            var outsider = StartHolder(g3log, "write", "");
+            string g3first = await HolderLine(outsider);
+            var root3 = StartHolder(g3log, "read", "");
+            string g3second = await HolderLine(root3);
+            var g3 = new GPrototype(g3log, root3.Proc.Id, root3.Proc.StartTime.ToUniversalTime());
+            g3.Open();
+            g3.Poll();
+            string g3v = g3.Evaluate(false, false);
+            Note("g3-preempted open=" + g3first + "/" + g3second + " denied=" + g3.ProbeDenied + " verdict=" + g3v);
+            Check(g3.ProbeDenied > 0 && g3v.Contains("其他持有者"), "G preempted log: a denied probe alone would pass, the RM list exposes the foreign holder: " + g3v);
+            await Release(root3);
+            await Release(outsider);
+
+            // 5: the holder closes its handle, a foreign writer inserts callbacks, the holder reopens the same file.
+            string g5dir = Path.Combine(root, "g5-handle-gap");
+            Directory.CreateDirectory(g5dir);
+            string g5log = Path.Combine(g5dir, "asst.log");
+            File.WriteAllText(g5log, "old-before-open\n");
+            string g5payload = Path.Combine(g5dir, "payload.txt");
+            File.WriteAllText(g5payload, "");
+            var gap = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "fixture-gap-holder \"" + g5log + "\" \"" + g5payload + "\"")
+            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true })!;
+            var gapPump = new LinePump(gap.StandardOutput);
+            string gapOpen = await gapPump.Next(TimeSpan.FromSeconds(15));
+            var g5 = new GPrototype(g5log, gap.Id, gap.StartTime.ToUniversalTime());
+            g5.Open();
+            g5.Poll();
+            gap.StandardInput.WriteLine("close");
+            string gapClosed = await gapPump.Next(TimeSpan.FromSeconds(15));
+            File.AppendAllText(g5log, Start(gap.Id) + Completed(gap.Id) + All(gap.Id, new[] { 1 }));
+            gap.StandardInput.WriteLine("reopen");
+            string gapReopened = await gapPump.Next(TimeSpan.FromSeconds(15));
+            g5.Poll();
+            gap.StandardInput.WriteLine("write");
+            string gapWrote = await gapPump.Next(TimeSpan.FromSeconds(15));
+            gap.StandardInput.WriteLine("exit");
+            gap.WaitForExit(10_000);
+            g5.Finish(gap.ExitCode);
+            string g5v = g5.Evaluate(false, false);
+            Note("g5-handle-gap open=" + gapOpen + " closed=" + gapClosed + " reopened=" + gapReopened + " wrote=" + gapWrote + " samples=" + g5.Samples + " denied=" + g5.ProbeDenied + " verdict=" + g5v);
+            Check(g5.SawAllCompleted && g5.ProbeDenied >= 2, "G handle gap: the probe is denied at every sample and the forged callbacks parse");
+            Check(g5v.StartsWith("成功"), "G handle gap: bytes written while the holder closed its handle between two samples are accepted (false allow): " + g5v);
+
+            // 7a: rotation/replacement changes the file identity.
+            string g7log = NewLog("g7-rotate");
+            var rotateRoot = StartHolder(g7log, "read", "");
+            await HolderLine(rotateRoot);
+            var g7 = new GPrototype(g7log, rotateRoot.Proc.Id, rotateRoot.Proc.StartTime.ToUniversalTime());
+            g7.Open();
+            g7.Poll();
+            File.Move(g7log, g7log + ".previous");
+            g7.Poll();
+            string g7v = g7.Evaluate(false, false);
+            Note("g7-rotate verdict=" + g7v);
+            Check(g7v.Contains("身份变化"), "G rotation: a renamed or replaced log pauses on identity change: " + g7v);
+            await Release(rotateRoot);
+
+            // 7b: in-place truncation.
+            string g7blog = NewLog("g7-truncate");
+            var truncRoot = StartHolder(g7blog, "read", "");
+            await HolderLine(truncRoot);
+            var g7b = new GPrototype(g7blog, truncRoot.Proc.Id, truncRoot.Proc.StartTime.ToUniversalTime());
+            g7b.Open();
+            g7b.Poll();
+            using (var trunc = new FileStream(g7blog, FileMode.Truncate, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete)) { trunc.WriteByte((byte)'x'); }
+            g7b.Poll();
+            string g7bv = g7b.Evaluate(false, false);
+            Note("g7-truncate verdict=" + g7bv);
+            Check(g7bv.Contains("截断"), "G truncation: a shorter file pauses: " + g7bv);
+            await Release(truncRoot);
+
+            // 7c: the log cannot be opened at all.
+            string g7cdir = Path.Combine(root, "g7-unopenable");
+            Directory.CreateDirectory(g7cdir);
+            var g7c = new GPrototype(g7cdir, 4242, DateTime.UtcNow);
+            string g7cOpen = g7c.Open() ?? "";
+            Check(g7cOpen.Contains("无法打开"), "G unopenable: a directory path pauses instead of guessing: " + g7cOpen);
+
+            // 7d: a read-only attribute denies the probe without any holder; RM has no root.
+            string g7dlog = NewLog("g7-readonly");
+            File.SetAttributes(g7dlog, FileAttributes.ReadOnly);
+            var g7d = new GPrototype(g7dlog, 4242, DateTime.UtcNow);
+            g7d.Open();
+            g7d.Poll();
+            string g7dv = g7d.Evaluate(false, false);
+            Note("g7-readonly denied=" + g7d.ProbeDenied + " verdict=" + g7dv);
+            Check(g7d.ProbeDenied > 0 && g7dv.Contains("未见根进程"), "G read-only file: a denied probe without a matching RM holder is not evidence of the target: " + g7dv);
+            File.SetAttributes(g7dlog, FileAttributes.Normal);
+
+            // 9: the same complete rule over the event-model counterexamples.
+            var variants = new (string Name, Func<int, string> Build, string Expect)[]
+            {
+                ("g9-error", pid => Start(pid) + Error(pid) + Completed(pid) + All(pid, new[] { 1 }), "任务链错误"),
+                ("g9-stop-after-complete", pid => Start(pid) + Completed(pid) + All(pid, new[] { 1 }) + Stop(pid), "停止回调"),
+                ("g9-empty-stop", pid => Start(pid) + Completed(pid) + All(pid, new[] { 1 }) + Stop(pid, true), "停止回调"),
+                ("g9-no-completed", pid => Start(pid) + All(pid, new[] { 1 }), "完成回调不完整"),
+                ("g9-finished-mismatch", pid => Start(pid) + Completed(pid) + All(pid, new[] { 1, 2 }), "finished_tasks"),
+                ("g9-no-start", pid => Completed(pid) + All(pid, new[] { 1 }), "未观察到任务开始"),
+            };
+            foreach (var variant in variants)
+            {
+                var g = await Cycle(variant.Name, variant.Build);
+                string verdict = g.Evaluate(false, false);
+                Note(variant.Name + " verdict=" + verdict);
+                Check(verdict.Contains(variant.Expect), "G events: " + variant.Name + " pauses with " + variant.Expect + ": " + verdict);
+            }
+
+            // 10a: Restart Manager lookup fails.
+            string g10log = NewLog("g10-rm-failure");
+            var g10 = new GPrototype(g10log, 4242, DateTime.UtcNow, _ => (false, new List<(int Pid, DateTime Started)>()));
+            g10.Open();
+            g10.Poll();
+            string g10v = g10.Evaluate(false, false);
+            Note("g10-rm-failure verdict=" + g10v);
+            Check(g10v.Contains("Restart Manager"), "G RM failure: a failed lookup pauses instead of treating the log as owned: " + g10v);
+
+            // 10b: the PID exists but the creation time does not match (reuse or query drift).
+            string g10blog = NewLog("g10-time-drift");
+            var driftRoot = StartHolder(g10blog, "write", "");
+            await HolderLine(driftRoot);
+            var g10b = new GPrototype(g10blog, driftRoot.Proc.Id, driftRoot.Proc.StartTime.ToUniversalTime().AddSeconds(5));
+            g10b.Open();
+            g10b.Poll();
+            string g10bv = g10b.Evaluate(false, false);
+            Note("g10-time-drift denied=" + g10b.ProbeDenied + " verdict=" + g10bv);
+            Check(g10bv.Contains("创建时间不一致"), "G PID reuse: a mismatched creation time pauses: " + g10bv);
+            await Release(driftRoot);
+
+            // 10c: RM lists a live foreign holder but not the presumed root.
+            string g10clog = NewLog("g10-root-absent");
+            var other = StartHolder(g10clog, "write", "");
+            await HolderLine(other);
+            var g10c = new GPrototype(g10clog, 999999, DateTime.UtcNow);
+            g10c.Open();
+            g10c.Poll();
+            string g10cv = g10c.Evaluate(false, false);
+            Note("g10-root-absent denied=" + g10c.ProbeDenied + " verdict=" + g10cv);
+            Check(g10cv.Contains("未见根进程"), "G root absent: a live holder that is not the presumed root pauses: " + g10cv);
+            await Release(other);
+
+            // 11: the root exits with a non-zero code after a complete callback stream.
+            var abnormal = await Cycle("g11-exit-code", pid => Start(pid) + Completed(pid) + All(pid, new[] { 1 }), exitCode: 3);
+            string abnormalVerdict = abnormal.Evaluate(false, false);
+            Note("g11-exit-code verdict=" + abnormalVerdict);
+            Check(abnormalVerdict.Contains("退出码非零"), "G abnormal exit: a non-zero exit code pauses despite complete callbacks: " + abnormalVerdict);
+
+            // 12: the root writes and exits before the next poll, so the bytes are first read after exit.
+            string g12log = NewLog("g12-write-then-exit");
+            var late = StartHolder(g12log, "write", "placeholder", 0);
+            string lateOpen = await HolderLine(late);
+            SetHolderPayload(late, Start(late.Proc.Id) + Completed(late.Proc.Id) + All(late.Proc.Id, new[] { 1 }));
+            var g12 = new GPrototype(g12log, late.Proc.Id, late.Proc.StartTime.ToUniversalTime());
+            g12.Open();
+            late.Step.Set();
+            await HolderLine(late);
+            late.Done.Set();
+            await HolderLine(late);
+            late.Proc.WaitForExit(10_000);
+            g12.Poll();
+            string lateVerdict = g12.Evaluate(false, false);
+            Note("g12-write-then-exit open=" + lateOpen + " verdict=" + lateVerdict);
+            Check(lateVerdict.Contains("读取新增字节"), "G exit race: callbacks first read after the root exited are not accepted: " + lateVerdict);
+            // 8: bytes appear after the root exited but before the evidence is sealed.
+            var edge = await Cycle("g8-exit-edge", pid => Start(pid) + Completed(pid) + All(pid, new[] { 1 }), 0,
+                afterClose: (_, log, pid) => File.AppendAllText(log, Completed(pid)));
+            string edgeVerdict = edge.Evaluate(false, false);
+            Note("g8-exit-edge verdict=" + edgeVerdict);
+            Check(edgeVerdict.Contains("退出边缘"), "G exit edge: bytes appended after the holder exited are not accepted: " + edgeVerdict);
+        }
+        catch (Exception ex) { failures++; Console.WriteLine("g prototype error: " + ex); }
+        await File.WriteAllLinesAsync(evidence, notes);
     }
     static async Task MaaHolderMatrixTests()
     {
@@ -1958,6 +2448,7 @@ class Program
         if (args.Length > 0 && args[0] == "probe-maa-writer-identity") { try { MaaWriterIdentityTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-session-rule") { try { MaaSessionRuleTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-holder-matrix") { try { MaaHolderMatrixTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-maa-g-prototype") { try { MaaGPrototypeTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
     if (args.Length > 0 && args[0] == "probe-maa-event-model") { try { MaaEventModelTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-channel-boundary") { try { MaaChannelBoundaryTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-short-lived-processes") { try { ShortLivedProcessObservation().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
@@ -2151,6 +2642,28 @@ class Program
                 done.WaitOne(TimeSpan.FromSeconds(30));
                 Console.WriteLine("CLOSED"); Console.Out.Flush();
             }
+            return args.Length > 5 ? int.Parse(args[5]) : 0;
+        }
+        if (args.Length > 2 && args[0] == "fixture-gap-holder")
+        {
+            // Holds a deny-write handle, closes it on command, reopens the same file, then exits.
+            // Used to model a write-handle gap that two Restart Manager samples cannot observe.
+            var encoding = new UTF8Encoding(false);
+            string gapPath = args[1];
+            string gapPayloadPath = args[2];
+            var first = new FileStream(gapPath, FileMode.Append, FileAccess.Write, FileShare.Read);
+            Console.WriteLine("OPEN"); Console.Out.Flush();
+            Console.ReadLine();
+            first.Dispose();
+            Console.WriteLine("CLOSED-HANDLE"); Console.Out.Flush();
+            Console.ReadLine();
+            using var second = new FileStream(gapPath, FileMode.Append, FileAccess.Write, FileShare.Read);
+            Console.WriteLine("REOPENED"); Console.Out.Flush();
+            Console.ReadLine();
+            string gapPayload = File.ReadAllText(gapPayloadPath);
+            if (gapPayload.Length > 0) { byte[] bytes = encoding.GetBytes(gapPayload); second.Write(bytes, 0, bytes.Length); second.Flush(true); }
+            Console.WriteLine("WROTE"); Console.Out.Flush();
+            Console.ReadLine();
             return 0;
         }
         if (args.Length > 1 && args[0] == "fixture-channel-root")
