@@ -5,14 +5,14 @@
 - 任务名称 / 标识：MAA 自动接续证据与安全判定 / v3-maa-continuation-evidence。
 - 任务类型：普通开发。
 - 目标：研究并解决 MAA 受管子进程身份不明导致无法接续；证据不足时保留暂停。
-- 背景与输入：`对话记录/计划书/v3-maa-continuation-evidence-实施计划.md`；本轮用户认可 `对话记录/计划书/v3-maa-log-source-实施计划.md`。
+- 背景与输入：`对话记录/计划书/v3-maa-continuation-evidence-实施计划.md`；本轮用户认可 `对话记录/计划书/v3-maa-log-source-实施计划.md`；本轮专项计划 `对话记录/计划书/v3-maa-continuation-evidence-实例证据研究计划.md`（2026-11-23 用户认可隔离研究范围）。
 - 允许修改：计划内的隔离探针、判定及记录、受控测试、版本、验收与项目记录；是否修改产品以证据充分为前提。
 - 禁止修改：不接管或强制结束身份不明的组外进程，不修改 MAA 配置，不自行运行真实 MAA、游戏，不打包、发布或替换正式产品；保留未知来源的 `验收工具/`。
 - 需再次确认：具体真实 MAA 或游戏验收由验收方执行前须取得授权；其他受限操作按项目规则处理。
 - 完成标准：按计划给出可验证的安全接续实现与证据；若证据不足，保留暂停并报告未解决的阻塞。
 - 验证方式：隔离受控探针和适用专项、完整回归、源码预览；真实业务另行授权。
 - 风险与回退：不以计数、文件指纹或未知进程用途推定成功；身份或业务事实不明时暂停。
-- 当前状态：执行中；v1.20.2 已收紧日志来源不明时的关闭和成功判定，受控回归通过；人工验收和真实自动接续仍待核实。
+- 当前状态：执行中；v1.20.2 已收紧日志来源不明时的关闭和成功判定；2026-11-23 本轮隔离研究完成，实例/业务完成/短命进程证据仍不足，未恢复自动接续，等待用户下一步指令。真实 MAA 和人工验收仍待核实。
 
 ## 已确认决定与待决问题
 
@@ -33,6 +33,8 @@
 - 本轮构建 0 警告 0 错误；MAA 87 PASS、Job 8 PASS、更新关键词 14 PASS，完整回归 447 PASS / 0 FAIL；独立源码预览起窗并烟测退出 0，人工操作未验收。
 - 2026-11-23 验证：`dotnet build tests\Runner.Checks\Runner.Checks.csproj -c Debug` 0 警告 0 错误；`probe-maa-external-writer`、`probe-short-lived-processes`、`probe-maa-evidence-counterexamples`、`probe-job-events`、`probe-maa-resume` 均退出码 0、0 失败；完整回归 `probe-regression-local` 第三次 431 PASS / 0 FAIL（退出码 0）。前两次失败（视觉夹具 2 项、读日志文件被占用 1 项）均为本机桌面焦点与既有竞态所致，与本轮新增代码无关，重跑通过。
 - 2026-11-23 源码预览：`验证审查器.cmd` 实际启动，窗口标题“顺序化软件执行工具 V3”出现后由我关闭；页面操作、隔离数据检查与人工验收未执行，不能记为功能通过。
+- 2026-11-23 实例证据研究：`probe-maa-instance-evidence` 15 PASS（6 条回调断言 + 9 案矩阵），9 案均 `paused=True/advanced=False/closeCalls=0`；`probe-maa-resume` 102 PASS、`probe-maa-external-writer` 13 PASS、`probe-short-lived-processes` 8 PASS、`probe-maa-evidence-counterexamples` 4 PASS、`probe-maa622-clues` 13 PASS、`probe-job-events` 8 PASS，均退出码 0、`Failures: 0`。完整回归三次均未全过：第一次在本机既有 race 文件移动处异常，第二、三次均为 446 PASS / 1 FAIL / 1 SKIP，失败项为受控窗口识别；窗口项单独运行 17 PASS，不能宣称完整回归通过。
+- 2026-11-23 结论：`asst.log` 的 `Px` 是写日志进程 PID，同一文件跨 18 个 PID，`uuid` 固定、`taskid` 会复位；错误后仍可出现 `AllTasksCompleted`，完成 84ms 后仍可出现 `TaskChainStopped`，`finished_tasks` 含失败任务；当前解析器不识别英文回调且忽略 PID 前缀。短命进程在 200ms 节奏下仅 1~2 个可核实、5~6 个 `process-open-failed`。证据不足以恢复自动接续，未改产品判定。
 
 ## 需求变更
 

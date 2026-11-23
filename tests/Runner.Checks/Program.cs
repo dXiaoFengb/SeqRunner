@@ -3,6 +3,8 @@ using System.IO.Pipes;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Windows.Threading;
 using Runner;
 
@@ -641,6 +643,7 @@ class Program
         await MaaEvidenceCounterexamples();
         await MaaExternalWriterChain();
         await ShortLivedProcessObservation();
+        await MaaInstanceEvidence();
         var parser=new MaaLogEvidence();parser.Feed("开始任");parser.Feed("务: A\n任务已全部");parser.Feed("完成！\n");Check(parser.Started && parser.Succeeded && !parser.Failed,"MAA evidence recognizes split start and success");parser.ResetForRestart();Check(!parser.Started && !parser.Succeeded,"MAA restart clears old completion evidence");parser.Feed("开始任务: A\n任务出错: A\n任务已全部完成！\n");Check(parser.Failed,"MAA error remains evidence despite completion text");
         var later=new MaaLogEvidence();later.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n");Check(later.Started && !later.Succeeded,"MAA later task start invalidates earlier completion");
         var observed=new List<string>();var liveEvidence=new MaaLogEvidence(observed.Add);liveEvidence.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n任务出错: B\n已停止\n");Check(observed.Count(x=>x.Contains("任务开始"))==2 && observed.Any(x=>x.Contains("完成文字")) && observed.Any(x=>x.Contains("任务错误")) && observed.Any(x=>x.Contains("任务停止")) && !liveEvidence.Succeeded,"MAA live evidence reports transitions and invalidates old completion");
@@ -967,6 +970,99 @@ class Program
             Check(mismatch.Contains("数量与累计进程数不一致"), "short-lived: injected missing notifications are reported as a count mismatch");
         }
         await File.WriteAllLinesAsync(Path.Combine(root, "evidence-short-lived.txt"), evidence);
+    }
+    // Work 3: the same completion text, a restart child, a rotated/truncated log and a missing
+    // job notification must all end in "unknown".  The callback sample is synthesized from the
+    // referenced 6.22.0 log shape; no real MAA log is read or fed into the product.
+    static async Task MaaInstanceEvidence()
+    {
+        var evidence = new List<string>();
+        void Record(string line) { evidence.Add(line); Console.WriteLine("EVIDENCE " + line); }
+
+        string[] callbacks =
+        {
+            "[2026-09-28 12:27:47.000][INF][Px21788][Tx14905] Assistant::append_callback | TaskChainStart {\"taskchain\":\"Mall\",\"taskid\":16,\"uuid\":\"bd203674fb05e1de\"}",
+            "[2026-09-28 12:27:47.961][INF][Px21788][Tx14905] Assistant::append_callback | SubTaskError {\"class\":\"asst::ProcessTask\",\"details\":{},\"first\":[\"CreditShop-NoMoney\"],\"pre_task\":\"\",\"subtask\":\"ProcessTask\",\"taskchain\":\"Mall\",\"taskid\":16,\"uuid\":\"bd203674fb05e1de\"}",
+            "[2026-09-28 12:28:10.000][INF][Px21788][Tx14905] Assistant::append_callback | TaskChainCompleted {\"taskchain\":\"Mall\",\"taskid\":16,\"uuid\":\"bd203674fb05e1de\"}",
+            "[2026-09-28 12:28:10.084][INF][Px21788][Tx14905] Assistant::append_callback | AllTasksCompleted {\"finished_tasks\":[1,16],\"taskchain\":\"Mall\",\"taskid\":16,\"uuid\":\"bd203674fb05e1de\"}",
+            "[2026-09-28 12:30:46.726][INF][Px13872][Tx23371] Assistant::append_callback | AllTasksCompleted {\"finished_tasks\":[1,2,3],\"taskchain\":\"Award\",\"taskid\":1,\"uuid\":\"bd203674fb05e1de\"}",
+            "[2026-09-28 12:30:46.810][INF][Px13872][Tx23371] Assistant::append_callback | TaskChainStopped {\"taskchain\":\"Award\",\"taskid\":1,\"uuid\":\"bd203674fb05e1de\"}"
+        };
+
+        static (string Event, int Pid, int TaskId, string Chain, string Uuid, int[] Finished, string[] First)? ParseCallback(string line)
+        {
+            var match = Regex.Match(line, @"^\[[^\]]+\]\[[A-Z]+\]\[Px(?<pid>\d+)\]\[Tx\d+\]\s+Assistant::append_callback\s+\|\s+(?<event>\w+)(?:\s+(?<json>\{.*\}))?$");
+            if (!match.Success) return null;
+            int pid = int.Parse(match.Groups["pid"].Value);
+            int taskId = 0;
+            string chain = "", uuid = "";
+            int[] finished = Array.Empty<int>();
+            string[] first = Array.Empty<string>();
+            if (match.Groups["json"].Success)
+            {
+                using var doc = JsonDocument.Parse(match.Groups["json"].Value);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("taskid", out var taskIdElement) && taskIdElement.ValueKind == JsonValueKind.Number) taskId = taskIdElement.GetInt32();
+                if (root.TryGetProperty("taskchain", out var chainElement)) chain = chainElement.GetString() ?? "";
+                if (root.TryGetProperty("uuid", out var uuidElement)) uuid = uuidElement.GetString() ?? "";
+                int[] ReadInts(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Array ? value.EnumerateArray().Select(x => x.GetInt32()).ToArray() : Array.Empty<int>();
+                string[] ReadStrings(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Array ? value.EnumerateArray().Select(x => x.GetString() ?? "").ToArray() : Array.Empty<string>();
+                finished = ReadInts("finished_tasks");
+                first = ReadStrings("first");
+            }
+            return (match.Groups["event"].Value, pid, taskId, chain, uuid, finished, first);
+        }
+
+        var parsed = callbacks.Select(ParseCallback).ToArray();
+        Check(parsed.All(x => x.HasValue), "MAA callback sample parses timestamp, PID, event name and JSON");
+        if (parsed.All(x => x.HasValue))
+        {
+            var events = parsed.Select(x => x!.Value).ToArray();
+            int errorAt = Array.FindIndex(events, x => x.Event == "SubTaskError");
+            int completedAfterError = Array.FindIndex(events, errorAt + 1, x => x.Event == "AllTasksCompleted");
+            Check(errorAt >= 0 && completedAfterError > errorAt && events[completedAfterError].Finished.Contains(16) && events[errorAt].First.Contains("CreditShop-NoMoney"), "MAA callback sample: SubTaskError can precede AllTasksCompleted and the failed task remains listed");
+            int allAt = Array.FindLastIndex(events, x => x.Event == "AllTasksCompleted");
+            int stoppedAfterAll = Array.FindIndex(events, allAt + 1, x => x.Event == "TaskChainStopped");
+            Check(allAt >= 0 && stoppedAfterAll > allAt && events[allAt].TaskId == events[stoppedAfterAll].TaskId, "MAA callback sample: TaskChainStopped can follow AllTasksCompleted for the same task");
+            Check(events.Select(x => x.Pid).Distinct().Count() > 1 && events.Select(x => x.Uuid).Distinct().Count() == 1, "MAA callback sample: one fixed uuid spans multiple PIDs and runs");
+        }
+
+        var structured = new MaaLogEvidence();
+        structured.Feed(string.Join("\n", callbacks) + "\n");
+        structured.Finish();
+        Check(!structured.Started && !structured.Succeeded && !structured.Failed && !structured.Stopped, "current Chinese-only MAA evidence ignores structured callbacks");
+        var unbound = new MaaLogEvidence();
+        unbound.Feed("[Px100] 开始任务: A\n[Px999] 任务已全部完成！\n");
+        unbound.Finish();
+        Check(unbound.Started && unbound.Succeeded, "current MAA evidence accepts completion text without binding it to a PID");
+
+        foreach (string mode in new[] { "success", "short-child", "update", "error", "stop", "roll", "replace", "truncate", "job-missing" })
+        {
+            string dir = Path.Combine(root, "maa-instance-" + mode);
+            Directory.CreateDirectory(dir);
+            string log = Path.Combine(dir, "asst.log");
+            await File.WriteAllTextAsync(log, "old\n");
+            var store = new Store(dir);
+            store.Tasks.Add(new TaskSpec { Name = "maa", Program = Environment.ProcessPath!, Arguments = "fixture-maa-" + mode + " \"" + log + "\"", WorkingDirectory = AppContext.BaseDirectory, Completion = "MAA日志", LogPath = log, MaaExclusiveLog = true, MaaCloseOnCompletion = true, TrustCompletion = true, ContinueOnFailure = true });
+            store.Tasks.Add(Spec("after-instance-" + mode, "echo wrong"));
+            int closeCalls = 0;
+            var engine = new RunnerEngine(store, () => { }) { MaaVersionSupported = _ => true, RequestOwnedWindowClose = _ => { closeCalls++; return true; } };
+            if (mode == "job-missing") engine.JobEventsTestHook = observer => observer.MarkUncertain("测试：通知缺失");
+            var run = engine.Start();
+            for (int i = 0; i < 600 && !run.IsCompleted && !engine.Waiting; i++) await Task.Delay(30);
+            bool waiting = engine.Waiting;
+            if (!run.IsCompleted) engine.Stop();
+            await run.WaitAsync(TimeSpan.FromSeconds(30));
+            var record = store.History.Single();
+            var events = record.Events;
+            bool advanced = events.Any(x => x.Contains("已启动 after-instance-" + mode));
+            bool sourceBlocked = events.Any(x => x.Contains("结果不明") || x.Contains("证据冲突"));
+            bool paused = waiting && !advanced && closeCalls == 0 && record.AllSucceeded == false;
+            string block = events.LastOrDefault(x => x.Contains("结果不明") || x.Contains("证据冲突") || x.Contains("暂停依据")) ?? "无";
+            Record($"mode={mode} paused={paused} waiting={waiting} state={record.State} advanced={advanced} closeCalls={closeCalls} allSucceeded={record.AllSucceeded} block={block}");
+            Check(paused && sourceBlocked, "MAA instance evidence " + mode + " stays paused without claiming success");
+        }
+        await File.WriteAllLinesAsync(Path.Combine(root, "evidence-maa-instance.txt"), evidence);
     }
     static async Task MaaControlledStartTests()
     {
@@ -1321,6 +1417,7 @@ class Program
         }
         if (args.Length > 0 && args[0] == "probe-maa-evidence-counterexamples") { try { MaaEvidenceCounterexamples().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-external-writer") { try { MaaExternalWriterChain().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-maa-instance-evidence") { try { MaaInstanceEvidence().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-short-lived-processes") { try { ShortLivedProcessObservation().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         // One managed root: writes nothing, waits on the release event, exits 0.
         if (args.Length == 4 && args[0] == "fixture-maa-chain-root")
@@ -1419,8 +1516,10 @@ class Program
             void Append(string s){using var f=new StreamWriter(new FileStream(path,FileMode.Append,FileAccess.Write,FileShare.ReadWrite|FileShare.Delete),new UTF8Encoding(false)){AutoFlush=true};f.Write(s);}
             if(mode=="window" || mode=="window-update") { var app=new System.Windows.Application { ShutdownMode=System.Windows.ShutdownMode.OnMainWindowClose };var win=new System.Windows.Window{Title="V3 controlled MAA window",Width=300,Height=180,ShowInTaskbar=true};win.Loaded+=(_,_)=>{var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(500)};timer.Tick+=(_,_)=>{timer.Stop();Append("开始任务: A\n任务已全部完成！\n");if(mode=="window-update"){Console.WriteLine("updating");Console.Out.Flush();}};timer.Start();};return app.Run(win); }
             if(mode=="extra-child") { using var child=Process.Start(new ProcessStartInfo(Environment.ProcessPath!,"fixture-child"){UseShellExecute=false})!;child.WaitForExit();Append("开始任务: A\n任务已全部完成！\n");Thread.Sleep(400);return 0; }
+            if(mode=="short-child") { using var child=Process.Start(new ProcessStartInfo(Environment.ProcessPath!,"fixture-short-child 20"){UseShellExecute=false})!;child.WaitForExit();Append("开始任务: A\n任务已全部完成！\n");Thread.Sleep(400);return 0; }
             if(mode is "update" or "update-old" or "overlap") { Append("开始任务: 旧轮\n任务已全部完成！\n");Console.WriteLine("updating");Console.Out.Flush();using var child=Process.Start(new ProcessStartInfo(Environment.ProcessPath!,"fixture-maa-child-"+(mode=="overlap"?"update":mode)+" \""+path+"\""){UseShellExecute=false})!;if(mode=="overlap"){using var other=Process.Start(new ProcessStartInfo(Environment.ProcessPath!,"fixture-maa-child-update \""+path+"\""){UseShellExecute=false})!;}Thread.Sleep(400);return 0; }
             if(mode.StartsWith("child-",StringComparison.Ordinal)) {Thread.Sleep(1200);if(mode=="child-update")Append("开始任务: 新轮\n任务已全部完成！\n");Thread.Sleep(400);return 0;}
+            if(mode=="roll"){File.Move(path,path+".1");File.WriteAllText(path,"开始任务: A\n任务已全部完成！\n");Thread.Sleep(350);return 0;}
             Thread.Sleep(250);
             if(mode=="replace"){File.Move(path,path+".old");File.WriteAllText(path,"开始任务: A\n任务已全部完成！\n");Thread.Sleep(350);return 0;}
             if(mode=="truncate"){File.WriteAllText(path,"changed-content-larger-than-original-and-no-signal\n");Thread.Sleep(350);return 0;}
