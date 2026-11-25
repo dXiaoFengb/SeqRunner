@@ -30,6 +30,7 @@ internal sealed class IsolatedSession : IObservationSession
     Snapshot? latest;
     long sequence, latestAt;
     bool disposed;
+    bool workerCleanupUnconfirmed;
     int activeWorkerId;
     internal string CleanupStatus { get; private set; } = "not-required";
     internal int ActiveWorkerId { get { lock (gate) return activeWorkerId; } }
@@ -43,18 +44,20 @@ internal sealed class IsolatedSession : IObservationSession
     internal void StallNextForTest() { lock (gate) { if (disposed) throw new ObjectDisposedException(nameof(IsolatedSession)); stallNext = true; } }
     internal void ExitNextForTest() { lock (gate) { if (disposed) throw new ObjectDisposedException(nameof(IsolatedSession)); exitNext = true; } }
     internal void WrongSequenceNextForTest() { lock (gate) { if (disposed) throw new ObjectDisposedException(nameof(IsolatedSession)); wrongSequenceNext = true; } }
+    internal void SimulateUnconfirmedCleanupForTest() { lock (gate) { workerCleanupUnconfirmed = true; CleanupStatus = "worker-cleanup-unconfirmed"; latest = null; } }
     public Snapshot Observe() => ObserveAsync().GetAwaiter().GetResult();
     async Task<Snapshot> ObserveAsync()
     {
         await serial.WaitAsync();
         try
         {
-            long seq, started = Stopwatch.GetTimestamp(); bool requestStall, requestExit, requestWrongSequence;
+            long seq, started = Stopwatch.GetTimestamp(); bool requestStall, requestExit, requestWrongSequence, blocked;
             var observed = DateTimeOffset.UtcNow;
-            lock (gate) { seq = ++sequence; latest = null; requestStall = stallNext; requestExit = exitNext; requestWrongSequence = wrongSequenceNext; stallNext = exitNext = wrongSequenceNext = false; }
+            lock (gate) { seq = ++sequence; latest = null; blocked = workerCleanupUnconfirmed; requestStall = stallNext; requestExit = exitNext; requestWrongSequence = wrongSequenceNext; stallNext = exitNext = wrongSequenceNext = false; if (!blocked) CleanupStatus = "not-required"; }
             Snapshot Unknown(string detail) => new("0.2", run, session, seq, observed, target.Id, created,
                 "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", Quality.Unavailable, "isolated UIA", "UNKNOWN", detail);
             lock (gate) if (disposed) return Unknown("session released");
+            if (blocked) return Unknown("worker cleanup unconfirmed; observation suspended");
             Snapshot result = Unknown("worker unavailable");
             Process? worker = null; SafeProcessHandle? workerHandle = null; DateTime workerCreated = default;
             try
@@ -108,9 +111,14 @@ internal sealed class IsolatedSession : IObservationSession
                     }
                     catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or UnauthorizedAccessException) { CleanupStatus = "worker-cleanup-unconfirmed"; }
                     worker.Dispose();
-                    lock (gate) activeWorkerId = 0;
+                    lock (gate)
+                    {
+                        activeWorkerId = 0;
+                        if (CleanupStatus.EndsWith("unconfirmed", StringComparison.Ordinal)) workerCleanupUnconfirmed = true;
+                    }
                 }
             }
+            if (workerCleanupUnconfirmed) result = Unknown(result.Detail + "; " + CleanupStatus + "; observation suspended");
             return Publish(result, started, seq);
         }
         finally { serial.Release(); }
@@ -119,7 +127,7 @@ internal sealed class IsolatedSession : IObservationSession
     {
         lock (gate)
         {
-            if (disposed || seq != sequence) return result with { Quality = Quality.Unavailable, Detail = "session released or request superseded", Controls = Array.Empty<ControlObservation>(), WindowHandle = IntPtr.Zero };
+            if (disposed || seq != sequence) return result with { Quality = Quality.Unavailable, Detail = "session released or request superseded; " + result.Detail, Controls = Array.Empty<ControlObservation>(), WindowHandle = IntPtr.Zero };
             latest = result; latestAt = started; return result;
         }
     }

@@ -38,6 +38,7 @@ internal static class Program
             {
                 var s = session.Observe(); Console.WriteLine($"{s.ObservedAt:O} seq={s.Sequence} process={s.ProcessState} window={s.WindowState} quality={s.Quality} task={s.TaskState} update={s.UpdateState} business={s.BusinessResult} detail={s.Detail}");
                 foreach (var control in s.Controls) Console.WriteLine($"  type={control.Type} enabled={control.Enabled} offscreen={control.Offscreen} name={control.SelectedName ?? "[not selected]"} id={control.SelectedId ?? "[not selected]"}");
+                if (session.CleanupStatus.EndsWith("unconfirmed", StringComparison.Ordinal)) { Console.WriteLine("Worker cleanup unconfirmed; observation suspended. Do not terminate unidentified processes."); return 1; }
                 if (s.ProcessState == "EXITED") break;
                 Thread.Sleep(1000);
             }
@@ -83,6 +84,11 @@ internal static class Program
             Check(recovered.Quality == Quality.Partial && mismatch.Quality == Quality.Unavailable && !session.Matches(recovered, TimeSpan.FromSeconds(10)), "wrong sequence is rejected and prior observation invalidated");
             var recoveredAgain = session.Observe();
             Check(recoveredAgain.Quality == Quality.Partial && session.Matches(recoveredAgain, TimeSpan.FromSeconds(3)), "later observation can recover after worker failure");
+            using (var blocked = new IsolatedSession(fixture, TimeSpan.FromSeconds(3)))
+            {
+                blocked.SimulateUnconfirmedCleanupForTest(); var suspended = blocked.Observe(); fixture.Refresh();
+                Check(suspended.Quality == Quality.Unavailable && suspended.Detail.Contains("suspended", StringComparison.Ordinal) && blocked.ActiveWorkerId == 0 && !fixture.HasExited, "unconfirmed cleanup suspends observation without launching another worker");
+            }
             session.StallNextForTest(); var pending = Task.Run(session.Observe);
             bool started = SpinWait.SpinUntil(() => session.ActiveWorkerId > 0, TimeSpan.FromSeconds(3));
             session.Dispose(); bool returned = pending.Wait(TimeSpan.FromSeconds(7)); fixture.Refresh();
