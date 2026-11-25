@@ -2358,6 +2358,31 @@ class Program
         var interval=NewStore("manual-skip-interval");var intervalTask=Spec("manual", "echo done");intervalTask.Completion="人工确认";interval.Tasks.Add(intervalTask);interval.Tasks.Add(Spec("next", "echo next"));var ie=new RunnerEngine(interval,()=>{});var ir=ie.StartTasks(interval.Tasks.ToList(),null,[1,0]);for(int i=0;i<150 && !ie.Status.Contains("等待人工确认");i++)await Task.Delay(30);ie.Continue();await ir;Check(interval.History.Single().Events.Any(x=>x.Contains("等待 1 秒")) && interval.History.Single().AllSucceeded==false,"manual skip respects plan interval");
         int calls=0;var actions=NewStore("manual-skip-action");var coordinator=new CompletionCoordinator(actions,()=>{},_=>{calls++;return Task.FromResult("unexpected");});coordinator.Offer(new SchedulePlan{CompletionAction="sleep"},history);Check(calls==0 && actions.History.Any(x=>x.State=="操作未执行"),"manual skip prevents completion action");
     }
+    static async Task SplitUtf8Diagnostic()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        byte[] bytes=await Utf8EvidenceProbe.CaptureFixtureBytes();
+        string utf8=Utf8EvidenceProbe.DecodeOneByteAtATime(bytes,Encoding.UTF8);
+        string legacy=Utf8EvidenceProbe.DecodeOneByteAtATime(bytes,Encoding.GetEncoding(936));
+        Console.WriteLine($"DETAIL utf8 bytes={Convert.ToHexString(bytes)} receiverCodePage={Console.OutputEncoding.CodePage} utf8Matches={utf8=="完成"} cp936Matches={legacy=="完成"}");
+        Check(bytes.SequenceEqual(Encoding.UTF8.GetBytes("完成")),"split fixture emits expected UTF-8 bytes");
+        Check(utf8=="完成","incremental UTF-8 decoding retains signal");
+        Check(legacy!="完成","incremental CP936 decoding does not produce UTF-8 signal");
+        byte[] marked=Encoding.UTF8.GetPreamble().Concat(bytes).ToArray();
+        Check(Utf8EvidenceProbe.DecodeStream(marked,Encoding.GetEncoding(936))!="完成","one-byte reads expose split-BOM detection limitation");
+        Check(Utf8EvidenceProbe.DecodeStreamWithCompletePrefix(marked,Encoding.GetEncoding(936))=="完成","complete UTF-8 BOM selects UTF-8 with CP936 default and split payload");
+        var result=await Utf8EvidenceProbe.RunEngine(Path.Combine(root,"utf8-diagnostic"));
+        Check(result.StopConfirmed,"UTF-8 diagnostic completes or stops with confirmation");
+        if(!result.StopConfirmed)throw new TimeoutException("UTF-8 engine stop unconfirmed");
+        bool actualMatches=Utf8EvidenceProbe.DecodeOneByteAtATime(bytes,Console.OutputEncoding)=="完成";
+        Check(result.Success==actualMatches && (actualMatches || result.TimedOut),"unmarked UTF-8 agrees with actual receiver and stops when signal is absent");
+        var bom=await Utf8EvidenceProbe.RunEngine(Path.Combine(root,"utf8-bom-diagnostic"),"fixture-split-utf8-bom");
+        Check(bom.Success && bom.StopConfirmed,"BOM-marked split UTF-8 retains success evidence");
+        if(!bom.StopConfirmed)throw new TimeoutException("UTF-8 BOM engine stop unconfirmed");
+        var missing=await Utf8EvidenceProbe.RunEngine(Path.Combine(root,"utf8-missing-diagnostic"),"fixture-utf8-missing");
+        Check(!missing.Success && missing.TimedOut && missing.StopConfirmed,"missing signal waits and controlled stop completes without false success");
+        if(!missing.StopConfirmed)throw new TimeoutException("missing-signal engine stop unconfirmed");
+    }
     static async Task BoundedOutputTests()
     {
         var lines=new List<string>();var segments=new List<string>();await BoundedOutputReader.ReadAsync(new SmallReader("\r\nabc\rdef\n\nghi",1), segments.Add, lines.Add, 4);
@@ -2372,7 +2397,9 @@ class Program
             var store=NewStore("bounded-"+size);store.Tasks.Add(new TaskSpec{Name="long",Program=Environment.ProcessPath!,Arguments="fixture-long-output "+size,WorkingDirectory=AppContext.BaseDirectory,Completion="日志信号",LogSource="程序输出",SuccessText="READY",TrustCompletion=true});
             await new RunnerEngine(store,()=>{}).Start();var result=store.History.Single();var output=result.Events.FirstOrDefault(x=>x.Contains("long 输出："));Check(result.AllSucceeded==true && result.Events.Any(x=>x.Contains("long 成功")) && output!=null && output.EndsWith("…") && output.Length<4200,"long unbroken output has bounded record and final signal "+size);
         }
-        var utf=NewStore("bounded-utf8");utf.Tasks.Add(new TaskSpec{Name="utf",Program=Environment.ProcessPath!,Arguments="fixture-split-utf8",WorkingDirectory=AppContext.BaseDirectory,Completion="日志信号",SuccessText="完成",TrustCompletion=true});await new RunnerEngine(utf,()=>{}).Start();Check(utf.History.Single().AllSucceeded==true,"split UTF-8 stdout retains success evidence");
+        var utfResult=await Utf8EvidenceProbe.RunEngine(Path.Combine(root,"bounded-utf8"),"fixture-split-utf8-bom");
+        if(!utfResult.StopConfirmed)throw new TimeoutException("split UTF-8 engine stop unconfirmed; regression halted");
+        Check(utfResult.Success,"split UTF-8 stdout retains success evidence");
         var split=NewStore("bounded-stream-split");split.Tasks.Add(new TaskSpec{Name="split",Program=Environment.ProcessPath!,Arguments="fixture-stream-split",WorkingDirectory=AppContext.BaseDirectory,Completion="日志信号",SuccessText="READY",TrustCompletion=true});var se=new RunnerEngine(split,()=>{});var st=se.Start();for(int i=0;i<150 && !se.Waiting;i++)await Task.Delay(30);Check(se.Waiting && se.Status.Contains("未发现"),"stdout and stderr cannot combine into success signal");se.Stop();await st;
         var stderr=NewStore("bounded-stderr-only");stderr.Tasks.Add(new TaskSpec{Name="stderr",Program=Environment.ProcessPath!,Arguments="fixture-stderr-ready",WorkingDirectory=AppContext.BaseDirectory,Completion="日志信号",SuccessText="READY",TrustCompletion=true});var ee=new RunnerEngine(stderr,()=>{});var et=ee.Start();for(int i=0;i<150 && !ee.Waiting;i++)await Task.Delay(30);Check(ee.Waiting && ee.Status.Contains("未发现"),"stderr alone cannot satisfy stdout success signal");ee.Stop();await et;
         var update=NewStore("bounded-update");update.Tasks.Add(new TaskSpec{Name="update",Program=Environment.ProcessPath!,Arguments="fixture-split-update",WorkingDirectory=AppContext.BaseDirectory,TrustCompletion=true});var ue=new RunnerEngine(update,()=>{});var ut=ue.Start();for(int i=0;i<150 && !ue.Waiting;i++)await Task.Delay(30);Check(ue.Waiting && update.History.Single().Events.Any(x=>x.Contains("检测到更新或重启")),"update marker split across stdout chunks pauses");ue.Stop();await ut;
@@ -2504,6 +2531,7 @@ class Program
         if (args.Length > 0 && args[0] == "probe-ocr-helper") { OcrHelperTests().GetAwaiter().GetResult(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-visual-evidence") { VisualEvidenceTests(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length == 3 && args[0] == "probe-rendered-image") { RenderedImageEvidenceTests(args[1],args[2]); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-split-utf8-diagnostic") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await SplitUtf8Diagnostic(); } catch(Exception ex) { failures++; Console.WriteLine("FAIL UTF-8 diagnostic: "+ex.GetType().Name+": "+ex.Message); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-visual-start") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await VisualStartTests(); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-visual-single") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await VisualStartTests(true); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-visual-icon") { SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext()); Dispatcher.CurrentDispatcher.BeginInvoke(async () => { try { await VisualStartTests(iconOnly:true); } catch(Exception ex) { failures++; Console.WriteLine(ex); } finally { Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background); } }); Dispatcher.Run(); Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
@@ -2593,6 +2621,8 @@ class Program
         if (args.Length > 0 && args[0] == "fixture-long-update") { var output=Console.OpenStandardOutput();byte[] chunk=Enumerable.Repeat((byte)'x',8192).ToArray();for(int i=0;i<2048;i++)output.Write(chunk);output.Write(Encoding.UTF8.GetBytes("UPDATING"));output.Flush();return 0; }
         if (args.Length > 0 && args[0] == "fixture-both-streams") { var a=Task.Run(()=>{for(int i=0;i<3000;i++)Console.Out.WriteLine("normal-"+i);Console.Out.WriteLine("READY");});var b=Task.Run(()=>{for(int i=0;i<3000;i++)Console.Error.WriteLine("error-"+i);});Task.WaitAll(a,b);return 0; }
         if (args.Length > 0 && args[0] == "fixture-split-utf8") { var output=Console.OpenStandardOutput();var b=Encoding.UTF8.GetBytes("完成");foreach(byte c in b){output.WriteByte(c);output.Flush();Thread.Sleep(30);}return 0; }
+        if (args.Length > 0 && args[0] == "fixture-split-utf8-bom") { var output=Console.OpenStandardOutput();var prefix=Encoding.UTF8.GetPreamble();output.Write(prefix);output.Flush();foreach(byte c in Encoding.UTF8.GetBytes("完成")){output.WriteByte(c);output.Flush();Thread.Sleep(30);}return 0; }
+        if (args.Length > 0 && args[0] == "fixture-utf8-missing") { Console.Write("no-signal"); Console.Out.Flush(); return 0; }
         if (args.Length > 0 && args[0] == "fixture-stream-split") { Console.Out.Write("REA");Console.Out.Flush();Console.Error.Write("DY");Console.Error.Flush();return 0; }
         if (args.Length > 0 && args[0] == "fixture-stderr-ready") { Console.Error.Write("READY");Console.Error.Flush();return 0; }
         if (args.Length > 0 && args[0] == "fixture-split-update") { Console.Out.Write("UPDAT");Console.Out.Flush();Thread.Sleep(300);Console.Out.Write("ING");Console.Out.Flush();return 0; }
