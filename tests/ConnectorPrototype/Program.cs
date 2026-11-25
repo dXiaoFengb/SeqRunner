@@ -36,6 +36,9 @@ internal static class Program
     {
         if (args.Length == 1 && args[0] == "observation-worker") return IsolatedSession.RunWorker();
         if (args.Length == 1 && args[0] == "control-worker") return IsolatedControl.RunWorker();
+        if (args.Length == 1 && args[0] == "fixture-state") { StateFixture(); return 0; }
+        if (args.Length == 1 && args[0] == "smoke-state") return StateObservationTests(false);
+        if (args.Length == 1 && args[0] == "verify-state") return StateObservationTests(true);
         if (args.Length == 1 && args[0] == "smoke-window") return SmokeWindow();
         if (args.Length == 1 && args[0] == "verify-control-counterexamples") return VerifyControlCounterexamples();
         if (args.Length == 1 && args[0] == "smoke-link") return SmokeLink();
@@ -306,6 +309,153 @@ internal static class Program
             if (fixture != null) { try { fixture.Refresh(); if (!fixture.HasExited) { fixture.CloseMainWindow(); fixture.WaitForExit(5000); } } catch (InvalidOperationException) { } fixture.Dispose(); }
         }
         Console.WriteLine("Verification failures: " + failures); return failures == 0 ? 0 : 1;
+    }
+    static int StateObservationTests(bool full)
+    {
+        Process? fixture=null;
+        try
+        {
+            fixture=StartStateFixture();
+            using var session=new IsolatedSession(fixture,TimeSpan.FromSeconds(3),fixtureStateRules:true);
+            using var monitor=new BackgroundMonitor(session,TimeSpan.FromMilliseconds(200)); monitor.Start();
+            bool Seen(Func<Snapshot,bool> predicate)=>SpinWait.SpinUntil(()=>monitor.History().Any(x=>x.Observation!=null && predicate(x.Observation)),TimeSpan.FromSeconds(10));
+            void Send(string command)
+            {
+                fixture.StandardInput.WriteLine(command); fixture.StandardInput.Flush();
+                string? reply=fixture.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+                if(reply!="SET "+command)throw new InvalidOperationException("fixture command not acknowledged");
+            }
+            bool initial=Seen(x=>x.TaskState=="INITIALIZING" && x.UpdateState=="NO_UPDATE_OBSERVED");
+            Send("running");
+            bool running=Seen(x=>x.TaskState=="RUNNING" && x.UpdateState=="UPDATING_OBSERVED" && x.ErrorState=="ERROR_OBSERVED");
+            var evidence=monitor.History().LastOrDefault(x=>x.Observation?.TaskState=="RUNNING")?.Observation;
+            Check(initial && running && evidence?.BusinessResult=="UNKNOWN" && evidence.StateEvidence.Count==3 && evidence.StateEvidence.All(x=>x.Session==evidence.Session && x.Sequence==evidence.Sequence && x.ExpiresAt>x.ObservedAt), "controlled background state changes retain scoped evidence and unknown business");
+            Send("conflict");
+            bool conflict=Seen(x=>x.Quality==Quality.Conflict && x.TaskState=="UNKNOWN" && x.BusinessResult=="UNKNOWN");
+            Snapshot? current=null;
+            bool stale=SpinWait.SpinUntil(()=> { current=session.Current(TimeSpan.Zero); return current?.Quality==Quality.Stale; },TimeSpan.FromSeconds(5));
+            Check(conflict && stale && current?.TaskState=="UNKNOWN" && current.StateEvidence.Count==0 && !session.Matches(current,TimeSpan.FromSeconds(2)), "conflict or expired evidence remains unknown and cannot authorize");
+            if(full)
+            {
+                Send("idle"); Check(Seen(x=>x.TaskState=="IDLE"),"controlled idle state is observed");
+                Send("ended"); Check(Seen(x=>x.TaskState=="END_OBSERVED" && x.UpdateState=="UPDATING_OBSERVED" && x.ErrorState=="ERROR_OBSERVED" && x.BusinessResult=="UNKNOWN"),"ending update and error remain separate dimensions");
+                Send("duplicate"); Check(Seen(x=>x.Quality==Quality.Conflict && x.TaskState=="UNKNOWN"),"duplicate marker is ambiguous");
+                Send("missing"); Check(Seen(x=>x.TaskState=="UNKNOWN" && x.StateEvidence.Any(e=>e.Dimension=="task" && e.Quality==Quality.Unavailable)),"missing marker remains unknown");
+                session.ExitNextForTest();
+                bool failed=SpinWait.SpinUntil(()=>monitor.History().Any(x=>x.Connection==MonitorConnection.Degraded && x.Observation?.Quality==Quality.Unavailable),TimeSpan.FromSeconds(10));
+                Check(failed,"worker failure invalidates state observation");
+                fixture.StandardInput.WriteLine("exit"); fixture.StandardInput.Flush();
+                bool exited=fixture.WaitForExit(5000) && SpinWait.SpinUntil(()=>monitor.Current(TimeSpan.FromSeconds(2)).Connection==MonitorConnection.TargetExited,TimeSpan.FromSeconds(10));
+                Check(exited,"target exit stops state observation");
+                StateReplacementTest();
+                StateFailureTest();
+            }
+        }
+        catch(Exception e) { failures++; Console.WriteLine("FAIL state observation: "+e.GetType().Name+": "+e.Message); }
+        finally
+        {
+            if(fixture!=null) { try { fixture.Refresh(); if(!fixture.HasExited) { fixture.StandardInput.WriteLine("exit"); fixture.StandardInput.Flush(); fixture.WaitForExit(5000); } } catch(Exception e) when(e is InvalidOperationException or IOException) { } fixture.Dispose(); }
+        }
+        Console.WriteLine((full?"Verification failures: ":"Failures: ")+failures); return failures==0?0:1;
+    }
+    static void StateReplacementTest()
+    {
+        Process? fixture=null;
+        try
+        {
+            fixture=StartStateFixture();
+            using var session=new IsolatedSession(fixture,TimeSpan.FromSeconds(3),fixtureStateRules:true);
+            using var monitor=new BackgroundMonitor(session,TimeSpan.FromMilliseconds(200)); monitor.Start();
+            Snapshot? before=null;
+            bool ready=SpinWait.SpinUntil(()=> { before=monitor.Current(TimeSpan.FromSeconds(2)).Observation; return before?.Quality==Quality.Partial && before.WindowHandle!=IntPtr.Zero; },TimeSpan.FromSeconds(10));
+            if(!ready || before==null)throw new InvalidOperationException("replacement baseline unavailable");
+            fixture.StandardInput.WriteLine("replace");fixture.StandardInput.Flush();
+            if(fixture.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult()!="REPLACED")throw new InvalidOperationException("replacement not acknowledged");
+            Snapshot? after=null;
+            bool changed=SpinWait.SpinUntil(()=> { after=monitor.Current(TimeSpan.FromSeconds(2)).Observation; return after!=null && after.WindowHandle!=IntPtr.Zero && after.WindowHandle!=before.WindowHandle; },TimeSpan.FromSeconds(12));
+            Check(changed && !session.Matches(before,TimeSpan.FromSeconds(2)) && after?.TaskState=="UNKNOWN" && after.BusinessResult=="UNKNOWN", "recreated window invalidates old state and missing markers stay unknown");
+        }
+        finally { if(fixture!=null) { try { fixture.Refresh(); if(!fixture.HasExited) { fixture.CloseMainWindow(); fixture.WaitForExit(5000); } } catch(InvalidOperationException) { } fixture.Dispose(); } }
+    }
+    static void StateFailureTest()
+    {
+        Process? fixture=null;
+        try
+        {
+            fixture=StartStateFixture();
+            using var session=new IsolatedSession(fixture,TimeSpan.FromSeconds(3),fixtureStateRules:true);
+            using var monitor=new BackgroundMonitor(session,TimeSpan.FromMilliseconds(200)); monitor.Start();
+            Snapshot? before=null;
+            bool ready=SpinWait.SpinUntil(()=> { before=monitor.Current(TimeSpan.FromSeconds(2)).Observation; return before?.Quality==Quality.Partial; },TimeSpan.FromSeconds(10));
+            monitor.FailNextForTest();
+            bool fault=SpinWait.SpinUntil(()=>monitor.Current(TimeSpan.FromSeconds(2)).Connection==MonitorConnection.Faulted,TimeSpan.FromSeconds(10));
+            fixture.Refresh();
+            Check(ready && before!=null && fault && !session.Matches(before,TimeSpan.FromSeconds(2)) && !fixture.HasExited, "monitor fault invalidates evidence and leaves fixture running");
+        }
+        finally { if(fixture!=null) { try { fixture.Refresh(); if(!fixture.HasExited) { fixture.StandardInput.WriteLine("exit"); fixture.StandardInput.Flush(); fixture.WaitForExit(5000); } } catch(Exception e) when(e is InvalidOperationException or IOException) { } fixture.Dispose(); } }
+    }
+    static void StateFixture()
+    {
+        var app=new Application();
+        var window=new Window { Title="Connector state fixture", Width=400, Height=240, ShowActivated=false, ShowInTaskbar=true };
+        var panel=new StackPanel(); window.Content=panel;
+        void Set(string state)
+        {
+            panel.Children.Clear();
+            void Marker(string id) { var b=new Button { Content="synthetic state marker" }; AutomationProperties.SetAutomationId(b,id); panel.Children.Add(b); }
+            switch(state)
+            {
+                case "init": Marker("fixture-task-init"); break;
+                case "idle": Marker("fixture-task-idle"); break;
+                case "running": Marker("fixture-task-running"); break;
+                case "ended": Marker("fixture-task-ended"); break;
+                case "conflict": Marker("fixture-task-running"); Marker("fixture-task-ended"); break;
+                case "duplicate": Marker("fixture-task-running"); Marker("fixture-task-running"); break;
+                case "missing": break;
+            }
+            Marker(state is "running" or "ended" ? "fixture-update-active" : "fixture-update-idle");
+            Marker(state is "running" or "ended" ? "fixture-error-present" : "fixture-error-clear");
+        }
+        Set("init");
+        window.Loaded+=(_,_)=>
+        {
+            Console.WriteLine("READY"); Console.Out.Flush();
+            _=Task.Run(() =>
+            {
+                string? input;
+                while((input=Console.ReadLine())!=null)
+                {
+                    string command=input;
+                    if(command=="exit") { app.Dispatcher.Invoke(()=>window.Close()); break; }
+                    if(command=="replace")
+                    {
+                        app.Dispatcher.Invoke(()=> { var next=new Window { Title="Connector state fixture replacement", Width=300, Height=120, Content=new TextBlock { Text="replacement" }, ShowActivated=false }; next.Show(); app.MainWindow=next; window.Close(); });
+                        Console.WriteLine("REPLACED"); Console.Out.Flush(); break;
+                    }
+                    app.Dispatcher.Invoke(()=>Set(command)); Console.WriteLine("SET "+command); Console.Out.Flush();
+                }
+                if(input==null)app.Dispatcher.BeginInvoke(()=>window.Close());
+            });
+        };
+        app.Run(window);
+    }
+    static Process StartStateFixture()
+    {
+        string exe=Environment.ProcessPath ?? throw new InvalidOperationException();
+        var start=new ProcessStartInfo(exe,"fixture-state") { UseShellExecute=false, RedirectStandardInput=true, RedirectStandardOutput=true, CreateNoWindow=true };
+        var p=Process.Start(start) ?? throw new InvalidOperationException("fixture unavailable");
+        try
+        {
+            string? ready=p.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(12)).GetAwaiter().GetResult();
+            if(ready!="READY")throw new InvalidOperationException("state fixture did not become ready");
+            p.Refresh(); if(p.MainWindowHandle==IntPtr.Zero || p.MainWindowTitle!="Connector state fixture")throw new InvalidOperationException("state fixture window unavailable");
+            return p;
+        }
+        catch
+        {
+            try { p.StandardInput.Close(); if(!p.WaitForExit(5000))Console.WriteLine("state fixture exit unconfirmed; no forced termination"); } catch(Exception e) when(e is InvalidOperationException or IOException) { }
+            p.Dispose(); throw;
+        }
     }
     static void Fixture(bool duplicateTarget = false)
     {

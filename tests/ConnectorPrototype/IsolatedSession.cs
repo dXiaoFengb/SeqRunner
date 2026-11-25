@@ -22,6 +22,7 @@ internal sealed class IsolatedSession : IObservationSession
     readonly Guid run = Guid.NewGuid(), session = Guid.NewGuid();
     readonly TimeSpan timeout;
     readonly string? selectedName, selectedId;
+    readonly bool fixtureStateRules;
     bool stallNext;
     bool exitNext, wrongSequenceNext;
     readonly object gate = new();
@@ -46,15 +47,16 @@ internal sealed class IsolatedSession : IObservationSession
         lock (gate)
         {
             if (disposed || latest == null) return null;
-            return maxAge < TimeSpan.Zero || Stopwatch.GetElapsedTime(latestAt) > maxAge
-                ? latest with { Quality = Quality.Stale, Detail = "observation expired", Controls = Array.Empty<ControlObservation>(), WindowHandle = IntPtr.Zero }
+            return maxAge < TimeSpan.Zero || Stopwatch.GetElapsedTime(latestAt) > maxAge || (latest.StateEvidence.Count > 0 && Stopwatch.GetElapsedTime(latestAt) > TimeSpan.FromSeconds(2))
+                ? FixtureStateRules.Expire(latest)
                 : latest;
         }
     }
-    internal IsolatedSession(Process target, TimeSpan timeout, string? selectedName = null, string? selectedId = null, bool stall = false)
+    internal IsolatedSession(Process target, TimeSpan timeout, string? selectedName = null, string? selectedId = null, bool stall = false, bool fixtureStateRules = false)
     {
         if (timeout < TimeSpan.FromMilliseconds(100) || timeout > TimeSpan.FromSeconds(10)) throw new ArgumentOutOfRangeException(nameof(timeout));
-        this.target = target; this.timeout = timeout; this.selectedName = selectedName; this.selectedId = selectedId; stallNext = stall;
+        this.target = target; this.timeout = timeout; this.selectedName = selectedName; this.selectedId = selectedId; stallNext = stall; this.fixtureStateRules = fixtureStateRules;
+        if (fixtureStateRules && (!string.Equals(target.MainModule?.FileName, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase) || target.MainWindowTitle != "Connector state fixture")) throw new InvalidOperationException("state rules require controlled fixture");
         created = target.StartTime.ToUniversalTime();
     }
     public Process FixtureProcess => target;
@@ -106,6 +108,7 @@ internal sealed class IsolatedSession : IObservationSession
                 result = new Snapshot("0.2", run, session, seq, observed, target.Id, created, reply.ProcessState, reply.WindowState,
                     "UNKNOWN", "UNKNOWN", "UNKNOWN", reply.Quality, "isolated UIA", "UNKNOWN", reply.Detail)
                     { Controls = Array.AsReadOnly(reply.Controls), ControlsTruncated = reply.Truncated, WindowHandle = new IntPtr(reply.WindowHandle) };
+                if (fixtureStateRules) result = FixtureStateRules.Apply(result);
             }
             catch (OperationCanceledException) { result = Unknown(lifetime.IsCancellationRequested ? "session released" : "observation timed out"); }
             catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception or JsonException or ArgumentException)
@@ -150,7 +153,7 @@ internal sealed class IsolatedSession : IObservationSession
     }
     public bool Matches(Snapshot snapshot, TimeSpan maxAge)
     {
-        lock (gate) return !disposed && ReferenceEquals(snapshot, latest) && snapshot.Run == run && snapshot.Session == session && snapshot.Sequence == sequence && snapshot.Quality == Quality.Partial && !snapshot.ControlsTruncated && maxAge >= TimeSpan.Zero && Stopwatch.GetElapsedTime(latestAt) <= maxAge;
+        lock (gate) return !disposed && ReferenceEquals(snapshot, latest) && snapshot.Run == run && snapshot.Session == session && snapshot.Sequence == sequence && snapshot.Quality == Quality.Partial && !snapshot.ControlsTruncated && maxAge >= TimeSpan.Zero && Stopwatch.GetElapsedTime(latestAt) <= maxAge && (snapshot.StateEvidence.Count == 0 || (snapshot.StateEvidence.All(x=>x.Quality==Quality.Partial) && Stopwatch.GetElapsedTime(latestAt)<=TimeSpan.FromSeconds(2)));
     }
     internal bool Authorize(Snapshot snapshot, TimeSpan maxAge, Func<bool> dispatch)
     {

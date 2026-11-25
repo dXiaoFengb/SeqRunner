@@ -8,6 +8,7 @@ namespace ConnectorPrototype;
 
 internal enum Quality { Valid, Partial, Stale, Unavailable, Conflict }
 internal sealed record ControlObservation(string Type, bool Enabled, bool Offscreen, string? SelectedName, string? SelectedId);
+internal sealed record StateEvidence(string Dimension, string Value, Quality Quality, string Source, Guid Session, long Sequence, DateTimeOffset ObservedAt, DateTimeOffset ExpiresAt);
 internal sealed record Snapshot(string Version, Guid Run, Guid Session, long Sequence, DateTimeOffset ObservedAt,
     int Pid, DateTime CreatedUtc, string ProcessState, string WindowState, string TaskState, string UpdateState,
     string ErrorState, Quality Quality, string Source, string BusinessResult, string Detail)
@@ -15,6 +16,7 @@ internal sealed record Snapshot(string Version, Guid Run, Guid Session, long Seq
     internal IReadOnlyList<ControlObservation> Controls { get; init; } = Array.Empty<ControlObservation>();
     internal bool ControlsTruncated { get; init; }
     internal IntPtr WindowHandle { get; init; }
+    internal IReadOnlyList<StateEvidence> StateEvidence { get; init; } = Array.Empty<StateEvidence>();
 }
 internal sealed record Command(Guid Id, DateTimeOffset Expires, long ObservationSequence, string ControlId);
 internal sealed record Result(Guid Id, string Dispatch, string Effect, string Detail);
@@ -70,7 +72,7 @@ internal sealed class Session(Process process, Guid run, Func<AutomationElement,
     long sequence;
     static readonly HashSet<string> SelectedNames = new(StringComparer.Ordinal)
         { "Link Start!", "开始", "开始任务", "停止", "Start", "Stop", "controlled action", "开始任务（模拟）" };
-    static readonly HashSet<string> SelectedIds = new(StringComparer.Ordinal) { "fixture-button", "fixture-chinese", "fixture-duplicate" };
+    static readonly HashSet<string> SelectedIds = new(StringComparer.Ordinal) { "fixture-button", "fixture-chinese", "fixture-duplicate", "fixture-task-init", "fixture-task-idle", "fixture-task-running", "fixture-task-ended", "fixture-task-stopped", "fixture-update-active", "fixture-update-idle", "fixture-error-present", "fixture-error-clear" };
     internal static (IReadOnlyList<ControlObservation> Items, bool Truncated) ReadControls(AutomationElement root) => ReadControlsBounded(root, 512, 32);
     internal static (IReadOnlyList<ControlObservation> Items, bool Truncated) ReadControlsBounded(AutomationElement root, int maxNodes, int maxControls, string? requestedName = null, string? requestedId = null)
     {
@@ -103,7 +105,7 @@ internal sealed class Session(Process process, Guid run, Func<AutomationElement,
         lock (stateGate)
         {
             if (disposed || latest == null) return null;
-            return maxAge < TimeSpan.Zero || Stopwatch.GetElapsedTime(latestAt) > maxAge ? latest with { Quality = Quality.Stale, Detail = "observation expired", Controls = Array.Empty<ControlObservation>(), WindowHandle = IntPtr.Zero } : latest;
+            return maxAge < TimeSpan.Zero || Stopwatch.GetElapsedTime(latestAt) > maxAge ? FixtureStateRules.Expire(latest) : latest;
         }
     }
     public Snapshot Observe()

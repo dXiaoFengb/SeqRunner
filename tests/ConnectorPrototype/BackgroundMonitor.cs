@@ -13,8 +13,10 @@ internal sealed class BackgroundMonitor(IsolatedSession session, TimeSpan interv
     MonitorConnection state = MonitorConnection.Created;
     long sequence;
     bool released;
+    int failNext;
     internal Guid SessionId => session.Id;
     internal CancellationToken Lifetime => stop.Token;
+    internal void FailNextForTest() => Interlocked.Exchange(ref failNext, 1);
 
     void Record(MonitorConnection next, Snapshot? snapshot = null)
     {
@@ -55,6 +57,7 @@ internal sealed class BackgroundMonitor(IsolatedSession session, TimeSpan interv
         {
             while (!stop.IsCancellationRequested)
             {
+                if (Interlocked.Exchange(ref failNext, 0) != 0) throw new InvalidOperationException("simulated monitor failure");
                 var observation = session.Observe();
                 bool terminal;
                 lock (gate)
@@ -74,9 +77,9 @@ internal sealed class BackgroundMonitor(IsolatedSession session, TimeSpan interv
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
         catch (Exception)
         {
-            stop.Cancel();
             session.Dispose();
             lock (gate) if (!stop.IsCancellationRequested) Record(MonitorConnection.Faulted);
+            stop.Cancel();
         }
     }
     internal async Task<bool> StopAsync()
