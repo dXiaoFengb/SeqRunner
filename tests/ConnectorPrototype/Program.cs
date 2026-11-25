@@ -7,6 +7,26 @@ using System.Windows.Controls;
 
 namespace ConnectorPrototype;
 
+// A deterministic test double; it never reads or controls a real window.
+internal sealed class SimulatedWindowSession : IObservationSession
+{
+    readonly Process process = Process.GetCurrentProcess();
+    readonly long observedAt;
+    Snapshot latest;
+    internal int ObserveCalls { get; private set; }
+    internal Snapshot Initial { get; }
+    internal SimulatedWindowSession(bool expired)
+    {
+        observedAt = Stopwatch.GetTimestamp() - (expired ? 3 * Stopwatch.Frequency : 0);
+        Initial = latest = new Snapshot("test", Guid.NewGuid(), Guid.NewGuid(), 1, DateTimeOffset.UtcNow,
+            process.Id, process.StartTime.ToUniversalTime(), "ALIVE", "VISIBLE", "UNKNOWN", "UNKNOWN", "UNKNOWN", Quality.Partial, "test double", "UNKNOWN", "simulated") { WindowHandle = new IntPtr(1) };
+    }
+    public Snapshot Observe() { ObserveCalls++; return latest = Initial with { Sequence = 2, WindowHandle = new IntPtr(2) }; }
+    public bool Matches(Snapshot snapshot, TimeSpan age) => ReferenceEquals(snapshot, latest) && Stopwatch.GetElapsedTime(observedAt) <= age;
+    public Process FixtureProcess => process;
+    public void Dispose() => process.Dispose();
+}
+
 internal static class Program
 {
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
@@ -16,6 +36,8 @@ internal static class Program
     {
         if (args.Length == 1 && args[0] == "observation-worker") return IsolatedSession.RunWorker();
         if (args.Length == 1 && args[0] == "control-worker") return IsolatedControl.RunWorker();
+        if (args.Length == 1 && args[0] == "smoke-window") return SmokeWindow();
+        if (args.Length == 1 && args[0] == "verify-control-counterexamples") return VerifyControlCounterexamples();
         if (args.Length == 1 && args[0] == "smoke-link") return SmokeLink();
         if (args.Length == 1 && args[0] == "verify-link") return VerifyLink();
         if (args.Length == 1 && args[0] == "smoke-background") return SmokeBackground();
@@ -23,6 +45,7 @@ internal static class Program
         if (args.Length == 1 && args[0] == "smoke-isolation") return SmokeIsolation();
         if (args.Length == 1 && args[0] == "verify-isolation") return VerifyIsolation();
         if (args.Length == 1 && args[0] == "fixture") { Fixture(); return 0; }
+        if (args.Length == 1 && args[0] == "fixture-duplicate-target") { Fixture(true); return 0; }
         if (args.Length == 2 && args[0] == "observe" && int.TryParse(args[1], out var pid)) return ObserveOnly(pid);
         if (args.Length == 4 && args[0] == "observe" && int.TryParse(args[1], out var selectedPid) && (args[2] == "--name" || args[2] == "--id"))
         {
@@ -32,6 +55,28 @@ internal static class Program
         }
         if (args.Length != 0) { Console.Error.WriteLine("Invalid arguments"); return 2; }
         return Test();
+    }
+    static int SmokeWindow()
+    {
+        using (var changed = new SimulatedWindowSession(false))
+        {
+            var before = changed.Initial;
+            bool fresh = changed.Matches(before, TimeSpan.FromSeconds(2));
+            var control = new FixtureController(changed, Path.Combine(Path.GetTempPath(), "v3-window-change-" + Guid.NewGuid().ToString("N")));
+            var result = control.Execute(new(Guid.NewGuid(), DateTimeOffset.UtcNow.AddSeconds(10), before.Sequence, "fixture-button"), before, true, CancellationToken.None);
+            Console.WriteLine($"DETAIL simulated initialFresh={fresh} oldWindow={before.WindowHandle} newWindow=2 dispatch={result.Dispatch} reason={result.Detail}");
+            Check(fresh && changed.ObserveCalls == 1 && result.Dispatch == "REJECTED" && result.Detail == "fresh identity unavailable", "fresh observation rejects changed window (test double)");
+        }
+        using (var expired = new SimulatedWindowSession(true))
+        {
+            var before = expired.Initial;
+            bool fresh = expired.Matches(before, TimeSpan.FromSeconds(2));
+            var control = new FixtureController(expired, Path.Combine(Path.GetTempPath(), "v3-window-expired-" + Guid.NewGuid().ToString("N")));
+            var result = control.Execute(new(Guid.NewGuid(), DateTimeOffset.UtcNow.AddSeconds(10), before.Sequence, "fixture-button"), before, true, CancellationToken.None);
+            Console.WriteLine($"DETAIL simulated initialFresh={fresh} age=at-least-3s dispatch={result.Dispatch} reason={result.Detail}");
+            Check(!fresh && expired.ObserveCalls == 0 && result.Dispatch == "REJECTED" && result.Detail == "authorization, observation, command or cancellation invalid", "expired observation rejects before window access (test double)");
+        }
+        Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1;
     }
     static int SmokeLink()
     {
@@ -97,6 +142,42 @@ internal static class Program
         }
         catch (Exception e) { failures++; Console.WriteLine("FAIL link verification: " + e.GetType().Name + ": " + e.Message); }
         finally { foreach (var p in new[] { a, b }) if (p != null) { try { p.Refresh(); if (!p.HasExited) { p.CloseMainWindow(); p.WaitForExit(5000); } } catch (InvalidOperationException) { } p.Dispose(); } }
+        Console.WriteLine("Verification failures: " + failures); return failures == 0 ? 0 : 1;
+    }
+    static int VerifyControlCounterexamples()
+    {
+        Process? duplicate = null, fixture = null;
+        try
+        {
+            duplicate = StartFixture(true);
+            using (var duplicateSession = new IsolatedSession(duplicate, TimeSpan.FromSeconds(3)))
+            using (var duplicateMonitor = new BackgroundMonitor(duplicateSession, TimeSpan.FromSeconds(3)))
+            {
+                duplicateMonitor.Start(); Snapshot? sample = null;
+                bool ready = SpinWait.SpinUntil(() => { sample = duplicateMonitor.Current(TimeSpan.FromSeconds(2)).Observation; return sample?.Quality == Quality.Partial; }, TimeSpan.FromSeconds(10));
+                if (!ready || sample == null) throw new InvalidOperationException("duplicate observation unavailable");
+                var controller = new IsolatedControl(duplicateSession, duplicateMonitor, Path.Combine(Path.GetTempPath(), "v3-duplicate-" + Guid.NewGuid().ToString("N")));
+                var result = controller.Execute(new(Guid.NewGuid(), DateTimeOffset.UtcNow.AddSeconds(8), sample.Sequence, "fixture-button"), sample, true, CancellationToken.None);
+                Check(sample.Controls.Count(x => x.SelectedId == "fixture-button") == 2 && result.Dispatch == "REJECTED" && Count(duplicate) == "count:0", "isolated controller rejects duplicate target controls before dispatch");
+            }
+            fixture = StartFixture();
+            using var session = new IsolatedSession(fixture, TimeSpan.FromSeconds(3));
+            using var monitor = new BackgroundMonitor(session, TimeSpan.FromSeconds(3)); monitor.Start(); Snapshot? observation = null;
+            bool Ready(long after) => SpinWait.SpinUntil(() => { observation = monitor.Current(TimeSpan.FromSeconds(2)).Observation; return observation?.Quality == Quality.Partial && observation.Sequence > after; }, TimeSpan.FromSeconds(10));
+            if (!Ready(0) || observation == null) throw new InvalidOperationException("fixture observation unavailable");
+            string journal = Path.Combine(Path.GetTempPath(), "v3-worker-exit-" + Guid.NewGuid().ToString("N"));
+            var control = new IsolatedControl(session, monitor, journal);
+            var exited = control.Execute(new(Guid.NewGuid(), DateTimeOffset.UtcNow.AddSeconds(8), observation.Sequence, "fixture-button"), observation, true, CancellationToken.None, exitEarly: true);
+            Check(exited.Dispatch == "UNKNOWN" && exited.Detail == "worker did not become ready" && Count(fixture) == "count:0", "isolated worker abnormal exit is unknown with no action");
+            long previous = observation.Sequence; if (!Ready(previous) || observation == null) throw new InvalidOperationException("new observation unavailable");
+            var simulated = control.Execute(new(Guid.NewGuid(), DateTimeOffset.UtcNow.AddSeconds(8), observation.Sequence, "fixture-button"), observation, true, CancellationToken.None, exitEarly: true, simulateUnconfirmedCleanup: true);
+            previous = observation.Sequence; bool blocked = !session.ControlAvailable;
+            if (!Ready(previous) || observation == null) throw new InvalidOperationException("post-cleanup observation unavailable");
+            var after = new IsolatedControl(session, monitor, journal).Execute(new(Guid.NewGuid(), DateTimeOffset.UtcNow.AddSeconds(8), observation.Sequence, "fixture-button"), observation, true, CancellationToken.None);
+            Check(simulated.Dispatch == "UNKNOWN" && blocked && after.Dispatch == "REJECTED" && Count(fixture) == "count:0", "simulated unconfirmed cleanup blocks a new controller in same session");
+        }
+        catch (Exception e) { failures++; Console.WriteLine("FAIL control counterexamples: " + e.GetType().Name + ": " + e.Message); }
+        finally { foreach (var p in new[] { duplicate, fixture }) if (p != null) { try { p.Refresh(); if (!p.HasExited) { p.CloseMainWindow(); p.WaitForExit(5000); } } catch (InvalidOperationException) { } p.Dispose(); } }
         Console.WriteLine("Verification failures: " + failures); return failures == 0 ? 0 : 1;
     }
     static int SmokeBackground()
@@ -226,7 +307,7 @@ internal static class Program
         }
         Console.WriteLine("Verification failures: " + failures); return failures == 0 ? 0 : 1;
     }
-    static void Fixture()
+    static void Fixture(bool duplicateTarget = false)
     {
         var app = new Application();
         var window = new Window { Title = "Connector controlled fixture", Width = 420, Height = 180, ShowInTaskbar = true };
@@ -242,12 +323,14 @@ internal static class Program
             replacement.Show(); app.MainWindow = replacement; window.Close();
         };
         int count = 0; button.Click += (_, _) => label.Text = "count:" + ++count;
-        panel.Children.Add(label); panel.Children.Add(button); panel.Children.Add(chinese); panel.Children.Add(duplicate); panel.Children.Add(privateButton); panel.Children.Add(replaceButton); window.Content = panel; app.Run(window);
+        panel.Children.Add(label); panel.Children.Add(button); panel.Children.Add(chinese); panel.Children.Add(duplicate); panel.Children.Add(privateButton); panel.Children.Add(replaceButton);
+        if (duplicateTarget) { var second = new Button { Content = "controlled action" }; AutomationProperties.SetAutomationId(second, "fixture-button"); panel.Children.Add(second); }
+        window.Content = panel; app.Run(window);
     }
-    static Process StartFixture()
+    static Process StartFixture(bool duplicateTarget = false)
     {
         var exe = Environment.ProcessPath ?? throw new InvalidOperationException();
-        var p = Process.Start(new ProcessStartInfo(exe, "fixture") { UseShellExecute = false }) ?? throw new InvalidOperationException();
+        var p = Process.Start(new ProcessStartInfo(exe, duplicateTarget ? "fixture-duplicate-target" : "fixture") { UseShellExecute = false }) ?? throw new InvalidOperationException();
         var until = Stopwatch.StartNew();
         while (until.Elapsed < TimeSpan.FromSeconds(12)) { p.Refresh(); if (p.HasExited) throw new InvalidOperationException("fixture exited"); if (p.MainWindowHandle != IntPtr.Zero) return p; Thread.Sleep(100); }
         throw new TimeoutException("fixture window unavailable");
@@ -347,7 +430,7 @@ internal static class Program
             var beforeClose = s.Observe(); s.Dispose(); a.Refresh(); Check(!a.HasExited, "disconnect leaves fixture running");
             Check(!s.Matches(beforeClose, TimeSpan.FromSeconds(2)) && s.Observe().Quality == Quality.Unavailable, "released session cannot authorize actions");
             Check(!s.Connected && s.Current(TimeSpan.FromMinutes(1)) == null, "released session exposes no cached current snapshot");
-            var oldWindow = other.Observe();
+            var observationAge = Stopwatch.StartNew(); var oldWindow = other.Observe();
             var otherRoot = AutomationElement.FromHandle(b.MainWindowHandle);
             var replace = otherRoot.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.AutomationIdProperty, "fixture-replace-window"));
             ((InvokePattern)replace.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
@@ -356,7 +439,9 @@ internal static class Program
             bool previousObservationStillFresh = other.Matches(oldWindow, TimeSpan.FromSeconds(2));
             var replacedControl = new FixtureController(other, journal + ".replacement");
             var oldWindowAction = replacedControl.Execute(new(Guid.NewGuid(), DateTimeOffset.UtcNow.AddSeconds(10), oldWindow.Sequence, "fixture-button"), oldWindow, true, CancellationToken.None);
-            Check(previousObservationStillFresh && oldWindowAction.Dispatch == "REJECTED", "replacement window cannot inherit prior action authorization");
+            Console.WriteLine($"DETAIL real replacement ageMs={observationAge.ElapsedMilliseconds} oldWindow={oldWindow.WindowHandle} currentWindow={b.MainWindowHandle} freshBefore={previousObservationStillFresh} dispatch={oldWindowAction.Dispatch} reason={oldWindowAction.Detail}");
+            Console.WriteLine("INCONCLUSIVE real fresh-window replacement: rejection reason may combine freshness and identity; see test double separately");
+            Check(oldWindowAction.Dispatch == "REJECTED", "replacement or expired observation cannot authorize action");
             var newWindow = other.Observe();
             Check(newWindow.Quality == Quality.Partial && newWindow.WindowHandle != IntPtr.Zero && newWindow.WindowHandle != oldWindow.WindowHandle && !other.Matches(oldWindow, TimeSpan.FromSeconds(2)), "recreated fixture window receives fresh observation and invalidates old snapshot");
             b.CloseMainWindow(); b.WaitForExit(5000);

@@ -7,7 +7,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace ConnectorPrototype;
 
-internal sealed record ControlRequest(int Pid, long CreatedTicks, long Window, int OwnerPid, DateTimeOffset Deadline, bool Stall);
+internal sealed record ControlRequest(int Pid, long CreatedTicks, long Window, int OwnerPid, DateTimeOffset Deadline, bool Stall, bool ExitEarly);
 
 // This controller is restricted to the executable's own controlled fixture.
 internal sealed class IsolatedControl(IsolatedSession session, BackgroundMonitor monitor, string journal)
@@ -22,14 +22,14 @@ internal sealed class IsolatedControl(IsolatedSession session, BackgroundMonitor
     readonly object gate = new();
     bool cleanupUnconfirmed;
 
-    internal Result Execute(Command command, Snapshot observation, bool authorized, CancellationToken stop, bool stall = false)
+    internal Result Execute(Command command, Snapshot observation, bool authorized, CancellationToken stop, bool stall = false, bool exitEarly = false, bool simulateUnconfirmedCleanup = false)
     {
         if (!session.TryEnterControl()) return new(command.Id, "REJECTED", "UNVERIFIED", "another control is in flight");
-        try { return ExecuteCore(command, observation, authorized, stop, stall); }
+        try { return ExecuteCore(command, observation, authorized, stop, stall, exitEarly, simulateUnconfirmedCleanup); }
         finally { session.ExitControl(); }
     }
 
-    Result ExecuteCore(Command command, Snapshot observation, bool authorized, CancellationToken stop, bool stall)
+    Result ExecuteCore(Command command, Snapshot observation, bool authorized, CancellationToken stop, bool stall, bool exitEarly, bool simulateUnconfirmedCleanup)
     {
         lock (gate)
         {
@@ -69,7 +69,7 @@ internal sealed class IsolatedControl(IsolatedSession session, BackgroundMonitor
                 handle = worker.SafeHandle; workerCreated = worker.StartTime.ToUniversalTime();
                 using var limit = CancellationTokenSource.CreateLinkedTokenSource(stop, monitor.Lifetime);
                 limit.CancelAfter(TimeSpan.FromSeconds(3));
-                var request = new ControlRequest(target.Id, observation.CreatedUtc.Ticks, observation.WindowHandle.ToInt64(), Environment.ProcessId, command.Expires, stall);
+                var request = new ControlRequest(target.Id, observation.CreatedUtc.Ticks, observation.WindowHandle.ToInt64(), Environment.ProcessId, command.Expires, stall, exitEarly);
                 worker.StandardInput.WriteLine(JsonSerializer.Serialize(request)); worker.StandardInput.Flush();
                 string? ready = worker.StandardOutput.ReadLineAsync(limit.Token).AsTask().GetAwaiter().GetResult();
                 if (ready != "READY") return Unknown("worker did not become ready");
@@ -97,6 +97,8 @@ internal sealed class IsolatedControl(IsolatedSession session, BackgroundMonitor
                         if (!worker.HasExited && !(handle is { IsClosed: false, IsInvalid: false } && workerCreated != default && worker.StartTime.ToUniversalTime() == workerCreated && string.Equals(worker.MainModule?.FileName, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase) && TerminateWorker(handle, 1) && worker.WaitForExit(2000))) cleanupUnconfirmed = true;
                     }
                     catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or UnauthorizedAccessException) { cleanupUnconfirmed = true; }
+                    // The test hook runs only after the actual worker cleanup attempt.
+                    if (simulateUnconfirmedCleanup) cleanupUnconfirmed = true;
                     if (cleanupUnconfirmed) session.BlockControls();
                     worker.Dispose();
                 }
@@ -116,6 +118,7 @@ internal sealed class IsolatedControl(IsolatedSession session, BackgroundMonitor
             target.Refresh();
             using var self = Process.GetCurrentProcess();
             if (target.HasExited || !OwnedBy(self, request.OwnerPid) || !OwnedBy(target, request.OwnerPid) || target.StartTime.ToUniversalTime().Ticks != request.CreatedTicks || target.MainWindowHandle.ToInt64() != request.Window || target.MainWindowTitle != "Connector controlled fixture" || !string.Equals(target.MainModule?.FileName, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase)) return 2;
+            if (request.ExitEarly) return 7;
             var window = AutomationElement.FromHandle(target.MainWindowHandle);
             var matches = window.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.AutomationIdProperty, "fixture-button"));
             if (matches.Count != 1 || matches[0].Current.ProcessId != target.Id || !matches[0].Current.IsEnabled || !matches[0].TryGetCurrentPattern(InvokePattern.Pattern, out var pattern)) return 2;
