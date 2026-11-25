@@ -14,6 +14,9 @@ internal static class Program
     static void Check(bool value, string name) { Console.WriteLine((value ? "PASS " : "FAIL ") + name); if (!value) failures++; }
     [STAThread] static int Main(string[] args)
     {
+        if (args.Length == 1 && args[0] == "observation-worker") return IsolatedSession.RunWorker();
+        if (args.Length == 1 && args[0] == "smoke-isolation") return SmokeIsolation();
+        if (args.Length == 1 && args[0] == "verify-isolation") return VerifyIsolation();
         if (args.Length == 1 && args[0] == "fixture") { Fixture(); return 0; }
         if (args.Length == 2 && args[0] == "observe" && int.TryParse(args[1], out var pid)) return ObserveOnly(pid);
         if (args.Length == 4 && args[0] == "observe" && int.TryParse(args[1], out var selectedPid) && (args[2] == "--name" || args[2] == "--id"))
@@ -29,7 +32,7 @@ internal static class Program
     {
         try
         {
-            using var process = Process.GetProcessById(pid); using var session = new Session(process, Guid.NewGuid(), root => Session.ReadControlsBounded(root, 512, 32, selectedName, selectedId));
+            using var process = Process.GetProcessById(pid); using var session = new IsolatedSession(process, TimeSpan.FromSeconds(3), selectedName, selectedId);
             Console.WriteLine("Read-only observation: no click, activation, restore, close or termination; supplied PID is not proof of V3 ownership.");
             for (int i = 0; i < 20; i++)
             {
@@ -42,6 +45,55 @@ internal static class Program
         }
         catch (Exception e) when (e is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
         { Console.Error.WriteLine("Observation unavailable: " + e.GetType().Name); return 1; }
+    }
+    static int SmokeIsolation()
+    {
+        Process? fixture = null;
+        try
+        {
+            fixture = StartFixture();
+            using var session = new IsolatedSession(fixture, TimeSpan.FromSeconds(3));
+            var good = session.Observe();
+            Check(good.Quality == Quality.Partial && good.BusinessResult == "UNKNOWN" && session.Matches(good, TimeSpan.FromSeconds(3)), "isolated controlled observation returns a fresh unknown-business snapshot");
+            session.StallNextForTest(); var watch = Stopwatch.StartNew(); var failed = session.Observe();
+            Check(failed.Quality == Quality.Unavailable && failed.Detail == "observation timed out" && watch.Elapsed < TimeSpan.FromSeconds(7), "stalled worker times out and returns unavailable");
+            var controller = new FixtureController(session, Path.Combine(Path.GetTempPath(), "v3-isolation-smoke-" + Guid.NewGuid().ToString("N")));
+            var attempt = controller.Execute(new(Guid.NewGuid(), DateTimeOffset.UtcNow.AddSeconds(10), good.Sequence, "fixture-button"), good, true, CancellationToken.None);
+            Check(!session.Matches(good, TimeSpan.FromSeconds(10)) && attempt.Dispatch == "REJECTED", "old observation cannot authorize after timeout");
+            fixture.Refresh(); Check(!fixture.HasExited && session.CleanupStatus == "owned-worker-stopped", "only the owned stalled worker was stopped; target remains alive");
+        }
+        catch (Exception e) { failures++; Console.WriteLine("FAIL isolation smoke: " + e.GetType().Name + ": " + e.Message); }
+        finally
+        {
+            if (fixture != null) { try { fixture.Refresh(); if (!fixture.HasExited) { fixture.CloseMainWindow(); fixture.WaitForExit(5000); } } catch (InvalidOperationException) { } fixture.Dispose(); }
+        }
+        Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1;
+    }
+    static int VerifyIsolation()
+    {
+        if (SmokeIsolation() != 0) return 1;
+        Process? fixture = null;
+        try
+        {
+            fixture = StartFixture();
+            using var session = new IsolatedSession(fixture, TimeSpan.FromSeconds(3));
+            var beforeExit = session.Observe(); session.ExitNextForTest(); var failed = session.Observe();
+            Check(failed.Quality == Quality.Unavailable && !session.Matches(beforeExit, TimeSpan.FromSeconds(10)), "worker abnormal exit invalidates prior observation");
+            var recovered = session.Observe(); session.WrongSequenceNextForTest(); var mismatch = session.Observe();
+            Check(recovered.Quality == Quality.Partial && mismatch.Quality == Quality.Unavailable && !session.Matches(recovered, TimeSpan.FromSeconds(10)), "wrong sequence is rejected and prior observation invalidated");
+            var recoveredAgain = session.Observe();
+            Check(recoveredAgain.Quality == Quality.Partial && session.Matches(recoveredAgain, TimeSpan.FromSeconds(3)), "later observation can recover after worker failure");
+            session.StallNextForTest(); var pending = Task.Run(session.Observe);
+            bool started = SpinWait.SpinUntil(() => session.ActiveWorkerId > 0, TimeSpan.FromSeconds(3));
+            session.Dispose(); bool returned = pending.Wait(TimeSpan.FromSeconds(7)); fixture.Refresh();
+            Check(started && returned && pending.Result.Quality == Quality.Unavailable && !session.Matches(recoveredAgain, TimeSpan.FromSeconds(10)) && !fixture.HasExited, "session release cancels worker and preserves target");
+        }
+        catch (Exception e) { failures++; Console.WriteLine("FAIL isolation verification: " + e.GetType().Name + ": " + e.Message); }
+        finally
+        {
+            if (fixture != null) { try { fixture.Refresh(); if (!fixture.HasExited) { fixture.CloseMainWindow(); fixture.WaitForExit(5000); } } catch (InvalidOperationException) { } fixture.Dispose(); }
+        }
+        Console.WriteLine("Verification failures: " + failures); return failures == 0 ? 0 : 1;
     }
     static void Fixture()
     {

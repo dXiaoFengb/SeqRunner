@@ -18,6 +18,12 @@ internal sealed record Snapshot(string Version, Guid Run, Guid Session, long Seq
 }
 internal sealed record Command(Guid Id, DateTimeOffset Expires, long ObservationSequence, string ControlId);
 internal sealed record Result(Guid Id, string Dispatch, string Effect, string Detail);
+internal interface IObservationSession : IDisposable
+{
+    Snapshot Observe();
+    bool Matches(Snapshot snapshot, TimeSpan maxAge);
+    Process FixtureProcess { get; }
+}
 
 internal static class ObservationResolver
 {
@@ -52,7 +58,7 @@ internal sealed class FixtureMonitorLoop(Session session) : IDisposable
 }
 
 // A read-only session may inspect a user-supplied PID; that alone does not establish V3 ownership.
-internal sealed class Session(Process process, Guid run, Func<AutomationElement, (IReadOnlyList<ControlObservation> Items, bool Truncated)>? readControls = null) : IDisposable
+internal sealed class Session(Process process, Guid run, Func<AutomationElement, (IReadOnlyList<ControlObservation> Items, bool Truncated)>? readControls = null) : IObservationSession
 {
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
     readonly DateTime created = process.StartTime.ToUniversalTime();
@@ -100,7 +106,7 @@ internal sealed class Session(Process process, Guid run, Func<AutomationElement,
             return maxAge < TimeSpan.Zero || Stopwatch.GetElapsedTime(latestAt) > maxAge ? latest with { Quality = Quality.Stale, Detail = "observation expired", Controls = Array.Empty<ControlObservation>(), WindowHandle = IntPtr.Zero } : latest;
         }
     }
-    internal Snapshot Observe()
+    public Snapshot Observe()
     {
         var now = DateTimeOffset.UtcNow;
         long observationStarted = Stopwatch.GetTimestamp();
@@ -136,21 +142,21 @@ internal sealed class Session(Process process, Guid run, Func<AutomationElement,
         catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or ElementNotAvailableException or System.Runtime.InteropServices.COMException or UnauthorizedAccessException or IOException or TimeoutException)
         { return Make("UNKNOWN", "UNKNOWN", Quality.Unavailable, e.GetType().Name); }
     }
-    internal bool Matches(Snapshot s, TimeSpan age)
+    public bool Matches(Snapshot s, TimeSpan age)
     {
         lock (stateGate) return !disposed && ReferenceEquals(s, latest) && s.Session == id && s.Run == run && s.Pid == process.Id && s.CreatedUtc == created && s.Sequence == sequence && s.Quality == Quality.Partial && !s.ControlsTruncated && age >= TimeSpan.Zero && Stopwatch.GetElapsedTime(latestAt) <= age;
     }
-    internal Process FixtureProcess => process;
+    public Process FixtureProcess => process;
     public void Dispose() { lock (stateGate) { disposed = true; latest = null; } } // Does not close the target.
 }
 
 internal sealed class FixtureController
 {
-    readonly Session session;
+    readonly IObservationSession session;
     readonly string journalPath;
     readonly ConcurrentDictionary<Guid, Result> results = new();
     readonly object gate = new();
-    internal FixtureController(Session session, string journalPath)
+    internal FixtureController(IObservationSession session, string journalPath)
     {
         this.session = session; this.journalPath = journalPath;
     }
