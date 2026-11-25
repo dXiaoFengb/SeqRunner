@@ -650,6 +650,7 @@ class Program
         await MaaEventModelTests();
         await MaaSessionRuleTests();
         await MaaHolderMatrixTests();
+        await GRmDiagnosticTests();
         await MaaGPrototypeTests();
         var parser=new MaaLogEvidence();parser.Feed("开始任");parser.Feed("务: A\n任务已全部");parser.Feed("完成！\n");Check(parser.Started && parser.Succeeded && !parser.Failed,"MAA evidence recognizes split start and success");parser.ResetForRestart();Check(!parser.Started && !parser.Succeeded,"MAA restart clears old completion evidence");parser.Feed("开始任务: A\n任务出错: A\n任务已全部完成！\n");Check(parser.Failed,"MAA error remains evidence despite completion text");
         var later=new MaaLogEvidence();later.Feed("开始任务: A\n任务已全部完成！\n开始任务: B\n");Check(later.Started && !later.Succeeded,"MAA later task start invalidates earlier completion");
@@ -1272,33 +1273,51 @@ class Program
         catch (Exception ex) { failures++; Console.WriteLine("log exclusive error: " + ex); }
         await File.WriteAllLinesAsync(evidence, lines);
     }
-    static (bool Ok, List<(int Pid, DateTime Started)> Users) RestartManagerUsers(string path)
+    static (bool Ok, List<(int Pid, DateTime Started)> Users) RestartManagerUsers(string path) => RestartManagerUsersCore(path, false);
+    static (bool Ok, List<(int Pid, DateTime Started)> Users) RestartManagerUsersCore(string path, bool diagnostics)
     {
         var users = new List<(int, DateTime)>();
-        string key = Guid.NewGuid().ToString("N");
-        uint session = 0;
+        string key = Guid.NewGuid().ToString("N"), stage = "start", exception = "none";
+        uint session = 0, needed = 0, count = 0, capacity = 0, reasons = 0;
+        int? startRc = null, registerRc = null, firstRc = null, secondRc = null, endRc = null;
+        bool started = false, ok = false;
         try
         {
-            if (RmStartSession(out session, 0, key) != 0) return (false, users);
-            try
+            startRc = RmStartSession(out session, 0, key);
+            if (startRc == 0)
             {
-                if (RmRegisterResources(session, 1, new[] { path }, 0, Array.Empty<RM_UNIQUE_PROCESS>(), 0, Array.Empty<string>()) != 0) return (false, users);
-                uint needed = 0, count = 0, reasons = 0;
-                int rc = RmGetList(session, out needed, ref count, null, ref reasons);
-                if (rc == 234 && needed > 0)
+                started = true; stage = "register";
+                registerRc = RmRegisterResources(session, 1, new[] { path }, 0, Array.Empty<RM_UNIQUE_PROCESS>(), 0, Array.Empty<string>());
+                if (registerRc == 0)
                 {
-                    var buffer = new RM_PROCESS_INFO[needed];
-                    count = needed;
-                    rc = RmGetList(session, out needed, ref count, buffer, ref reasons);
-                    if (rc != 0) return (false, users);
-                    for (int i = 0; i < count; i++) users.Add((buffer[i].Process.dwProcessId, DateTime.FromFileTimeUtc(((long)buffer[i].Process.ProcessStartTime.dwHighDateTime << 32) | (uint)buffer[i].Process.ProcessStartTime.dwLowDateTime)));
+                    stage = "first-list"; firstRc = RmGetList(session, out needed, ref count, null, ref reasons);
+                    if (firstRc == 234 && needed > 0)
+                    {
+                        capacity = needed; var buffer = new RM_PROCESS_INFO[capacity]; count = capacity;
+                        stage = "second-list"; secondRc = RmGetList(session, out needed, ref count, buffer, ref reasons);
+                        if (secondRc == 0 && count <= capacity)
+                        {
+                            for (int i = 0; i < count; i++) users.Add((buffer[i].Process.dwProcessId, DateTime.FromFileTimeUtc(((long)buffer[i].Process.ProcessStartTime.dwHighDateTime << 32) | (uint)buffer[i].Process.ProcessStartTime.dwLowDateTime)));
+                            ok = true;
+                        }
+                    }
+                    else if (firstRc == 0 && needed == 0 && count == 0) ok = true;
                 }
-                else if (rc != 0) return (false, users);
-                return (true, users);
             }
-            finally { RmEndSession(session); }
         }
-        catch (Exception ex) { Console.WriteLine("restart manager error: " + ex.Message); return (false, users); }
+        catch (Exception ex) { exception = ex.GetType().Name; ok = false; }
+        finally
+        {
+            if (started)
+            {
+                try { endRc = RmEndSession(session); if (endRc != 0) { stage = "end"; ok = false; } }
+                catch (Exception ex) { stage = "end"; exception = ex.GetType().Name; ok = false; }
+            }
+        }
+        if (!ok || diagnostics)
+            Console.WriteLine($"DETAIL RM stage={stage} ok={ok} startRc={startRc?.ToString() ?? "n/a"} registerRc={registerRc?.ToString() ?? "n/a"} firstRc={firstRc?.ToString() ?? "n/a"} secondRc={secondRc?.ToString() ?? "n/a"} endRc={endRc?.ToString() ?? "n/a"} needed={needed} capacity={capacity} count={count} moreDataAgain={secondRc == 234} listGrew={secondRc == 234 && needed > capacity} exception={exception}");
+        if (!ok) users.Clear();
+        return (ok, users);
     }
     static async Task MaaWriterIdentityTests()
     {
@@ -1703,6 +1722,49 @@ class Program
     static string GLine(int pid, int tx, string kind, string json) =>
         "[2031-01-01 00:00:0" + (tx % 10) + ".000][INF][Px" + pid + "][Tx" + tx + "] Assistant::append_callback | " + kind + " " + json + "\n";
 
+    static async Task GRmDiagnosticTests()
+    {
+        Directory.CreateDirectory(root);
+        string realPath = Path.Combine(root, "rm-diagnostic-controlled.log");
+        File.WriteAllText(realPath, "synthetic\n");
+        var actual = RestartManagerUsersCore(realPath, true);
+        Check(actual.Ok, "RM diagnostic on controlled file returns a complete result");
+
+        async Task<GPrototype> RunStub(bool fail)
+        {
+            string log = Path.Combine(root, "rm-stub-" + Guid.NewGuid().ToString("N") + ".log");
+            File.WriteAllText(log, "old-before-open\n");
+            var run = StartHolder(log, "write", "placeholder");
+            try
+            {
+                if (!(await HolderLine(run)).StartsWith("OPEN ", StringComparison.Ordinal)) throw new IOException("controlled holder failed to open");
+                int pid = run.Proc.Id; DateTime created = run.Proc.StartTime.ToUniversalTime();
+                string id = "\"taskchain\":\"Fight\",\"taskid\":1,\"uuid\":\"synthetic-rm\"";
+                SetHolderPayload(run, GLine(pid, 7001, "TaskChainStart", "{" + id + "}") + GLine(pid, 7002, "TaskChainCompleted", "{" + id + "}") + GLine(pid, 7003, "AllTasksCompleted", "{\"finished_tasks\":[1]," + id + "}"));
+                (bool Ok, List<(int Pid, DateTime Started)> Users) Lookup(string _) => fail ? (false, []) : (true, [(pid, created)]);
+                var prototype = new GPrototype(log, pid, created, Lookup);
+                string? error = prototype.Open(); if (error != null) throw new IOException(error);
+                prototype.Poll(); run.Step.Set();
+                if (await HolderLine(run) != "STEPPED") throw new IOException("controlled holder did not write");
+                prototype.Poll(); run.Done.Set();
+                if (await HolderLine(run) != "CLOSED" || !run.Proc.WaitForExit(10_000)) throw new TimeoutException("controlled holder exit unconfirmed");
+                prototype.Finish(run.Proc.ExitCode); return prototype;
+            }
+            finally
+            {
+                run.Step.Set(); run.Done.Set();
+                if (!run.Proc.HasExited && !run.Proc.WaitForExit(5000)) Console.WriteLine("DETAIL RM controlled holder exit unconfirmed; no forced termination");
+                run.Step.Dispose(); run.Done.Dispose(); run.Proc.Dispose();
+            }
+        }
+
+        var normal = await RunStub(false);
+        Check(normal.Evaluate(false, false).StartsWith("成功", StringComparison.Ordinal), "G stub normal evidence reaches prototype success");
+        Check(normal.Evaluate(true, false).Contains("更新", StringComparison.Ordinal), "G stub update remains blocking");
+        Check(normal.Evaluate(false, true).Contains("未确认的受管子进程", StringComparison.Ordinal), "G stub unconfirmed child remains blocking");
+        var failed = await RunStub(true);
+        Check(failed.Evaluate(false, false).Contains("Restart Manager 查询失败", StringComparison.Ordinal), "G stub RM failure remains blocking");
+    }
     static async Task MaaGPrototypeTests()
     {
         Directory.CreateDirectory(root);
@@ -2475,6 +2537,7 @@ class Program
         if (args.Length > 0 && args[0] == "probe-maa-writer-identity") { try { MaaWriterIdentityTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-session-rule") { try { MaaSessionRuleTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-holder-matrix") { try { MaaHolderMatrixTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
+        if (args.Length > 0 && args[0] == "probe-g-rm-diagnostic") { try { GRmDiagnosticTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine("RM diagnostic error: " + ex.GetType().Name); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-g-prototype") { try { MaaGPrototypeTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
     if (args.Length > 0 && args[0] == "probe-maa-event-model") { try { MaaEventModelTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
         if (args.Length > 0 && args[0] == "probe-maa-channel-boundary") { try { MaaChannelBoundaryTests().GetAwaiter().GetResult(); } catch (Exception ex) { failures++; Console.WriteLine(ex); } Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1; }
