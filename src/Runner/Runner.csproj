@@ -6,7 +6,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>1.22.0</Version>
+    <Version>1.23.0</Version>
     <RestoreAdditionalProjectSources>$(MSBuildProjectDirectory)\..\..\工具\视觉组件\nuget</RestoreAdditionalProjectSources>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>

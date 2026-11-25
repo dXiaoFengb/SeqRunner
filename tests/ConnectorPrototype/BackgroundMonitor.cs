@@ -14,6 +14,7 @@ internal sealed class BackgroundMonitor(IsolatedSession session, TimeSpan interv
     long sequence;
     bool released;
     internal Guid SessionId => session.Id;
+    internal CancellationToken Lifetime => stop.Token;
 
     void Record(MonitorConnection next, Snapshot? snapshot = null)
     {
@@ -24,6 +25,13 @@ internal sealed class BackgroundMonitor(IsolatedSession session, TimeSpan interv
         while (history.Count > 64) history.Dequeue();
     }
     internal IReadOnlyList<MonitorMessage> History() { lock (gate) return history.ToArray(); }
+    internal bool Authorize(Snapshot snapshot, Func<bool> dispatch)
+    {
+        lock (gate)
+        {
+            return !released && state == MonitorConnection.Running && session.Authorize(snapshot, TimeSpan.FromSeconds(2), dispatch);
+        }
+    }
     internal MonitorMessage Current(TimeSpan maxAge)
     {
         lock (gate)
@@ -59,13 +67,14 @@ internal sealed class BackgroundMonitor(IsolatedSession session, TimeSpan interv
                     Record(next, observation);
                     terminal = next is MonitorConnection.TargetExited or MonitorConnection.IdentityUnknown or MonitorConnection.Blocked;
                 }
-                if (terminal) { session.Dispose(); return; }
+                if (terminal) { stop.Cancel(); session.Dispose(); return; }
                 await Task.Delay(interval, stop.Token);
             }
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
         catch (Exception)
         {
+            stop.Cancel();
             session.Dispose();
             lock (gate) if (!stop.IsCancellationRequested) Record(MonitorConnection.Faulted);
         }

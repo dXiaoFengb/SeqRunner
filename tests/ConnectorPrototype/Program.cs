@@ -15,6 +15,9 @@ internal static class Program
     [STAThread] static int Main(string[] args)
     {
         if (args.Length == 1 && args[0] == "observation-worker") return IsolatedSession.RunWorker();
+        if (args.Length == 1 && args[0] == "control-worker") return IsolatedControl.RunWorker();
+        if (args.Length == 1 && args[0] == "smoke-link") return SmokeLink();
+        if (args.Length == 1 && args[0] == "verify-link") return VerifyLink();
         if (args.Length == 1 && args[0] == "smoke-background") return SmokeBackground();
         if (args.Length == 1 && args[0] == "verify-background") return VerifyBackground();
         if (args.Length == 1 && args[0] == "smoke-isolation") return SmokeIsolation();
@@ -29,6 +32,72 @@ internal static class Program
         }
         if (args.Length != 0) { Console.Error.WriteLine("Invalid arguments"); return 2; }
         return Test();
+    }
+    static int SmokeLink()
+    {
+        Process? fixture = null;
+        try
+        {
+            fixture = StartFixture();
+            using var session = new IsolatedSession(fixture, TimeSpan.FromSeconds(3));
+            using var monitor = new BackgroundMonitor(session, TimeSpan.FromSeconds(2));
+            monitor.Start();
+            Snapshot? current = null;
+            bool Ready(long after) => SpinWait.SpinUntil(() => { current = monitor.Current(TimeSpan.FromSeconds(2)).Observation; return current?.Quality == Quality.Partial && current.Sequence > after; }, TimeSpan.FromSeconds(10));
+            if (!Ready(0) || current == null) throw new InvalidOperationException("observation unavailable");
+            string journal = Path.Combine(Path.GetTempPath(), "v3-link-" + Guid.NewGuid().ToString("N") + ".journal");
+            var ctl = new IsolatedControl(session, monitor, journal);
+            var first = new Command(Guid.NewGuid(), DateTimeOffset.UtcNow.AddSeconds(8), current.Sequence, "fixture-button");
+            var result = ctl.Execute(first, current, true, CancellationToken.None);
+            long previous = current.Sequence;
+            Check(result.Dispatch == "SUBMITTED" && result.Effect == "UNVERIFIED" && Ready(previous) && current?.BusinessResult == "UNKNOWN" && Count(fixture) == "count:1", "background observation, single control and fresh observation");
+            if (current == null) throw new InvalidOperationException("fresh observation missing");
+            var previousObservation = current;
+            session.ExitNextForTest();
+            bool failed = SpinWait.SpinUntil(() => monitor.Current(TimeSpan.FromSeconds(2)).Connection == MonitorConnection.Degraded, TimeSpan.FromSeconds(8));
+            var rejected = ctl.Execute(new(Guid.NewGuid(), DateTimeOffset.UtcNow.AddSeconds(8), previousObservation.Sequence, "fixture-button"), previousObservation, true, CancellationToken.None);
+            Check(failed && rejected.Dispatch == "REJECTED" && Count(fixture) == "count:1", "monitor failure invalidates observation and prevents control");
+            if (!Ready(previous)) throw new InvalidOperationException("observation missing");
+            var slow = new Command(Guid.NewGuid(), DateTimeOffset.UtcNow.AddSeconds(8), current!.Sequence, "fixture-button");
+            var timed = ctl.Execute(slow, current, true, CancellationToken.None, true);
+            previous = current.Sequence;
+            bool fresh = Ready(previous);
+            var repeat = fresh ? new IsolatedControl(session, monitor, journal).Execute(slow with { ObservationSequence = current!.Sequence, Expires = DateTimeOffset.UtcNow.AddSeconds(8) }, current!, true, CancellationToken.None) : null;
+            Check(timed.Dispatch == "UNKNOWN" && repeat?.Dispatch == "UNKNOWN" && Count(fixture) == "count:1", "timed out control is not replayed after controller restart");
+        }
+        catch (Exception e) { failures++; Console.WriteLine("FAIL link smoke: " + e.GetType().Name + ": " + e.Message); }
+        finally { if (fixture != null) { try { fixture.Refresh(); if (!fixture.HasExited) { fixture.CloseMainWindow(); fixture.WaitForExit(5000); } } catch (InvalidOperationException) { } fixture.Dispose(); } }
+        Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1;
+    }
+    static int VerifyLink()
+    {
+        if (SmokeLink() != 0) return 1;
+        Process? a = null, b = null;
+        try
+        {
+            a = StartFixture(); b = StartFixture();
+            using var session = new IsolatedSession(a, TimeSpan.FromSeconds(3));
+            using var other = new IsolatedSession(b, TimeSpan.FromSeconds(3));
+            using var monitor = new BackgroundMonitor(session, TimeSpan.FromSeconds(5));
+            monitor.Start(); Snapshot? observation = null;
+            bool ready = SpinWait.SpinUntil(() => { observation = monitor.Current(TimeSpan.FromSeconds(3)).Observation; return observation?.Quality == Quality.Partial; }, TimeSpan.FromSeconds(8));
+            if (!ready || observation == null) throw new InvalidOperationException("observation unavailable");
+            var control = new IsolatedControl(session, monitor, Path.Combine(Path.GetTempPath(), "v3-link-verify-" + Guid.NewGuid().ToString("N")));
+            Command New(Snapshot s) => new(Guid.NewGuid(), DateTimeOffset.UtcNow.AddSeconds(10), s.Sequence, "fixture-button");
+            Check(control.Execute(New(observation), observation, false, CancellationToken.None).Dispatch == "REJECTED", "missing authorization rejects control");
+            using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+            Check(control.Execute(New(observation), observation, true, cancelled.Token).Dispatch == "REJECTED", "stopped request rejects control");
+            Check(control.Execute(New(observation) with { Expires = DateTimeOffset.UtcNow.AddSeconds(-1) }, observation, true, CancellationToken.None).Dispatch == "REJECTED", "expired command rejects control");
+            var wrong = other.Observe();
+            Check(control.Execute(New(wrong), wrong, true, CancellationToken.None).Dispatch == "REJECTED", "other instance rejects control");
+            var broken = new IsolatedControl(session, monitor, Path.GetTempPath());
+            Check(session.Matches(observation, TimeSpan.FromSeconds(2)) && broken.Execute(New(observation), observation, true, CancellationToken.None).Detail == "target or attempt record unavailable", "attempt storage failure rejects control");
+            monitor.StopAsync().GetAwaiter().GetResult(); a.Refresh(); b.Refresh();
+            Check(control.Execute(New(observation), observation, true, CancellationToken.None).Dispatch == "REJECTED" && !a.HasExited && !b.HasExited && Count(a) == "count:0" && Count(b) == "count:0", "released session rejects control while fixtures remain alive");
+        }
+        catch (Exception e) { failures++; Console.WriteLine("FAIL link verification: " + e.GetType().Name + ": " + e.Message); }
+        finally { foreach (var p in new[] { a, b }) if (p != null) { try { p.Refresh(); if (!p.HasExited) { p.CloseMainWindow(); p.WaitForExit(5000); } } catch (InvalidOperationException) { } p.Dispose(); } }
+        Console.WriteLine("Verification failures: " + failures); return failures == 0 ? 0 : 1;
     }
     static int SmokeBackground()
     {

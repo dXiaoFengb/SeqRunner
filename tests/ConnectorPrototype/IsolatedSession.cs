@@ -31,10 +31,16 @@ internal sealed class IsolatedSession : IObservationSession
     long sequence, latestAt;
     bool disposed;
     bool workerCleanupUnconfirmed;
+    bool controlCleanupUnconfirmed;
+    readonly SemaphoreSlim controlSerial = new(1, 1);
     int activeWorkerId;
     internal string CleanupStatus { get; private set; } = "not-required";
     internal int ActiveWorkerId { get { lock (gate) return activeWorkerId; } }
     internal Guid Id => session;
+    internal bool ControlAvailable { get { lock (gate) return !disposed && !controlCleanupUnconfirmed; } }
+    internal void BlockControls() { lock (gate) controlCleanupUnconfirmed = true; }
+    internal bool TryEnterControl() => controlSerial.Wait(0);
+    internal void ExitControl() => controlSerial.Release();
     internal Snapshot? Current(TimeSpan maxAge)
     {
         lock (gate)
@@ -145,6 +151,10 @@ internal sealed class IsolatedSession : IObservationSession
     public bool Matches(Snapshot snapshot, TimeSpan maxAge)
     {
         lock (gate) return !disposed && ReferenceEquals(snapshot, latest) && snapshot.Run == run && snapshot.Session == session && snapshot.Sequence == sequence && snapshot.Quality == Quality.Partial && !snapshot.ControlsTruncated && maxAge >= TimeSpan.Zero && Stopwatch.GetElapsedTime(latestAt) <= maxAge;
+    }
+    internal bool Authorize(Snapshot snapshot, TimeSpan maxAge, Func<bool> dispatch)
+    {
+        lock (gate) return Matches(snapshot, maxAge) && dispatch();
     }
     public void Dispose() { lock (gate) { if (disposed) return; disposed = true; sequence++; latest = null; lifetime.Cancel(); } }
 
