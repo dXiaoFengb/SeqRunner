@@ -15,6 +15,8 @@ internal static class Program
     [STAThread] static int Main(string[] args)
     {
         if (args.Length == 1 && args[0] == "observation-worker") return IsolatedSession.RunWorker();
+        if (args.Length == 1 && args[0] == "smoke-background") return SmokeBackground();
+        if (args.Length == 1 && args[0] == "verify-background") return VerifyBackground();
         if (args.Length == 1 && args[0] == "smoke-isolation") return SmokeIsolation();
         if (args.Length == 1 && args[0] == "verify-isolation") return VerifyIsolation();
         if (args.Length == 1 && args[0] == "fixture") { Fixture(); return 0; }
@@ -27,6 +29,60 @@ internal static class Program
         }
         if (args.Length != 0) { Console.Error.WriteLine("Invalid arguments"); return 2; }
         return Test();
+    }
+    static int SmokeBackground()
+    {
+        Process? fixture = null;
+        try
+        {
+            fixture = StartFixture();
+            using var session = new IsolatedSession(fixture, TimeSpan.FromSeconds(3));
+            using var monitor = new BackgroundMonitor(session, TimeSpan.FromMilliseconds(100));
+            monitor.Start();
+            bool observing = SpinWait.SpinUntil(() => monitor.History().Count(x => x.Observation?.Quality == Quality.Partial) >= 2, TimeSpan.FromSeconds(10));
+            Snapshot? old = null;
+            bool hadCurrent = SpinWait.SpinUntil(() => { old = session.Current(TimeSpan.FromSeconds(3)); return old?.Quality == Quality.Partial; }, TimeSpan.FromSeconds(3));
+            Check(observing && hadCurrent && monitor.Current(TimeSpan.FromSeconds(3)).Session == session.Id, "background observation continues after simulated script ends");
+            session.ExitNextForTest();
+            bool degraded = SpinWait.SpinUntil(() => monitor.History().Any(x => x.Connection == MonitorConnection.Degraded), TimeSpan.FromSeconds(10));
+            Check(degraded && old != null && !session.Matches(old, TimeSpan.FromSeconds(10)), "failed background observation invalidates old snapshot");
+            long failedAt = monitor.History().LastOrDefault(x => x.Connection == MonitorConnection.Degraded)?.Sequence ?? long.MaxValue;
+            bool recovered = SpinWait.SpinUntil(() => monitor.History().Any(x => x.Sequence > failedAt && x.Connection == MonitorConnection.Running && x.Observation?.Quality == Quality.Partial), TimeSpan.FromSeconds(10));
+            Check(recovered, "background observation recovers with a fresh sample after worker exit");
+            bool stopped = monitor.StopAsync().GetAwaiter().GetResult(); fixture.Refresh();
+            Check(stopped && !fixture.HasExited && monitor.Current(TimeSpan.FromSeconds(3)).Observation == null, "release clears observation and leaves target running");
+        }
+        catch (Exception e) { failures++; Console.WriteLine("FAIL background smoke: " + e.GetType().Name + ": " + e.Message); }
+        finally
+        {
+            if (fixture != null) { try { fixture.Refresh(); if (!fixture.HasExited) { fixture.CloseMainWindow(); fixture.WaitForExit(5000); } } catch (InvalidOperationException) { } fixture.Dispose(); }
+        }
+        Console.WriteLine("Failures: " + failures); return failures == 0 ? 0 : 1;
+    }
+    static int VerifyBackground()
+    {
+        if (SmokeBackground() != 0) return 1;
+        Process? fixture = null;
+        try
+        {
+            fixture = StartFixture();
+            using var session = new IsolatedSession(fixture, TimeSpan.FromSeconds(3));
+            using var monitor = new BackgroundMonitor(session, TimeSpan.FromMilliseconds(100));
+            monitor.Start();
+            bool ready = SpinWait.SpinUntil(() => monitor.History().Any(x => x.Observation?.Quality == Quality.Partial), TimeSpan.FromSeconds(10));
+            fixture.CloseMainWindow(); bool exited = fixture.WaitForExit(5000);
+            bool noted = SpinWait.SpinUntil(() => monitor.Current(TimeSpan.FromSeconds(3)).Connection == MonitorConnection.TargetExited, TimeSpan.FromSeconds(10));
+            var messages = monitor.History();
+            Check(ready && exited && noted && messages.Zip(messages.Skip(1), (a, b) => b.Sequence > a.Sequence).All(x => x), "target exit stops monitoring and message sequences increase");
+            Check(messages.All(x => x.Observation == null || (x.Observation.Controls.Count == 0 && x.Observation.WindowHandle == IntPtr.Zero)), "history does not expose controls or actionable handles");
+            Check(monitor.StopAsync().GetAwaiter().GetResult(), "target-exited session releases cleanly");
+        }
+        catch (Exception e) { failures++; Console.WriteLine("FAIL background verification: " + e.GetType().Name + ": " + e.Message); }
+        finally
+        {
+            if (fixture != null) { try { fixture.Refresh(); if (!fixture.HasExited) { fixture.CloseMainWindow(); fixture.WaitForExit(5000); } } catch (InvalidOperationException) { } fixture.Dispose(); }
+        }
+        Console.WriteLine("Verification failures: " + failures); return failures == 0 ? 0 : 1;
     }
     static int ObserveOnly(int pid, string? selectedName = null, string? selectedId = null)
     {

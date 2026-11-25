@@ -34,6 +34,17 @@ internal sealed class IsolatedSession : IObservationSession
     int activeWorkerId;
     internal string CleanupStatus { get; private set; } = "not-required";
     internal int ActiveWorkerId { get { lock (gate) return activeWorkerId; } }
+    internal Guid Id => session;
+    internal Snapshot? Current(TimeSpan maxAge)
+    {
+        lock (gate)
+        {
+            if (disposed || latest == null) return null;
+            return maxAge < TimeSpan.Zero || Stopwatch.GetElapsedTime(latestAt) > maxAge
+                ? latest with { Quality = Quality.Stale, Detail = "observation expired", Controls = Array.Empty<ControlObservation>(), WindowHandle = IntPtr.Zero }
+                : latest;
+        }
+    }
     internal IsolatedSession(Process target, TimeSpan timeout, string? selectedName = null, string? selectedId = null, bool stall = false)
     {
         if (timeout < TimeSpan.FromMilliseconds(100) || timeout > TimeSpan.FromSeconds(10)) throw new ArgumentOutOfRangeException(nameof(timeout));
